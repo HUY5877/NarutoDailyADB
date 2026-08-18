@@ -1,0 +1,14 @@
+{
+  "adb_path": "E:\\雷电模拟器\\leidian\\LDPlayer9\\adb.exe",
+  "serial": null,
+  "screen": {
+    "width": 1280,
+    "height": 720
+  },
+  "tasks": {
+    "sign_in": [],
+    "stamina": [],
+    "recruit": [],
+    "abundance": []
+  }
+}
