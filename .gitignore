@@ -4,4 +4,4 @@ __pycache__/
 *.pyc
 logs/
 config.local.json
-
+.worktrees/
