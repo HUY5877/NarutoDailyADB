@@ -33,6 +33,7 @@ ACTION_KEYS = {
     "wait": {"type", "seconds"},
     "back": {"type"},
     "optional_template_tap": {"type", "template", "left", "top", "right", "bottom", "threshold"},
+    "popup_cleanup": {"type", "rounds", "idle_rounds", "wait_seconds", "targets"},
 }
 
 
@@ -48,6 +49,30 @@ def _require_exact_keys(value: dict[str, Any], expected: set[str], context: str)
 def _coordinate(value: Any, limit: int, context: str) -> None:
     if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value < limit:
         raise ConfigError(f"{context} 坐标必须在 0 到 {limit - 1} 之间")
+
+
+def _validate_template_target(target: Any, width: int, height: int, context: str, require_name: bool) -> None:
+    keys = {"template", "left", "top", "right", "bottom", "threshold"}
+    if require_name:
+        keys.add("name")
+    if not isinstance(target, dict):
+        raise ConfigError(f"{context} 必须是模板目标对象")
+    _require_exact_keys(target, keys, context)
+    if require_name and (not isinstance(target["name"], str) or not target["name"].strip()):
+        raise ConfigError(f"{context} 的 name 必须是非空字符串")
+    template = target["template"]
+    if not isinstance(template, str) or not template.strip() or Path(template).is_absolute() or ".." in Path(template).parts:
+        raise ConfigError(f"{context} 的模板必须是配置目录内的相对路径")
+    left, top, right, bottom = (target[key] for key in ("left", "top", "right", "bottom"))
+    _coordinate(left, width, context)
+    _coordinate(top, height, context)
+    if not isinstance(right, int) or not left < right <= width:
+        raise ConfigError(f"{context} 的 right 必须大于 left 且不超过屏幕宽度")
+    if not isinstance(bottom, int) or not top < bottom <= height:
+        raise ConfigError(f"{context} 的 bottom 必须大于 top 且不超过屏幕高度")
+    threshold = target["threshold"]
+    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not 0 < threshold <= 1:
+        raise ConfigError(f"{context} 的 threshold 必须大于 0 且不超过 1")
 
 
 def _validate_action(action: Any, width: int, height: int, context: str) -> float:
@@ -73,19 +98,24 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的等待时间必须在 0 到 300 秒之间")
         return float(seconds)
     elif action_type == "optional_template_tap":
-        template = action["template"]
-        if not isinstance(template, str) or not template.strip() or Path(template).is_absolute() or ".." in Path(template).parts:
-            raise ConfigError(f"{context} 的模板必须是配置目录内的相对路径")
-        left, top, right, bottom = (action[key] for key in ("left", "top", "right", "bottom"))
-        _coordinate(left, width, context)
-        _coordinate(top, height, context)
-        if not isinstance(right, int) or not left < right <= width:
-            raise ConfigError(f"{context} 的 right 必须大于 left 且不超过屏幕宽度")
-        if not isinstance(bottom, int) or not top < bottom <= height:
-            raise ConfigError(f"{context} 的 bottom 必须大于 top 且不超过屏幕高度")
-        threshold = action["threshold"]
-        if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not 0 < threshold <= 1:
-            raise ConfigError(f"{context} 的 threshold 必须大于 0 且不超过 1")
+        target = {key: value for key, value in action.items() if key != "type"}
+        _validate_template_target(target, width, height, context, require_name=False)
+    elif action_type == "popup_cleanup":
+        rounds = action["rounds"]
+        idle_rounds = action["idle_rounds"]
+        wait_seconds = action["wait_seconds"]
+        targets = action["targets"]
+        if not isinstance(rounds, int) or isinstance(rounds, bool) or not 1 <= rounds <= 10:
+            raise ConfigError(f"{context} 的 rounds 必须在 1 到 10 之间")
+        if not isinstance(idle_rounds, int) or isinstance(idle_rounds, bool) or not 1 <= idle_rounds <= rounds:
+            raise ConfigError(f"{context} 的 idle_rounds 必须在 1 到 rounds 之间")
+        if not isinstance(wait_seconds, (int, float)) or isinstance(wait_seconds, bool) or not 0 <= wait_seconds <= 10:
+            raise ConfigError(f"{context} 的 wait_seconds 必须在 0 到 10 之间")
+        if not isinstance(targets, list) or not 1 <= len(targets) <= 5:
+            raise ConfigError(f"{context} 的 targets 必须包含 1 到 5 个目标")
+        for index, target in enumerate(targets):
+            _validate_template_target(target, width, height, f"{context}.targets[{index}]", require_name=True)
+        return float(rounds * len(targets) * wait_seconds)
     return 0.0
 
 

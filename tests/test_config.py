@@ -69,6 +69,36 @@ def test_optional_template_tap_validates_region_and_threshold(tmp_path):
     assert settings.tasks["login"][0]["threshold"] == 0.85
 
 
+def test_popup_cleanup_accepts_two_safe_targets(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["login"] = [{
+        "type": "popup_cleanup",
+        "rounds": 4,
+        "idle_rounds": 1,
+        "wait_seconds": 1,
+        "targets": [
+            {
+                "name": "登录奖励领取按钮",
+                "template": "assets/claim_button.png",
+                "left": 780, "top": 820, "right": 1140, "bottom": 1000,
+                "threshold": 0.85,
+            },
+            {
+                "name": "推广弹窗关闭按钮",
+                "template": "assets/promo_close.png",
+                "left": 1700, "top": 0, "right": 1920, "bottom": 180,
+                "threshold": 0.85,
+            },
+        ],
+    }]
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    assert settings.tasks["login"][0]["rounds"] == 4
+    assert [target["name"] for target in settings.tasks["login"][0]["targets"]] == ["登录奖励领取按钮", "推广弹窗关闭按钮"]
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [

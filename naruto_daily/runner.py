@@ -8,6 +8,7 @@ from typing import Callable, Sequence
 
 from .adb_client import AdbClient
 from .visual import find_template_in_png
+from .popup import cleanup_popups
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -17,6 +18,7 @@ ACTION_NAMES = {
     "back": "返回",
     "wait": "等待",
     "optional_template_tap": "识别后点击",
+    "popup_cleanup": "循环清理弹窗",
 }
 
 
@@ -48,7 +50,14 @@ class ActionRunner:
     def run(self, actions: Sequence[dict]) -> RunSummary:
         if len(actions) > 100:
             raise ActionLimitError("动作序列超过 100 个动作")
-        wait_seconds = sum(float(action.get("seconds", 0)) for action in actions if action.get("type") == "wait")
+        wait_seconds = sum(
+            float(action.get("seconds", 0))
+            if action.get("type") == "wait"
+            else float(action.get("rounds", 0)) * len(action.get("targets", [])) * float(action.get("wait_seconds", 0))
+            if action.get("type") == "popup_cleanup"
+            else 0.0
+            for action in actions
+        )
         if wait_seconds > 300:
             raise ActionLimitError("动作序列等待时间超过 300 秒")
         LOGGER.info("开始执行，共 %d 个动作", len(actions))
@@ -81,6 +90,14 @@ class ActionRunner:
                 else:
                     LOGGER.info("发现领取按钮，点击坐标：(%d, %d)", center[0], center[1])
                     self.client.tap(*center)
+            elif action_type == "popup_cleanup":
+                cleanup_popups(
+                    self.client,
+                    action,
+                    template_matcher=self.template_matcher,
+                    asset_root=self.asset_root,
+                    sleep=self.sleep,
+                )
             else:
                 raise ValueError(f"不支持的动作类型：{action_type!r}")
         LOGGER.info("执行结束：%d 个动作，配置等待 %.2f 秒", len(actions), wait_seconds)
