@@ -24,6 +24,7 @@ def config_path(tmp_path, serial=None, actions=None):
         "screen": {"width": 1280, "height": 720},
         "tasks": {
             "login": [],
+            "organization_pray": [],
             "sign_in": actions or [],
             "stamina": [],
             "recruit": [],

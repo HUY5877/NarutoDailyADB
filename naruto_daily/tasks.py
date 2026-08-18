@@ -5,8 +5,8 @@ from typing import Literal
 from .config import Settings
 
 
-TaskName = Literal["login", "sign_in", "stamina", "recruit", "abundance"]
-TASK_ORDER: tuple[TaskName, ...] = ("login", "sign_in", "stamina", "recruit", "abundance")
+TaskName = Literal["login", "organization_pray", "sign_in", "stamina", "recruit", "abundance"]
+TASK_ORDER: tuple[TaskName, ...] = ("login", "organization_pray", "sign_in", "stamina", "recruit", "abundance")
 
 
 class TaskError(ValueError):

@@ -95,6 +95,40 @@
         ]
       }
     ],
+    "organization_pray": [
+      {
+        "type": "required_template_tap",
+        "name": "奖励入口",
+        "template": "assets/reward_entry.png",
+        "left": 1700,
+        "top": 400,
+        "right": 1920,
+        "bottom": 700,
+        "threshold": 0.85,
+        "timeout_seconds": 20,
+        "poll_seconds": 1
+      },
+      {"type": "wait", "seconds": 2},
+      {
+        "type": "find_card_and_click",
+        "name": "组织祈福",
+        "template": "assets/organization_pray_label.png",
+        "left": 0,
+        "top": 300,
+        "right": 1920,
+        "bottom": 480,
+        "threshold": 0.85,
+        "click_offset_x": 0,
+        "click_offset_y": 165,
+        "max_swipes": 6,
+        "swipe_x1": 1650,
+        "swipe_y1": 550,
+        "swipe_x2": 350,
+        "swipe_y2": 550,
+        "swipe_duration_ms": 500,
+        "wait_seconds": 1
+      }
+    ],
     "sign_in": [],
     "stamina": [],
     "recruit": [],

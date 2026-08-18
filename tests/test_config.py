@@ -19,6 +19,7 @@ def valid_payload() -> dict:
         "screen": {"width": 1280, "height": 720},
         "tasks": {
             "login": [],
+            "organization_pray": [],
             "sign_in": [{"type": "tap", "x": 100, "y": 200}, {"type": "wait", "seconds": 1.5}],
             "stamina": [],
             "recruit": [],
@@ -145,6 +146,29 @@ def test_finish_login_authorization_accepts_optional_second_page(tmp_path):
     action = settings.tasks["login"][0]
     assert action["timeout_seconds"] == 40
     assert action["second_authorization"]["click_x"] == 961
+
+
+def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["organization_pray"] = [{
+        "type": "find_card_and_click",
+        "name": "组织祈福",
+        "template": "assets/organization_pray_label.png",
+        "left": 0, "top": 0, "right": 1920, "bottom": 1080,
+        "threshold": 0.85,
+        "click_offset_x": 0,
+        "click_offset_y": 165,
+        "max_swipes": 6,
+        "swipe_x1": 1650, "swipe_y1": 550,
+        "swipe_x2": 350, "swipe_y2": 550,
+        "swipe_duration_ms": 500,
+        "wait_seconds": 1
+    }]
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    assert settings.tasks["organization_pray"][0]["click_offset_y"] == 165
 
 
 @pytest.mark.parametrize(

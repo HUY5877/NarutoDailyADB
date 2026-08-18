@@ -26,7 +26,7 @@ class Settings:
 
 
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
-TASK_NAMES = {"login", "sign_in", "stamina", "recruit", "abundance"}
+TASK_NAMES = {"login", "organization_pray", "sign_in", "stamina", "recruit", "abundance"}
 ACTION_KEYS = {
     "tap": {"type", "x", "y"},
     "swipe": {"type", "x1", "y1", "x2", "y2", "duration_ms"},
@@ -38,6 +38,12 @@ ACTION_KEYS = {
         "type", "name", "template", "left", "top", "right", "bottom", "threshold", "timeout_seconds", "poll_seconds"
     },
     "finish_login_authorization": {"type", "timeout_seconds", "poll_seconds", "second_authorization", "start_game"},
+    "find_card_and_click": {
+        "type", "name", "template", "left", "top", "right", "bottom", "threshold",
+        "click_offset_x", "click_offset_y", "max_swipes",
+        "swipe_x1", "swipe_y1", "swipe_x2", "swipe_y2",
+        "swipe_duration_ms", "wait_seconds",
+    },
 }
 
 
@@ -159,6 +165,29 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         start_game = action["start_game"]
         _validate_template_target(start_game, width, height, f"{context}.start_game", require_name=True)
         return float(timeout_seconds)
+    elif action_type == "find_card_and_click":
+        target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
+        target = {key: action[key] for key in target_keys}
+        _validate_template_target(target, width, height, context, require_name=True)
+        for key, limit in (("click_offset_x", width), ("click_offset_y", height)):
+            value = action[key]
+            if not isinstance(value, int) or isinstance(value, bool) or not -limit < value < limit:
+                raise ConfigError(f"{context} 的 {key} 必须是绝对值小于 {limit} 的整数")
+        max_swipes = action["max_swipes"]
+        if not isinstance(max_swipes, int) or isinstance(max_swipes, bool) or not 0 <= max_swipes <= 10:
+            raise ConfigError(f"{context} 的 max_swipes 必须在 0 到 10 之间")
+        for key, limit in (
+            ("swipe_x1", width), ("swipe_x2", width),
+            ("swipe_y1", height), ("swipe_y2", height),
+        ):
+            _coordinate(action[key], limit, f"{context}.{key}")
+        duration = action["swipe_duration_ms"]
+        if not isinstance(duration, int) or isinstance(duration, bool) or not 1 <= duration <= 10_000:
+            raise ConfigError(f"{context} 的 swipe_duration_ms 必须在 1 到 10000 之间")
+        wait_seconds = action["wait_seconds"]
+        if not isinstance(wait_seconds, (int, float)) or isinstance(wait_seconds, bool) or not 0 <= wait_seconds <= 10:
+            raise ConfigError(f"{context} 的 wait_seconds 必须在 0 到 10 之间")
+        return float(max_swipes * wait_seconds)
     return 0.0
 
 

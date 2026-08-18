@@ -10,6 +10,7 @@ from .adb_client import AdbClient
 from .visual import VisualError, find_template_in_png
 from .popup import cleanup_popups
 from .authorization import finish_login_authorization
+from .navigation import navigate_to_card
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -22,6 +23,7 @@ ACTION_NAMES = {
     "popup_cleanup": "循环清理弹窗",
     "required_template_tap": "等待识别后点击",
     "finish_login_authorization": "处理可选第二次授权",
+    "find_card_and_click": "横向查找任务卡片",
 }
 
 
@@ -60,6 +62,8 @@ class ActionRunner:
             if action.get("type") == "popup_cleanup"
             else float(action.get("timeout_seconds", 0))
             if action.get("type") in {"required_template_tap", "finish_login_authorization"}
+            else float(action.get("max_swipes", 0)) * float(action.get("wait_seconds", 0))
+            if action.get("type") == "find_card_and_click"
             else 0.0
             for action in actions
         )
@@ -131,6 +135,14 @@ class ActionRunner:
                     elapsed += delay
             elif action_type == "finish_login_authorization":
                 finish_login_authorization(
+                    self.client,
+                    action,
+                    template_matcher=self.template_matcher,
+                    asset_root=self.asset_root,
+                    sleep=self.sleep,
+                )
+            elif action_type == "find_card_and_click":
+                navigate_to_card(
                     self.client,
                     action,
                     template_matcher=self.template_matcher,
