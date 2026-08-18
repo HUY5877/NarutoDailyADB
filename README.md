@@ -42,7 +42,7 @@ Copy-Item config.example.json config.local.json
 .\.venv\Scripts\naruto-daily.exe run sign_in --config config.local.json --dry-run
 ```
 
-登录流程先 dry-run，再从第一张登录页面实际执行：
+登录主流程先 dry-run，再从第一张登录页面实际执行。该命令会在清理登录弹窗后继续执行组织祈福：
 
 ```powershell
 .\.venv\Scripts\naruto-daily.exe run login --config config.local.json --dry-run

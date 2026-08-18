@@ -22,6 +22,22 @@ def test_each_task_is_independently_selectable():
     assert build_task(settings, "recruit") == [{"type": "tap", "x": 3, "y": 3}]
 
 
+def test_login_main_flow_continues_to_organization_pray_after_cleanup():
+    tasks = {
+        "login": [{"type": "popup_cleanup", "rounds": 1}],
+        "organization_pray": [{"type": "tap", "x": 5, "y": 5}],
+        "sign_in": [],
+        "stamina": [],
+        "recruit": [],
+        "abundance": [],
+    }
+
+    assert build_task(settings_with_tasks(tasks), "login") == [
+        {"type": "popup_cleanup", "rounds": 1},
+        {"type": "tap", "x": 5, "y": 5},
+    ]
+
+
 def test_build_all_preserves_approved_order():
     tasks = {name: [{"type": "tap", "x": index, "y": 0}] for index, name in enumerate(
         ["login", "organization_pray", "sign_in", "stamina", "recruit", "abundance"], start=1

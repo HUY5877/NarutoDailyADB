@@ -16,11 +16,12 @@ class TaskError(ValueError):
 def build_task(settings: Settings, name: TaskName) -> list[dict]:
     if name not in TASK_ORDER:
         raise TaskError(f"未知任务：{name!r}")
-    return [dict(action) for action in settings.tasks[name]]
+    task_names = ("login", "organization_pray") if name == "login" else (name,)
+    return [dict(action) for task_name in task_names for action in settings.tasks[task_name]]
 
 
 def build_all(settings: Settings) -> list[dict]:
-    actions = [action for name in TASK_ORDER for action in build_task(settings, name)]
+    actions = [dict(action) for name in TASK_ORDER for action in settings.tasks[name]]
     if len(actions) > 100:
         raise TaskError("组合流程超过 100 个动作")
     wait_seconds = sum(float(action.get("seconds", 0)) for action in actions if action.get("type") == "wait")
