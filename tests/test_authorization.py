@@ -1,0 +1,100 @@
+import logging
+from pathlib import Path
+
+import pytest
+
+from naruto_daily.authorization import finish_login_authorization
+from naruto_daily.visual import VisualError
+
+
+class AuthorizationClient:
+    def __init__(self):
+        self.taps = []
+
+    def screenshot(self):
+        return b"screen"
+
+    def tap(self, x, y):
+        self.taps.append((x, y))
+
+
+def authorization_action():
+    return {
+        "type": "finish_login_authorization",
+        "timeout_seconds": 4,
+        "poll_seconds": 1,
+        "second_authorization": {
+            "name": "第二次授权页面",
+            "template": "second.png",
+            "left": 0, "top": 200, "right": 1300, "bottom": 450,
+            "threshold": 0.85,
+            "click_x": 961, "click_y": 806,
+        },
+        "start_game": {
+            "name": "开始游戏按钮",
+            "template": "start.png",
+            "left": 650, "top": 780, "right": 1270, "bottom": 1020,
+            "threshold": 0.85,
+        },
+    }
+
+
+def test_direct_start_game_branch_clicks_once(caplog):
+    client = AuthorizationClient()
+
+    def matcher(png, path, roi, threshold):
+        if path.name == "start.png":
+            return (956, 911), 0.99
+        return None, 0.10
+
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        summary = finish_login_authorization(
+            client,
+            authorization_action(),
+            template_matcher=matcher,
+            asset_root=Path("assets"),
+            sleep=lambda _: None,
+        )
+
+    assert client.taps == [(956, 911)]
+    assert summary.used_second_authorization is False
+    assert "无需第二次授权" in caplog.text
+
+
+def test_second_authorization_branch_then_clicks_start_game(caplog):
+    client = AuthorizationClient()
+    start_results = iter([(None, 0.20), ((956, 911), 0.98)])
+
+    def matcher(png, path, roi, threshold):
+        if path.name == "start.png":
+            return next(start_results)
+        return ((400, 300), 0.97)
+
+    waits = []
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        summary = finish_login_authorization(
+            client,
+            authorization_action(),
+            template_matcher=matcher,
+            asset_root=Path("assets"),
+            sleep=waits.append,
+        )
+
+    assert client.taps == [(961, 806), (956, 911)]
+    assert waits == [1.0]
+    assert summary.used_second_authorization is True
+    assert "发现第二次授权页面" in caplog.text
+
+
+def test_authorization_timeout_stops_without_clicking():
+    client = AuthorizationClient()
+
+    with pytest.raises(VisualError, match="等待授权完成页面超时"):
+        finish_login_authorization(
+            client,
+            authorization_action(),
+            template_matcher=lambda *args: (None, 0.10),
+            sleep=lambda _: None,
+        )
+
+    assert client.taps == []

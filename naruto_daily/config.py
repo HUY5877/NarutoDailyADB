@@ -37,6 +37,7 @@ ACTION_KEYS = {
     "required_template_tap": {
         "type", "name", "template", "left", "top", "right", "bottom", "threshold", "timeout_seconds", "poll_seconds"
     },
+    "finish_login_authorization": {"type", "timeout_seconds", "poll_seconds", "second_authorization", "start_game"},
 }
 
 
@@ -131,6 +132,32 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
         if poll_seconds > timeout_seconds:
             raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
+        return float(timeout_seconds)
+    elif action_type == "finish_login_authorization":
+        timeout_seconds = action["timeout_seconds"]
+        poll_seconds = action["poll_seconds"]
+        if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or not 1 <= timeout_seconds <= 60:
+            raise ConfigError(f"{context} 的 timeout_seconds 必须在 1 到 60 之间")
+        if not isinstance(poll_seconds, (int, float)) or isinstance(poll_seconds, bool) or not 0.2 <= poll_seconds <= 5:
+            raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
+        if poll_seconds > timeout_seconds:
+            raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
+
+        second = action["second_authorization"]
+        if not isinstance(second, dict):
+            raise ConfigError(f"{context}.second_authorization 必须是对象")
+        _require_exact_keys(
+            second,
+            {"name", "template", "left", "top", "right", "bottom", "threshold", "click_x", "click_y"},
+            f"{context}.second_authorization",
+        )
+        second_target = {key: second[key] for key in ("name", "template", "left", "top", "right", "bottom", "threshold")}
+        _validate_template_target(second_target, width, height, f"{context}.second_authorization", require_name=True)
+        _coordinate(second["click_x"], width, f"{context}.second_authorization")
+        _coordinate(second["click_y"], height, f"{context}.second_authorization")
+
+        start_game = action["start_game"]
+        _validate_template_target(start_game, width, height, f"{context}.start_game", require_name=True)
         return float(timeout_seconds)
     return 0.0
 

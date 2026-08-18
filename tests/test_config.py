@@ -118,6 +118,35 @@ def test_required_template_tap_accepts_timeout_and_poll_interval(tmp_path):
     assert settings.tasks["login"][0]["poll_seconds"] == 1
 
 
+def test_finish_login_authorization_accepts_optional_second_page(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["login"] = [{
+        "type": "finish_login_authorization",
+        "timeout_seconds": 40,
+        "poll_seconds": 1,
+        "second_authorization": {
+            "name": "第二次授权页面",
+            "template": "assets/qq_second_authorization_marker.png",
+            "left": 0, "top": 200, "right": 1300, "bottom": 450,
+            "threshold": 0.85,
+            "click_x": 961, "click_y": 806
+        },
+        "start_game": {
+            "name": "开始游戏按钮",
+            "template": "assets/start_game_button.png",
+            "left": 650, "top": 780, "right": 1270, "bottom": 1020,
+            "threshold": 0.85
+        }
+    }]
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    action = settings.tasks["login"][0]
+    assert action["timeout_seconds"] == 40
+    assert action["second_authorization"]["click_x"] == 961
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [

@@ -9,6 +9,7 @@ from typing import Callable, Sequence
 from .adb_client import AdbClient
 from .visual import VisualError, find_template_in_png
 from .popup import cleanup_popups
+from .authorization import finish_login_authorization
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -20,6 +21,7 @@ ACTION_NAMES = {
     "optional_template_tap": "识别后点击",
     "popup_cleanup": "循环清理弹窗",
     "required_template_tap": "等待识别后点击",
+    "finish_login_authorization": "处理可选第二次授权",
 }
 
 
@@ -57,7 +59,7 @@ class ActionRunner:
             else float(action.get("rounds", 0)) * len(action.get("targets", [])) * float(action.get("wait_seconds", 0))
             if action.get("type") == "popup_cleanup"
             else float(action.get("timeout_seconds", 0))
-            if action.get("type") == "required_template_tap"
+            if action.get("type") in {"required_template_tap", "finish_login_authorization"}
             else 0.0
             for action in actions
         )
@@ -127,6 +129,14 @@ class ActionRunner:
                     )
                     self.sleep(delay)
                     elapsed += delay
+            elif action_type == "finish_login_authorization":
+                finish_login_authorization(
+                    self.client,
+                    action,
+                    template_matcher=self.template_matcher,
+                    asset_root=self.asset_root,
+                    sleep=self.sleep,
+                )
             else:
                 raise ValueError(f"不支持的动作类型：{action_type!r}")
         LOGGER.info("执行结束：%d 个动作，配置等待 %.2f 秒", len(actions), wait_seconds)

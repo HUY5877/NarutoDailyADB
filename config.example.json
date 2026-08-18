@@ -34,28 +34,29 @@
         "poll_seconds": 1
       },
       {
-        "type": "required_template_tap",
-        "name": "第二次授权同意按钮",
-        "template": "assets/qq_agree_game_info.png",
-        "left": 700,
-        "top": 700,
-        "right": 1220,
-        "bottom": 930,
-        "threshold": 0.85,
-        "timeout_seconds": 20,
-        "poll_seconds": 1
-      },
-      {
-        "type": "required_template_tap",
-        "name": "开始游戏按钮",
-        "template": "assets/start_game_button.png",
-        "left": 650,
-        "top": 780,
-        "right": 1270,
-        "bottom": 1020,
-        "threshold": 0.85,
-        "timeout_seconds": 20,
-        "poll_seconds": 1
+        "type": "finish_login_authorization",
+        "timeout_seconds": 40,
+        "poll_seconds": 1,
+        "second_authorization": {
+          "name": "第二次授权页面",
+          "template": "assets/qq_second_authorization_marker.png",
+          "left": 0,
+          "top": 200,
+          "right": 1300,
+          "bottom": 450,
+          "threshold": 0.85,
+          "click_x": 961,
+          "click_y": 806
+        },
+        "start_game": {
+          "name": "开始游戏按钮",
+          "template": "assets/start_game_button.png",
+          "left": 650,
+          "top": 780,
+          "right": 1270,
+          "bottom": 1020,
+          "threshold": 0.85
+        }
       },
       {"type": "wait", "seconds": 15},
       {

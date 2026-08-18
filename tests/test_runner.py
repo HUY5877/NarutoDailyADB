@@ -148,3 +148,31 @@ def test_required_template_tap_times_out_and_stops_following_actions():
         runner.run([required_action(), {"type": "tap", "x": 1, "y": 2}])
 
     assert client.calls == []
+
+
+def test_action_runner_dispatches_optional_second_authorization():
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    action = {
+        "type": "finish_login_authorization",
+        "timeout_seconds": 4,
+        "poll_seconds": 1,
+        "second_authorization": {
+            "name": "第二次授权页面", "template": "second.png",
+            "left": 0, "top": 200, "right": 1300, "bottom": 450,
+            "threshold": 0.85, "click_x": 961, "click_y": 806,
+        },
+        "start_game": {
+            "name": "开始游戏按钮", "template": "start.png",
+            "left": 650, "top": 780, "right": 1270, "bottom": 1020,
+            "threshold": 0.85,
+        },
+    }
+
+    ActionRunner(
+        client,
+        sleep=lambda _: None,
+        template_matcher=lambda *args: ((956, 911), 0.99),
+    ).run([action])
+
+    assert client.calls == [("tap", 956, 911)]
