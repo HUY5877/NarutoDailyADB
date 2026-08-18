@@ -38,12 +38,12 @@ def test_build_all_rejects_combined_sequence_over_limits():
         "abundance": [{"type": "back"}] * 30,
     }
 
-    with pytest.raises(TaskError, match="100 actions"):
+    with pytest.raises(TaskError, match="100 个动作"):
         build_all(settings_with_tasks(tasks))
 
 
 def test_unknown_task_is_rejected():
     settings = settings_with_tasks({name: [] for name in ["login", "sign_in", "stamina", "recruit", "abundance"]})
 
-    with pytest.raises(TaskError, match="Unknown task"):
+    with pytest.raises(TaskError, match="未知任务"):
         build_task(settings, "purchase")

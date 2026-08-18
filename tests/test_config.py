@@ -51,14 +51,32 @@ def test_login_task_accepts_real_1920_by_1080_coordinates(tmp_path):
     assert [action["x"] for action in settings.tasks["login"]] == [158, 1605, 961, 961, 961]
 
 
+def test_optional_template_tap_validates_region_and_threshold(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["login"] = [{
+        "type": "optional_template_tap",
+        "template": "assets/claim_button.png",
+        "left": 780,
+        "top": 820,
+        "right": 1140,
+        "bottom": 1000,
+        "threshold": 0.85,
+    }]
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    assert settings.tasks["login"][0]["threshold"] == 0.85
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
         (lambda p: p["screen"].update(width=0), "screen width"),
-        (lambda p: p["tasks"]["sign_in"][0].update(x=-1), "coordinate"),
-        (lambda p: p["tasks"]["sign_in"][0].update(x=1280), "coordinate"),
-        (lambda p: p["tasks"]["sign_in"][0].update(type="purchase"), "unsupported action"),
-        (lambda p: p["tasks"]["sign_in"][0].update(extra=True), "unknown keys"),
+        (lambda p: p["tasks"]["sign_in"][0].update(x=-1), "坐标"),
+        (lambda p: p["tasks"]["sign_in"][0].update(x=1280), "坐标"),
+        (lambda p: p["tasks"]["sign_in"][0].update(type="purchase"), "不支持的动作"),
+        (lambda p: p["tasks"]["sign_in"][0].update(extra=True), "未知字段"),
     ],
 )
 def test_invalid_configuration_is_rejected(tmp_path, mutate, message):
@@ -73,7 +91,7 @@ def test_more_than_one_hundred_actions_is_rejected(tmp_path):
     payload = valid_payload()
     payload["tasks"]["sign_in"] = [{"type": "back"}] * 101
 
-    with pytest.raises(ConfigError, match="100 actions"):
+    with pytest.raises(ConfigError, match="100 个动作"):
         load_settings(write_config(tmp_path, payload))
 
 
@@ -81,5 +99,5 @@ def test_more_than_three_hundred_wait_seconds_is_rejected(tmp_path):
     payload = valid_payload()
     payload["tasks"]["sign_in"] = [{"type": "wait", "seconds": 301}]
 
-    with pytest.raises(ConfigError, match="300 seconds"):
+    with pytest.raises(ConfigError, match="300 秒"):
         load_settings(write_config(tmp_path, payload))

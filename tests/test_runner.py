@@ -1,3 +1,6 @@
+import logging
+from pathlib import Path
+
 import pytest
 
 from naruto_daily.adb_client import AdbError
@@ -62,8 +65,37 @@ def test_adb_failure_aborts_remaining_actions():
 
 
 def test_runner_rejects_more_than_three_hundred_seconds():
-    with pytest.raises(ActionLimitError, match="300 seconds"):
+    with pytest.raises(ActionLimitError, match="300 秒"):
         ActionRunner(RecordingClient(), sleep=lambda _: None).run([
             {"type": "wait", "seconds": 200},
             {"type": "wait", "seconds": 101},
         ])
+
+
+def test_optional_template_tap_clicks_only_when_match_is_found(caplog):
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    matches = iter([((957, 906), 0.94), (None, 0.42)])
+
+    def matcher(png, template_path, roi, threshold):
+        assert png == b"screen"
+        assert template_path == Path("assets") / "claim_button.png"
+        assert roi == (780, 820, 1140, 1000)
+        assert threshold == 0.85
+        return next(matches)
+
+    action = {
+        "type": "optional_template_tap",
+        "template": "claim_button.png",
+        "left": 780, "top": 820, "right": 1140, "bottom": 1000,
+        "threshold": 0.85,
+    }
+    runner = ActionRunner(client, sleep=lambda _: None, template_matcher=matcher, asset_root=Path("assets"))
+
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        runner.run([action, action])
+
+    assert client.calls == [("tap", 957, 906)]
+    assert "0.940" in caplog.text
+    assert "0.420" in caplog.text
+    assert "跳过" in caplog.text

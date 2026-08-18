@@ -41,14 +41,14 @@ def test_check_rejects_zero_devices(tmp_path, capsys):
     result = main(["check", "--config", str(config_path(tmp_path))], client_factory=factory_for(FakeClient([])))
 
     assert result == 2
-    assert "no online adb device" in capsys.readouterr().err.lower()
+    assert "没有发现在线的 adb 设备" in capsys.readouterr().err.lower()
 
 
 def test_check_rejects_multiple_devices_without_serial(tmp_path, capsys):
     result = main(["check", "--config", str(config_path(tmp_path))], client_factory=factory_for(FakeClient(["a", "b"])))
 
     assert result == 2
-    assert "multiple online adb devices" in capsys.readouterr().err.lower()
+    assert "多个在线 adb 设备" in capsys.readouterr().err.lower()
 
 
 def test_check_rejects_resolution_mismatch(tmp_path, capsys):
@@ -57,7 +57,7 @@ def test_check_rejects_resolution_mismatch(tmp_path, capsys):
     result = main(["check", "--config", str(config_path(tmp_path))], client_factory=factory_for(client))
 
     assert result == 2
-    assert "resolution mismatch" in capsys.readouterr().err.lower()
+    assert "分辨率不一致" in capsys.readouterr().err.lower()
 
 
 def test_check_accepts_one_matching_device(tmp_path, capsys):

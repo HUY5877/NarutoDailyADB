@@ -8,7 +8,7 @@ from typing import Callable, Sequence
 
 
 class AdbError(RuntimeError):
-    """Raised when an ADB command fails or returns unusable output."""
+    """ADB 命令失败或返回内容无法使用。"""
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class CommandResult:
 
 
 CommandRunner = Callable[[Sequence[str]], CommandResult]
+BinaryRunner = Callable[[Sequence[str]], tuple[int, bytes, bytes]]
 
 
 def _run_subprocess(command: Sequence[str]) -> CommandResult:
@@ -26,11 +27,23 @@ def _run_subprocess(command: Sequence[str]) -> CommandResult:
     return CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
 
+def _run_subprocess_binary(command: Sequence[str]) -> tuple[int, bytes, bytes]:
+    completed = subprocess.run(command, capture_output=True)
+    return completed.returncode, completed.stdout, completed.stderr
+
+
 class AdbClient:
-    def __init__(self, adb_path: Path, serial: str | None = None, run_command: CommandRunner = _run_subprocess):
+    def __init__(
+        self,
+        adb_path: Path,
+        serial: str | None = None,
+        run_command: CommandRunner = _run_subprocess,
+        run_binary: BinaryRunner = _run_subprocess_binary,
+    ):
         self.adb_path = Path(adb_path)
         self.serial = serial
         self._run_command = run_command
+        self._run_binary = run_binary
 
     def _command(self, *arguments: str, use_serial: bool = True) -> CommandResult:
         command = [str(self.adb_path)]
@@ -40,7 +53,7 @@ class AdbClient:
         result = self._run_command(command)
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-            raise AdbError(f"ADB command failed: {detail}")
+            raise AdbError(f"ADB 命令执行失败：{detail}")
         return result
 
     def devices(self) -> list[str]:
@@ -58,7 +71,7 @@ class AdbClient:
         if not match:
             match = re.search(r"(\d+)x(\d+)", output)
         if not match:
-            raise AdbError(f"Unable to parse screen size from: {output.strip()!r}")
+            raise AdbError(f"无法解析屏幕尺寸：{output.strip()!r}")
         return int(match.group(1)), int(match.group(2))
 
     def tap(self, x: int, y: int) -> None:
@@ -69,3 +82,16 @@ class AdbClient:
 
     def back(self) -> None:
         self._command("shell", "input", "keyevent", "4")
+
+    def screenshot(self) -> bytes:
+        command = [str(self.adb_path)]
+        if self.serial:
+            command.extend(["-s", self.serial])
+        command.extend(["exec-out", "screencap", "-p"])
+        returncode, stdout, stderr = self._run_binary(command)
+        if returncode != 0:
+            detail = stderr.decode("utf-8", errors="replace").strip() or f"退出码 {returncode}"
+            raise AdbError(f"ADB 截图失败：{detail}")
+        if not stdout:
+            raise AdbError("ADB 截图失败：返回内容为空")
+        return stdout

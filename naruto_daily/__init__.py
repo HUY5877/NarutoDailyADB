@@ -1,2 +1,1 @@
-"""Safe, coordinate-only ADB automation primitives."""
-
+"""基于固定坐标和安全检查的 ADB 自动化工具。"""

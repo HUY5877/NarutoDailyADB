@@ -16,7 +16,18 @@
       {"type": "tap", "x": 961, "y": 806},
       {"type": "wait", "seconds": 5},
       {"type": "tap", "x": 961, "y": 910},
-      {"type": "wait", "seconds": 15}
+      {"type": "wait", "seconds": 15},
+      {"type": "tap", "x": 1597, "y": 123},
+      {"type": "wait", "seconds": 2},
+      {
+        "type": "optional_template_tap",
+        "template": "assets/claim_button.png",
+        "left": 780,
+        "top": 820,
+        "right": 1140,
+        "bottom": 1000,
+        "threshold": 0.85
+      }
     ],
     "sign_in": [],
     "stamina": [],

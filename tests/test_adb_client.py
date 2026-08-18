@@ -58,5 +58,18 @@ def test_unparseable_screen_size_raises_adb_error():
     runner = FakeRunner([CommandResult(0, "unknown", "")])
     client = AdbClient(Path("adb.exe"), run_command=runner)
 
-    with pytest.raises(AdbError, match="screen size"):
+    with pytest.raises(AdbError, match="屏幕尺寸"):
         client.screen_size()
+
+
+def test_screenshot_uses_binary_exec_out():
+    binary_commands = []
+
+    def run_binary(command):
+        binary_commands.append(command)
+        return 0, b"png-bytes", b""
+
+    client = AdbClient(Path("adb.exe"), serial="emulator-5554", run_binary=run_binary)
+
+    assert client.screenshot() == b"png-bytes"
+    assert binary_commands == [["adb.exe", "-s", "emulator-5554", "exec-out", "screencap", "-p"]]
