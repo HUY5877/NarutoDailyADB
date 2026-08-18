@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from .adb_client import AdbClient
-from .visual import find_template_in_png
+from .visual import VisualError, find_template_in_png
 from .popup import cleanup_popups
 
 
@@ -19,6 +19,7 @@ ACTION_NAMES = {
     "wait": "等待",
     "optional_template_tap": "识别后点击",
     "popup_cleanup": "循环清理弹窗",
+    "required_template_tap": "等待识别后点击",
 }
 
 
@@ -55,6 +56,8 @@ class ActionRunner:
             if action.get("type") == "wait"
             else float(action.get("rounds", 0)) * len(action.get("targets", [])) * float(action.get("wait_seconds", 0))
             if action.get("type") == "popup_cleanup"
+            else float(action.get("timeout_seconds", 0))
+            if action.get("type") == "required_template_tap"
             else 0.0
             for action in actions
         )
@@ -98,6 +101,32 @@ class ActionRunner:
                     asset_root=self.asset_root,
                     sleep=self.sleep,
                 )
+            elif action_type == "required_template_tap":
+                template_path = self.asset_root / action["template"]
+                roi = (action["left"], action["top"], action["right"], action["bottom"])
+                timeout_seconds = float(action["timeout_seconds"])
+                poll_seconds = float(action["poll_seconds"])
+                elapsed = 0.0
+                while True:
+                    center, score = self.template_matcher(
+                        self.client.screenshot(), template_path, roi, float(action["threshold"])
+                    )
+                    if center is not None:
+                        LOGGER.info(
+                            "发现%s，相似度 %.3f，点击坐标 (%d, %d)",
+                            action["name"], score, center[0], center[1],
+                        )
+                        self.client.tap(*center)
+                        break
+                    if elapsed >= timeout_seconds:
+                        raise VisualError(f"等待{action['name']}超时，最后相似度 {score:.3f}")
+                    delay = min(poll_seconds, timeout_seconds - elapsed)
+                    LOGGER.info(
+                        "等待%s，当前相似度 %.3f，%.2f 秒后重试",
+                        action["name"], score, delay,
+                    )
+                    self.sleep(delay)
+                    elapsed += delay
             else:
                 raise ValueError(f"不支持的动作类型：{action_type!r}")
         LOGGER.info("执行结束：%d 个动作，配置等待 %.2f 秒", len(actions), wait_seconds)

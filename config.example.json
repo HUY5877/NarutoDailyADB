@@ -8,23 +8,71 @@
   "tasks": {
     "login": [
       {"type": "tap", "x": 158, "y": 924},
-      {"type": "wait", "seconds": 0.5},
-      {"type": "tap", "x": 1605, "y": 813},
-      {"type": "wait", "seconds": 3},
-      {"type": "tap", "x": 961, "y": 834},
-      {"type": "wait", "seconds": 2},
-      {"type": "tap", "x": 961, "y": 806},
-      {"type": "wait", "seconds": 5},
-      {"type": "tap", "x": 961, "y": 910},
+      {"type": "wait", "seconds": 1},
+      {
+        "type": "required_template_tap",
+        "name": "与安卓QQ好友玩按钮",
+        "template": "assets/qq_android_button.png",
+        "left": 1350,
+        "top": 720,
+        "right": 1850,
+        "bottom": 900,
+        "threshold": 0.85,
+        "timeout_seconds": 20,
+        "poll_seconds": 1
+      },
+      {
+        "type": "required_template_tap",
+        "name": "第一次授权同意按钮",
+        "template": "assets/qq_agree_profile.png",
+        "left": 700,
+        "top": 700,
+        "right": 1220,
+        "bottom": 930,
+        "threshold": 0.85,
+        "timeout_seconds": 20,
+        "poll_seconds": 1
+      },
+      {
+        "type": "required_template_tap",
+        "name": "第二次授权同意按钮",
+        "template": "assets/qq_agree_game_info.png",
+        "left": 700,
+        "top": 700,
+        "right": 1220,
+        "bottom": 930,
+        "threshold": 0.85,
+        "timeout_seconds": 20,
+        "poll_seconds": 1
+      },
+      {
+        "type": "required_template_tap",
+        "name": "开始游戏按钮",
+        "template": "assets/start_game_button.png",
+        "left": 650,
+        "top": 780,
+        "right": 1270,
+        "bottom": 1020,
+        "threshold": 0.85,
+        "timeout_seconds": 20,
+        "poll_seconds": 1
+      },
       {"type": "wait", "seconds": 15},
-      {"type": "tap", "x": 1597, "y": 123},
-      {"type": "wait", "seconds": 2},
       {
         "type": "popup_cleanup",
         "rounds": 4,
         "idle_rounds": 1,
         "wait_seconds": 1,
         "targets": [
+          {
+            "name": "公告关闭按钮",
+            "template": "assets/announcement_close.png",
+            "left": 1450,
+            "top": 50,
+            "right": 1700,
+            "bottom": 240,
+            "threshold": 0.85
+          },
           {
             "name": "登录奖励领取按钮",
             "template": "assets/claim_button.png",

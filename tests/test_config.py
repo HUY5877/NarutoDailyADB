@@ -99,6 +99,25 @@ def test_popup_cleanup_accepts_two_safe_targets(tmp_path):
     assert [target["name"] for target in settings.tasks["login"][0]["targets"]] == ["登录奖励领取按钮", "推广弹窗关闭按钮"]
 
 
+def test_required_template_tap_accepts_timeout_and_poll_interval(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["login"] = [{
+        "type": "required_template_tap",
+        "name": "开始游戏按钮",
+        "template": "assets/start_game_button.png",
+        "left": 650, "top": 780, "right": 1270, "bottom": 1020,
+        "threshold": 0.85,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+    }]
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    assert settings.tasks["login"][0]["timeout_seconds"] == 20
+    assert settings.tasks["login"][0]["poll_seconds"] == 1
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [

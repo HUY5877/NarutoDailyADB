@@ -5,6 +5,7 @@ import pytest
 
 from naruto_daily.adb_client import AdbError
 from naruto_daily.runner import ActionLimitError, ActionRunner
+from naruto_daily.visual import VisualError
 
 
 class RecordingClient:
@@ -99,3 +100,51 @@ def test_optional_template_tap_clicks_only_when_match_is_found(caplog):
     assert "0.940" in caplog.text
     assert "0.420" in caplog.text
     assert "跳过" in caplog.text
+
+
+def required_action():
+    return {
+        "type": "required_template_tap",
+        "name": "开始游戏按钮",
+        "template": "start.png",
+        "left": 650, "top": 780, "right": 1270, "bottom": 1020,
+        "threshold": 0.85,
+        "timeout_seconds": 3,
+        "poll_seconds": 1,
+    }
+
+
+def test_required_template_tap_waits_until_button_appears(caplog):
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    results = iter([(None, 0.20), (None, 0.40), ((961, 910), 0.96)])
+    waits = []
+    runner = ActionRunner(
+        client,
+        sleep=waits.append,
+        template_matcher=lambda *args: next(results),
+        asset_root=Path("assets"),
+    )
+
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        runner.run([required_action()])
+
+    assert client.calls == [("tap", 961, 910)]
+    assert waits == [1.0, 1.0]
+    assert "等待开始游戏按钮" in caplog.text
+    assert "发现开始游戏按钮" in caplog.text
+
+
+def test_required_template_tap_times_out_and_stops_following_actions():
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    runner = ActionRunner(
+        client,
+        sleep=lambda _: None,
+        template_matcher=lambda *args: (None, 0.20),
+    )
+
+    with pytest.raises(VisualError, match="等待开始游戏按钮超时"):
+        runner.run([required_action(), {"type": "tap", "x": 1, "y": 2}])
+
+    assert client.calls == []

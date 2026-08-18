@@ -34,6 +34,9 @@ ACTION_KEYS = {
     "back": {"type"},
     "optional_template_tap": {"type", "template", "left", "top", "right", "bottom", "threshold"},
     "popup_cleanup": {"type", "rounds", "idle_rounds", "wait_seconds", "targets"},
+    "required_template_tap": {
+        "type", "name", "template", "left", "top", "right", "bottom", "threshold", "timeout_seconds", "poll_seconds"
+    },
 }
 
 
@@ -116,6 +119,19 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         for index, target in enumerate(targets):
             _validate_template_target(target, width, height, f"{context}.targets[{index}]", require_name=True)
         return float(rounds * len(targets) * wait_seconds)
+    elif action_type == "required_template_tap":
+        target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
+        target = {key: action[key] for key in target_keys}
+        _validate_template_target(target, width, height, context, require_name=True)
+        timeout_seconds = action["timeout_seconds"]
+        poll_seconds = action["poll_seconds"]
+        if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or not 1 <= timeout_seconds <= 60:
+            raise ConfigError(f"{context} 的 timeout_seconds 必须在 1 到 60 之间")
+        if not isinstance(poll_seconds, (int, float)) or isinstance(poll_seconds, bool) or not 0.2 <= poll_seconds <= 5:
+            raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
+        if poll_seconds > timeout_seconds:
+            raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
+        return float(timeout_seconds)
     return 0.0
 
 
