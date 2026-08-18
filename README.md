@@ -6,5 +6,53 @@
 
 > 在线游戏自动化可能违反游戏服务规则并带来账号风险。请仅在理解风险的前提下用于个人研究和界面自动化测试。
 
-当前状态：设计与实施计划已建立，程序代码尚未开始实现。
+## 安装
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+Copy-Item config.example.json config.local.json
+```
+
+先打开雷电模拟器，再检查 ADB 和安卓分辨率：
+
+```powershell
+.\.venv\Scripts\naruto-daily.exe check --config config.local.json
+```
+
+## 校准和运行
+
+示例配置已按当前雷电 `1920×1080` 安卓画面填写登录流程；其他任务数组仍为空。登录坐标来自实际四个页面：勾选协议、安卓 QQ、两次同意、开始游戏。请只从第一张登录页面开始运行；如果已经处于后续页面，不要执行该流程。
+
+坐标必须是安卓内部坐标，不能使用包含雷电标题栏和右侧工具栏的桌面坐标。
+
+先打印动作而不发送输入：
+
+```powershell
+.\.venv\Scripts\naruto-daily.exe run sign_in --config config.local.json --dry-run
+```
+
+登录流程先 dry-run，再从第一张登录页面实际执行：
+
+```powershell
+.\.venv\Scripts\naruto-daily.exe run login --config config.local.json --dry-run
+.\.venv\Scripts\naruto-daily.exe run login --config config.local.json
+```
+
+逐项测试：
+
+```powershell
+.\.venv\Scripts\naruto-daily.exe run sign_in --config config.local.json
+.\.venv\Scripts\naruto-daily.exe run stamina --config config.local.json
+.\.venv\Scripts\naruto-daily.exe run recruit --config config.local.json
+.\.venv\Scripts\naruto-daily.exe run abundance --config config.local.json
+```
+
+全部坐标分别验证后，才运行 `all`。该命令开始前有五秒倒计时，可按 Ctrl+C 取消：
+
+```powershell
+.\.venv\Scripts\naruto-daily.exe run all --config config.local.json
+```
+
+纯坐标脚本无法判断弹窗和页面是否正确。任何页面变化、中断或加载异常都应立即停止，不能把付费、金币购买或确认按钮加入配置。
 

@@ -2,10 +2,22 @@
   "adb_path": "E:\\雷电模拟器\\leidian\\LDPlayer9\\adb.exe",
   "serial": null,
   "screen": {
-    "width": 1280,
-    "height": 720
+    "width": 1920,
+    "height": 1080
   },
   "tasks": {
+    "login": [
+      {"type": "tap", "x": 158, "y": 924},
+      {"type": "wait", "seconds": 0.5},
+      {"type": "tap", "x": 1605, "y": 813},
+      {"type": "wait", "seconds": 3},
+      {"type": "tap", "x": 961, "y": 834},
+      {"type": "wait", "seconds": 2},
+      {"type": "tap", "x": 961, "y": 806},
+      {"type": "wait", "seconds": 5},
+      {"type": "tap", "x": 961, "y": 910},
+      {"type": "wait", "seconds": 15}
+    ],
     "sign_in": [],
     "stamina": [],
     "recruit": [],

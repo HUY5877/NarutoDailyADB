@@ -26,7 +26,7 @@ class Settings:
 
 
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
-TASK_NAMES = {"sign_in", "stamina", "recruit", "abundance"}
+TASK_NAMES = {"login", "sign_in", "stamina", "recruit", "abundance"}
 ACTION_KEYS = {
     "tap": {"type", "x", "y"},
     "swipe": {"type", "x1", "y1", "x2", "y2", "duration_ms"},

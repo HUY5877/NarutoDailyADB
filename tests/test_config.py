@@ -18,6 +18,7 @@ def valid_payload() -> dict:
         "serial": None,
         "screen": {"width": 1280, "height": 720},
         "tasks": {
+            "login": [],
             "sign_in": [{"type": "tap", "x": 100, "y": 200}, {"type": "wait", "seconds": 1.5}],
             "stamina": [],
             "recruit": [],
@@ -32,6 +33,22 @@ def test_load_settings_returns_validated_values(tmp_path):
     assert settings.adb_path == Path("E:/LDPlayer9/adb.exe")
     assert (settings.screen_width, settings.screen_height) == (1280, 720)
     assert settings.tasks["sign_in"][0] == {"type": "tap", "x": 100, "y": 200}
+
+
+def test_login_task_accepts_real_1920_by_1080_coordinates(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["login"] = [
+        {"type": "tap", "x": 158, "y": 924},
+        {"type": "tap", "x": 1605, "y": 813},
+        {"type": "tap", "x": 961, "y": 834},
+        {"type": "tap", "x": 961, "y": 806},
+        {"type": "tap", "x": 961, "y": 910},
+    ]
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    assert [action["x"] for action in settings.tasks["login"]] == [158, 1605, 961, 961, 961]
 
 
 @pytest.mark.parametrize(
