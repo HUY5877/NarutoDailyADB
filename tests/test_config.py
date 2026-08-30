@@ -157,8 +157,12 @@ def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
         "template": "assets/organization_pray_label.png",
         "left": 0, "top": 0, "right": 1920, "bottom": 1080,
         "threshold": 0.85,
-        "click_offset_x": 0,
-        "click_offset_y": 165,
+        "button_template": "assets/go_now_button.png",
+        "button_threshold": 0.85,
+        "button_left_offset": -170,
+        "button_top_offset": 80,
+        "button_right_offset": 170,
+        "button_bottom_offset": 260,
         "max_swipes": 6,
         "swipe_x1": 1650, "swipe_y1": 550,
         "swipe_x2": 350, "swipe_y2": 550,
@@ -168,7 +172,7 @@ def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
 
     settings = load_settings(write_config(tmp_path, payload))
 
-    assert settings.tasks["organization_pray"][0]["click_offset_y"] == 165
+    assert settings.tasks["organization_pray"][0]["button_template"] == "assets/go_now_button.png"
 
 
 @pytest.mark.parametrize(

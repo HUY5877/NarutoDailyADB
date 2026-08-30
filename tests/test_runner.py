@@ -184,15 +184,18 @@ def test_action_runner_dispatches_card_navigation():
     action = {
         "type": "find_card_and_click", "name": "组织祈福", "template": "organization.png",
         "left": 0, "top": 0, "right": 1920, "bottom": 1080, "threshold": 0.85,
-        "click_offset_x": 0, "click_offset_y": 165, "max_swipes": 6,
+        "button_template": "go_now.png", "button_threshold": 0.85,
+        "button_left_offset": -170, "button_top_offset": 80,
+        "button_right_offset": 170, "button_bottom_offset": 260, "max_swipes": 6,
         "swipe_x1": 1650, "swipe_y1": 550, "swipe_x2": 350, "swipe_y2": 550,
         "swipe_duration_ms": 500, "wait_seconds": 1,
     }
+    iter_results = iter([((562, 394), 0.99), ((548, 585), 0.98)])
 
     ActionRunner(
         client,
         sleep=lambda _: None,
-        template_matcher=lambda *args: ((562, 394), 0.99),
+        template_matcher=lambda *args: next(iter_results),
     ).run([action])
 
-    assert client.calls == [("tap", 562, 559)]
+    assert client.calls == [("tap", 548, 585)]
