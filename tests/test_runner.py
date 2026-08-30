@@ -185,12 +185,13 @@ def test_action_runner_dispatches_card_navigation():
         "type": "find_card_and_click", "name": "组织祈福", "template": "organization.png",
         "left": 0, "top": 0, "right": 1920, "bottom": 1080, "threshold": 0.85,
         "button_template": "go_now.png", "button_threshold": 0.85,
-        "button_left_offset": -170, "button_top_offset": 80,
-        "button_right_offset": 170, "button_bottom_offset": 260, "max_swipes": 6,
+        "completed_template": "completed.png", "completed_threshold": 0.90,
+        "button_left_offset": -140, "button_top_offset": 80,
+        "button_right_offset": 140, "button_bottom_offset": 260, "max_swipes": 6,
         "swipe_x1": 1650, "swipe_y1": 550, "swipe_x2": 350, "swipe_y2": 550,
         "swipe_duration_ms": 500, "wait_seconds": 1,
     }
-    iter_results = iter([((562, 394), 0.99), ((548, 585), 0.98)])
+    iter_results = iter([((562, 394), 0.99), (None, 0.20), ((548, 585), 0.98)])
 
     ActionRunner(
         client,
@@ -199,6 +200,32 @@ def test_action_runner_dispatches_card_navigation():
     ).run([action])
 
     assert client.calls == [("tap", 548, 585)]
+
+
+def test_completed_card_stops_following_prayer_actions(caplog):
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    action = {
+        "type": "find_card_and_click", "name": "组织祈福", "template": "organization.png",
+        "left": 0, "top": 0, "right": 1920, "bottom": 1080, "threshold": 0.85,
+        "button_template": "go_now.png", "button_threshold": 0.85,
+        "completed_template": "completed.png", "completed_threshold": 0.90,
+        "button_left_offset": -140, "button_top_offset": 80,
+        "button_right_offset": 140, "button_bottom_offset": 260, "max_swipes": 6,
+        "swipe_x1": 1650, "swipe_y1": 550, "swipe_x2": 350, "swipe_y2": 550,
+        "swipe_duration_ms": 500, "wait_seconds": 1,
+    }
+    results = iter([((1185, 424), 0.99), ((1185, 590), 0.98)])
+
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        ActionRunner(
+            client,
+            sleep=lambda _: None,
+            template_matcher=lambda *args: next(results),
+        ).run([action, {"type": "tap", "x": 1, "y": 2}])
+
+    assert client.calls == []
+    assert "跳过后续动作" in caplog.text
 
 
 def test_action_runner_dispatches_organization_prayer():

@@ -31,8 +31,10 @@ def card_action():
         "threshold": 0.85,
         "button_template": "go_now_button.png",
         "button_threshold": 0.85,
-        "button_left_offset": -170, "button_top_offset": 80,
-        "button_right_offset": 170, "button_bottom_offset": 260,
+        "completed_template": "completed_stamp.png",
+        "completed_threshold": 0.90,
+        "button_left_offset": -140, "button_top_offset": 80,
+        "button_right_offset": 140, "button_bottom_offset": 260,
         "max_swipes": 6,
         "swipe_x1": 1650, "swipe_y1": 550,
         "swipe_x2": 350, "swipe_y2": 550,
@@ -43,7 +45,7 @@ def card_action():
 
 def test_card_visible_now_clicks_corresponding_button_without_swiping(caplog):
     client = NavigationClient()
-    results = iter([((562, 394), 0.99), ((548, 585), 0.98)])
+    results = iter([((562, 394), 0.99), (None, 0.20), ((548, 585), 0.98)])
     regions = []
 
     def matcher(png, path, roi, threshold):
@@ -61,7 +63,8 @@ def test_card_visible_now_clicks_corresponding_button_without_swiping(caplog):
 
     assert client.taps == [(548, 585)]
     assert client.swipes == []
-    assert regions[1] == (392, 474, 732, 654)
+    assert regions[1] == (422, 474, 702, 654)
+    assert regions[2] == (422, 474, 702, 654)
     assert summary.swipes == 0
     assert "发现组织祈福" in caplog.text
     assert "发现对应的立刻前往" in caplog.text
@@ -69,7 +72,13 @@ def test_card_visible_now_clicks_corresponding_button_without_swiping(caplog):
 
 def test_card_after_two_pages_swipes_then_clicks():
     client = NavigationClient()
-    results = iter([(None, 0.20), (None, 0.30), ((562, 394), 0.97), ((560, 580), 0.96)])
+    results = iter([
+        (None, 0.20),
+        (None, 0.30),
+        ((562, 394), 0.97),
+        (None, 0.20),
+        ((560, 580), 0.96),
+    ])
     waits = []
 
     summary = navigate_to_card(
@@ -102,7 +111,7 @@ def test_card_missing_after_max_swipes_raises_without_clicking():
 
 def test_card_label_without_corresponding_button_raises_without_clicking():
     client = NavigationClient()
-    results = iter([((562, 394), 0.99), (None, 0.40)])
+    results = iter([((562, 394), 0.99), (None, 0.30), (None, 0.40)])
 
     with pytest.raises(VisualError, match="找到组织祈福，但未找到它下方的立刻前往"):
         navigate_to_card(
@@ -114,3 +123,27 @@ def test_card_label_without_corresponding_button_raises_without_clicking():
 
     assert client.taps == []
     assert client.swipes == []
+
+
+def test_completed_card_after_two_pages_stops_without_clicking(caplog):
+    client = NavigationClient()
+    results = iter([
+        (None, 0.20),
+        (None, 0.30),
+        ((1185, 424), 0.99),
+        ((1185, 590), 0.98),
+    ])
+
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        summary = navigate_to_card(
+            client,
+            card_action(),
+            template_matcher=lambda *args: next(results),
+            sleep=lambda _: None,
+        )
+
+    assert client.swipes == [(1650, 550, 350, 550, 500)] * 2
+    assert client.taps == []
+    assert summary.swipes == 2
+    assert summary.completed is True
+    assert "今日组织祈福已完成" in caplog.text

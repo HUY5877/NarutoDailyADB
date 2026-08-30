@@ -147,13 +147,16 @@ class ActionRunner:
                     sleep=self.sleep,
                 )
             elif action_type == "find_card_and_click":
-                navigate_to_card(
+                navigation = navigate_to_card(
                     self.client,
                     action,
                     template_matcher=self.template_matcher,
                     asset_root=self.asset_root,
                     sleep=self.sleep,
                 )
+                if navigation.completed:
+                    LOGGER.info("目标任务今日已完成，跳过后续动作")
+                    break
             elif action_type == "handle_organization_prayer":
                 handle_organization_prayer(
                     self.client,

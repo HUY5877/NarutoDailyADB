@@ -159,9 +159,11 @@ def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
         "threshold": 0.85,
         "button_template": "assets/go_now_button.png",
         "button_threshold": 0.85,
-        "button_left_offset": -170,
+        "completed_template": "assets/completed_stamp.png",
+        "completed_threshold": 0.90,
+        "button_left_offset": -140,
         "button_top_offset": 80,
-        "button_right_offset": 170,
+        "button_right_offset": 140,
         "button_bottom_offset": 260,
         "max_swipes": 6,
         "swipe_x1": 1650, "swipe_y1": 550,
@@ -173,6 +175,7 @@ def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
     settings = load_settings(write_config(tmp_path, payload))
 
     assert settings.tasks["organization_pray"][0]["button_template"] == "assets/go_now_button.png"
+    assert settings.tasks["organization_pray"][0]["completed_template"] == "assets/completed_stamp.png"
 
 
 def test_organization_prayer_action_accepts_reward_and_coin_targets(tmp_path):

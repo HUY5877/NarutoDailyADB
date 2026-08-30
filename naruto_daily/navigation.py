@@ -14,9 +14,10 @@ LOGGER = logging.getLogger("naruto_daily")
 
 @dataclass(frozen=True)
 class NavigationSummary:
-    """记录为找到目标卡片执行的横向滑动次数。"""
+    """记录横向滑动次数以及目标任务是否已经完成。"""
 
     swipes: int
+    completed: bool
 
 
 def navigate_to_card(
@@ -32,6 +33,7 @@ def navigate_to_card(
     name = action["name"]
     template_path = Path(asset_root) / action["template"]
     button_template_path = Path(asset_root) / action["button_template"]
+    completed_template_path = Path(asset_root) / action["completed_template"]
     roi = (action["left"], action["top"], action["right"], action["bottom"])
     threshold = float(action["threshold"])
     max_swipes = action["max_swipes"]
@@ -53,6 +55,20 @@ def navigate_to_card(
                 min(action["right"], center[0] + action["button_right_offset"]),
                 center[1] + action["button_bottom_offset"],
             )
+            completed_center, completed_score = template_matcher(
+                screenshot,
+                completed_template_path,
+                button_roi,
+                float(action["completed_threshold"]),
+            )
+            if completed_center is not None:
+                LOGGER.info(
+                    "今日%s已完成，相似度 %.3f，跳过执行",
+                    name,
+                    completed_score,
+                )
+                return NavigationSummary(swipes=swipe_count, completed=True)
+
             button_center, button_score = template_matcher(
                 screenshot,
                 button_template_path,
@@ -70,7 +86,7 @@ def navigate_to_card(
                 button_center[1],
             )
             client.tap(*button_center)
-            return NavigationSummary(swipes=swipe_count)
+            return NavigationSummary(swipes=swipe_count, completed=False)
 
         if swipe_count == max_swipes:
             raise VisualError(f"滑动 {max_swipes} 次后仍未找到{name}，最后相似度 {score:.3f}")

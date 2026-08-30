@@ -41,6 +41,7 @@ ACTION_KEYS = {
     "find_card_and_click": {
         "type", "name", "template", "left", "top", "right", "bottom", "threshold",
         "button_template", "button_threshold",
+        "completed_template", "completed_threshold",
         "button_left_offset", "button_top_offset", "button_right_offset", "button_bottom_offset",
         "max_swipes",
         "swipe_x1", "swipe_y1", "swipe_x2", "swipe_y2",
@@ -175,21 +176,22 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
         target = {key: action[key] for key in target_keys}
         _validate_template_target(target, width, height, context, require_name=True)
-        button_template = action["button_template"]
-        if (
-            not isinstance(button_template, str)
-            or not button_template.strip()
-            or Path(button_template).is_absolute()
-            or ".." in Path(button_template).parts
-        ):
-            raise ConfigError(f"{context} 的 button_template 必须是配置目录内的相对路径")
-        button_threshold = action["button_threshold"]
-        if (
-            not isinstance(button_threshold, (int, float))
-            or isinstance(button_threshold, bool)
-            or not 0 < button_threshold <= 1
-        ):
-            raise ConfigError(f"{context} 的 button_threshold 必须大于 0 且不超过 1")
+        for prefix in ("button", "completed"):
+            template = action[f"{prefix}_template"]
+            if (
+                not isinstance(template, str)
+                or not template.strip()
+                or Path(template).is_absolute()
+                or ".." in Path(template).parts
+            ):
+                raise ConfigError(f"{context} 的 {prefix}_template 必须是配置目录内的相对路径")
+            threshold = action[f"{prefix}_threshold"]
+            if (
+                not isinstance(threshold, (int, float))
+                or isinstance(threshold, bool)
+                or not 0 < threshold <= 1
+            ):
+                raise ConfigError(f"{context} 的 {prefix}_threshold 必须大于 0 且不超过 1")
         for key, limit in (
             ("button_left_offset", width), ("button_right_offset", width),
             ("button_top_offset", height), ("button_bottom_offset", height),
