@@ -77,3 +77,82 @@ def cleanup_popups(
 
     LOGGER.info("弹窗清理结束：执行 %d 轮，点击 %d 次", completed_rounds, click_count)
     return PopupCleanupSummary(completed_rounds, click_count)
+
+
+def return_to_main(
+    client: AdbClient,
+    action: dict,
+    *,
+    template_matcher: Callable = find_template_in_png,
+    asset_root: Path = Path("."),
+    sleep: Callable[[float], None] = time.sleep,
+) -> PopupCleanupSummary:
+    """逐层关闭带叉界面，直到连续多轮没有发现关闭按钮。"""
+
+    idle_count = 0
+    click_count = 0
+    completed_rounds = 0
+    target = action["close_target"]
+    template_path = Path(asset_root) / target["template"]
+    roi = (target["left"], target["top"], target["right"], target["bottom"])
+    threshold = float(target["threshold"])
+    pre_click_wait = float(action.get("pre_click_wait_seconds", 3))
+    post_click_wait = float(action.get("post_click_wait_seconds", 3))
+    poll_seconds = float(action["poll_seconds"])
+
+    for round_number in range(1, int(action["max_rounds"]) + 1):
+        completed_rounds = round_number
+        center, score = template_matcher(client.screenshot(), template_path, roi, threshold)
+        if center is None:
+            idle_count += 1
+            LOGGER.info(
+                "回主界面第 %d 轮：未发现关闭按钮，相似度 %.3f，连续空闲 %d/%d 轮",
+                round_number,
+                score,
+                idle_count,
+                int(action["idle_rounds"]),
+            )
+            if idle_count >= int(action["idle_rounds"]):
+                LOGGER.info("连续 %d 轮没有发现关闭按钮，已回到主界面", idle_count)
+                break
+            sleep(poll_seconds)
+            continue
+
+        LOGGER.info(
+            "回主界面第 %d 轮：发现关闭按钮，相似度 %.3f，点击前等待 %.2f 秒",
+            round_number,
+            score,
+            pre_click_wait,
+        )
+        sleep(pre_click_wait)
+        confirmed_center, confirmed_score = template_matcher(
+            client.screenshot(), template_path, roi, threshold
+        )
+        if confirmed_center is None:
+            LOGGER.info(
+                "等待后关闭按钮已消失，相似度 %.3f，本轮不点击旧坐标",
+                confirmed_score,
+            )
+            idle_count += 1
+            if idle_count >= int(action["idle_rounds"]):
+                LOGGER.info("连续 %d 轮没有发现关闭按钮，已回到主界面", idle_count)
+                break
+            sleep(poll_seconds)
+            continue
+
+        LOGGER.info(
+            "再次确认关闭按钮，相似度 %.3f，点击坐标：(%d, %d)",
+            confirmed_score,
+            confirmed_center[0],
+            confirmed_center[1],
+        )
+        client.tap(*confirmed_center)
+        click_count += 1
+        idle_count = 0
+        LOGGER.info("关闭一层界面后等待 %.2f 秒", post_click_wait)
+        sleep(post_click_wait)
+    else:
+        LOGGER.info("已达到最多 %d 轮回主界面检查", int(action["max_rounds"]))
+
+    LOGGER.info("回主界面结束：检查 %d 轮，点击关闭 %d 次", completed_rounds, click_count)
+    return PopupCleanupSummary(completed_rounds, click_count)

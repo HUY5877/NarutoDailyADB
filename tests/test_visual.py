@@ -84,3 +84,32 @@ def test_organization_prayer_label_rejects_ninja_recruit_card():
 
     assert center is None
     assert score < 0.6
+
+
+def test_coin_fortune_label_matches_task_card():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "coin_fortune_card.png").read_bytes()
+
+    center, score = find_template_in_png(
+        screenshot,
+        project_root / "assets" / "coin_fortune_label.png",
+        (0, 300, 373, 430),
+        0.85,
+    )
+
+    assert center == (187, 365)
+    assert score >= 0.99
+
+
+def test_free_fortune_template_matches_free_button_but_rejects_paid_button():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "coin_fortune_buttons.png").read_bytes()
+    template = project_root / "assets" / "free_fortune_once.png"
+
+    free_center, free_score = find_template_in_png(screenshot, template, (0, 0, 450, 188), 0.85)
+    paid_center, paid_score = find_template_in_png(screenshot, template, (450, 0, 809, 188), 0.85)
+
+    assert free_center == (252, 85)
+    assert free_score >= 0.99
+    assert paid_center is None
+    assert paid_score < 0.85

@@ -65,11 +65,21 @@ def test_adb_failure_aborts_remaining_actions():
     assert client.calls == []
 
 
-def test_runner_rejects_more_than_three_hundred_seconds():
-    with pytest.raises(ActionLimitError, match="300 秒"):
+def test_runner_accepts_combined_daily_flow_under_six_hundred_seconds():
+    summary = ActionRunner(RecordingClient(), sleep=lambda _: None, dry_run=True).run([
+        {"type": "wait", "seconds": 250},
+        {"type": "wait", "seconds": 251},
+    ])
+
+    assert summary.wait_seconds == 501
+
+
+def test_runner_rejects_more_than_six_hundred_seconds():
+    with pytest.raises(ActionLimitError, match="600 秒"):
         ActionRunner(RecordingClient(), sleep=lambda _: None).run([
-            {"type": "wait", "seconds": 200},
-            {"type": "wait", "seconds": 101},
+            {"type": "wait", "seconds": 300},
+            {"type": "wait", "seconds": 300},
+            {"type": "wait", "seconds": 1},
         ])
 
 
@@ -240,7 +250,10 @@ def test_action_runner_dispatches_card_navigation():
         "swipe_x1": 1650, "swipe_y1": 550, "swipe_x2": 350, "swipe_y2": 550,
         "swipe_duration_ms": 500, "wait_seconds": 1,
     }
-    iter_results = iter([((562, 394), 0.99), (None, 0.20), ((548, 585), 0.98)])
+    iter_results = iter([
+        ((562, 394), 0.99), (None, 0.20),
+        ((548, 585), 0.98), ((549, 586), 0.99),
+    ])
 
     ActionRunner(
         client,
@@ -248,7 +261,7 @@ def test_action_runner_dispatches_card_navigation():
         template_matcher=lambda *args: next(iter_results),
     ).run([action])
 
-    assert client.calls == [("tap", 548, 585)]
+    assert client.calls == [("tap", 549, 586)]
 
 
 def test_completed_card_skips_only_prayer_handler_and_keeps_later_tasks(caplog):
@@ -278,7 +291,7 @@ def test_completed_card_skips_only_prayer_handler_and_keeps_later_tasks(caplog):
         ])
 
     assert client.calls == [("tap", 1, 2)]
-    assert "跳过本次组织祈福页面处理" in caplog.text
+    assert "组织祈福今日已完成，跳过对应页面处理" in caplog.text
 
 
 def test_action_runner_dispatches_organization_prayer():
@@ -314,3 +327,86 @@ def test_action_runner_dispatches_organization_prayer():
     ).run([action])
 
     assert client.calls == [("tap", 866, 875)]
+
+
+def test_action_runner_dispatches_return_to_main():
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    action = {
+        "type": "return_to_main",
+        "max_rounds": 10, "idle_rounds": 2, "poll_seconds": 1,
+        "pre_click_wait_seconds": 3, "post_click_wait_seconds": 3,
+        "close_target": {
+            "name": "通用关闭按钮", "template": "close.png",
+            "left": 1700, "top": 0, "right": 1920, "bottom": 180,
+            "threshold": 0.78,
+        },
+    }
+    results = iter([
+        ((1834, 67), 0.92), ((1835, 68), 0.94),
+        (None, 0.30), (None, 0.25),
+    ])
+
+    ActionRunner(
+        client,
+        sleep=lambda _: None,
+        template_matcher=lambda *args: next(results),
+    ).run([action])
+
+    assert client.calls == [("tap", 1835, 68)]
+
+
+def test_action_runner_dispatches_two_free_fortune_clicks():
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    action = {
+        "type": "handle_coin_fortune",
+        "clicks": 2, "timeout_seconds": 20, "poll_seconds": 1,
+        "pre_click_wait_seconds": 3, "post_click_wait_seconds": 3,
+        "free_button": {
+            "name": "免费一次", "template": "free.png",
+            "left": 1000, "top": 700, "right": 1450, "bottom": 1050,
+            "threshold": 0.85,
+        },
+    }
+    results = iter([
+        ((1260, 850), 0.92), ((1262, 851), 0.95),
+        ((1261, 850), 0.93), ((1263, 852), 0.96),
+    ])
+
+    ActionRunner(
+        client,
+        sleep=lambda _: None,
+        template_matcher=lambda *args: next(results),
+    ).run([action])
+
+    assert client.calls == [("tap", 1262, 851), ("tap", 1263, 852)]
+
+
+def test_completed_fortune_card_skips_only_fortune_handler():
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    card = {
+        "type": "find_card_and_click", "name": "进行1次金币招财", "template": "fortune.png",
+        "left": 0, "top": 0, "right": 1920, "bottom": 1080, "threshold": 0.85,
+        "button_template": "go_now.png", "button_threshold": 0.85,
+        "completed_template": "completed.png", "completed_threshold": 0.90,
+        "button_left_offset": -140, "button_top_offset": 80,
+        "button_right_offset": 140, "button_bottom_offset": 260, "max_swipes": 6,
+        "swipe_x1": 1650, "swipe_y1": 550, "swipe_x2": 350, "swipe_y2": 550,
+        "swipe_duration_ms": 500, "wait_seconds": 1,
+        "completed_skip_type": "handle_coin_fortune",
+    }
+    results = iter([((1185, 424), 0.99), ((1185, 590), 0.98)])
+
+    ActionRunner(
+        client,
+        sleep=lambda _: None,
+        template_matcher=lambda *args: next(results),
+    ).run([
+        card,
+        {"type": "handle_coin_fortune"},
+        {"type": "tap", "x": 1, "y": 2},
+    ])
+
+    assert client.calls == [("tap", 1, 2)]

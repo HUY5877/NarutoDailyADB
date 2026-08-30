@@ -163,10 +163,105 @@ def test_old_click_actions_without_wait_fields_are_still_accepted(tmp_path):
             if action["type"] in {"required_template_tap", "finish_login_authorization"}:
                 action.pop("pre_click_wait_seconds")
                 action.pop("post_click_wait_seconds")
+                if action["type"] == "finish_login_authorization":
+                    action["second_authorization"] = {
+                        "name": "第二次授权页面",
+                        "template": "assets/qq_second_authorization_marker.png",
+                        "left": 0, "top": 200, "right": 1300, "bottom": 450,
+                        "threshold": 0.85,
+                        "click_x": 961, "click_y": 806,
+                    }
 
     settings = load_settings(write_config(tmp_path, payload))
 
     assert settings.tasks["login"][2].get("pre_click_wait_seconds") is None
+    second = settings.tasks["login"][4]["second_authorization"]
+    assert second == {
+        "name": "第二次授权同意按钮",
+        "template": "assets/qq_agree_game_info.png",
+        "left": 700, "top": 700, "right": 1220, "bottom": 930,
+        "threshold": 0.85,
+    }
+
+
+def test_return_to_main_accepts_ten_round_close_settings(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["login"] = [{
+        "type": "return_to_main",
+        "max_rounds": 10,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "close_target": {
+            "name": "通用关闭按钮",
+            "template": "assets/promo_close.png",
+            "left": 1700, "top": 0, "right": 1920, "bottom": 180,
+            "threshold": 0.78,
+        },
+    }]
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    assert settings.tasks["login"][0]["max_rounds"] == 10
+    assert settings.tasks["login"][0]["close_target"]["threshold"] == 0.78
+
+
+def test_coin_fortune_accepts_two_free_clicks_in_safe_region(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["organization_pray"] = [{
+        "type": "handle_coin_fortune",
+        "clicks": 2,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "free_button": {
+            "name": "免费一次",
+            "template": "assets/free_fortune_once.png",
+            "left": 1000, "top": 700, "right": 1450, "bottom": 1050,
+            "threshold": 0.85,
+        },
+    }]
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    action = settings.tasks["organization_pray"][0]
+    assert action["clicks"] == 2
+    assert action["free_button"]["right"] == 1450
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda action: action.update({"clicks": 1}), "必须固定为 2"),
+        (lambda action: action["free_button"].update({"right": 1750}), "免费招财搜索区域"),
+    ],
+)
+def test_coin_fortune_rejects_paid_button_risk(tmp_path, mutate, message):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    action = {
+        "type": "handle_coin_fortune",
+        "clicks": 2,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "free_button": {
+            "name": "免费一次",
+            "template": "assets/free_fortune_once.png",
+            "left": 1000, "top": 700, "right": 1450, "bottom": 1050,
+            "threshold": 0.85,
+        },
+    }
+    payload["tasks"]["organization_pray"] = [action]
+    mutate(action)
+
+    with pytest.raises(ConfigError, match=message):
+        load_settings(write_config(tmp_path, payload))
 
 
 def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
@@ -190,13 +285,18 @@ def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
         "swipe_x1": 1650, "swipe_y1": 550,
         "swipe_x2": 350, "swipe_y2": 550,
         "swipe_duration_ms": 500,
-        "wait_seconds": 1
+        "wait_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "completed_skip_type": "handle_organization_prayer",
     }]
 
     settings = load_settings(write_config(tmp_path, payload))
 
     assert settings.tasks["organization_pray"][0]["button_template"] == "assets/go_now_button.png"
     assert settings.tasks["organization_pray"][0]["completed_template"] == "assets/completed_stamp.png"
+    assert settings.tasks["organization_pray"][0]["completed_skip_type"] == "handle_organization_prayer"
+    assert settings.tasks["organization_pray"][0]["pre_click_wait_seconds"] == 3
 
 
 def test_organization_prayer_action_accepts_reward_and_coin_targets(tmp_path):
@@ -244,7 +344,10 @@ def test_organization_prayer_action_accepts_reward_and_coin_targets(tmp_path):
 def test_organization_prayer_rejects_unsafe_click_settings(tmp_path, mutate, message):
     project_root = Path(__file__).parents[1]
     payload = json.loads((project_root / "config.example.json").read_text(encoding="utf-8"))
-    action = payload["tasks"]["organization_pray"][-1]
+    action = next(
+        item for item in payload["tasks"]["organization_pray"]
+        if item["type"] == "handle_organization_prayer"
+    )
     mutate(action)
 
     with pytest.raises(ConfigError, match=message):

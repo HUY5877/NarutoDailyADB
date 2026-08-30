@@ -86,17 +86,25 @@
             "right": 1140,
             "bottom": 1000,
             "threshold": 0.85
-          },
-          {
-            "name": "推广弹窗关闭按钮",
-            "template": "assets/promo_close.png",
-            "left": 1700,
-            "top": 0,
-            "right": 1920,
-            "bottom": 180,
-            "threshold": 0.82
           }
         ]
+      },
+      {
+        "type": "return_to_main",
+        "max_rounds": 10,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1700,
+          "top": 0,
+          "right": 1920,
+          "bottom": 180,
+          "threshold": 0.78
+        }
       }
     ],
     "organization_pray": [
@@ -137,7 +145,10 @@
         "swipe_x2": 350,
         "swipe_y2": 550,
         "swipe_duration_ms": 500,
-        "wait_seconds": 1
+        "wait_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "completed_skip_type": "handle_organization_prayer"
       },
       {
         "type": "handle_organization_prayer",
@@ -181,6 +192,82 @@
           "top": 750,
           "right": 1100,
           "bottom": 1020,
+          "threshold": 0.85
+        }
+      },
+      {
+        "type": "return_to_main",
+        "max_rounds": 10,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1700,
+          "top": 0,
+          "right": 1920,
+          "bottom": 180,
+          "threshold": 0.78
+        }
+      },
+      {
+        "type": "required_template_tap",
+        "name": "奖励入口",
+        "template": "assets/reward_entry.png",
+        "left": 1700,
+        "top": 400,
+        "right": 1920,
+        "bottom": 700,
+        "threshold": 0.85,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3
+      },
+      {
+        "type": "find_card_and_click",
+        "name": "进行1次金币招财",
+        "template": "assets/coin_fortune_label.png",
+        "left": 0,
+        "top": 300,
+        "right": 1920,
+        "bottom": 560,
+        "threshold": 0.85,
+        "button_template": "assets/go_now_button.png",
+        "button_threshold": 0.85,
+        "completed_template": "assets/completed_stamp.png",
+        "completed_threshold": 0.9,
+        "button_left_offset": -150,
+        "button_top_offset": 90,
+        "button_right_offset": 150,
+        "button_bottom_offset": 280,
+        "max_swipes": 6,
+        "swipe_x1": 1650,
+        "swipe_y1": 550,
+        "swipe_x2": 350,
+        "swipe_y2": 550,
+        "swipe_duration_ms": 500,
+        "wait_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "completed_skip_type": "handle_coin_fortune"
+      },
+      {
+        "type": "handle_coin_fortune",
+        "clicks": 2,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "free_button": {
+          "name": "免费一次",
+          "template": "assets/free_fortune_once.png",
+          "left": 1000,
+          "top": 650,
+          "right": 1450,
+          "bottom": 1050,
           "threshold": 0.85
         }
       }

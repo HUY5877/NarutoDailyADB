@@ -40,13 +40,19 @@ def card_action():
         "swipe_x2": 350, "swipe_y2": 550,
         "swipe_duration_ms": 500,
         "wait_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
     }
 
 
 def test_card_visible_now_clicks_corresponding_button_without_swiping(caplog):
     client = NavigationClient()
-    results = iter([((562, 394), 0.99), (None, 0.20), ((548, 585), 0.98)])
+    results = iter([
+        ((562, 394), 0.99), (None, 0.20),
+        ((548, 585), 0.98), ((549, 586), 0.99),
+    ])
     regions = []
+    waits = []
 
     def matcher(png, path, roi, threshold):
         regions.append(roi)
@@ -58,13 +64,15 @@ def test_card_visible_now_clicks_corresponding_button_without_swiping(caplog):
             card_action(),
             template_matcher=matcher,
             asset_root=Path("assets"),
-            sleep=lambda _: None,
+            sleep=waits.append,
         )
 
-    assert client.taps == [(548, 585)]
+    assert client.taps == [(549, 586)]
     assert client.swipes == []
     assert regions[1] == (422, 474, 702, 654)
     assert regions[2] == (422, 474, 702, 654)
+    assert regions[3] == (422, 474, 702, 654)
+    assert waits == [3.0, 3.0]
     assert summary.swipes == 0
     assert "发现组织祈福" in caplog.text
     assert "发现对应的立刻前往" in caplog.text
@@ -78,6 +86,7 @@ def test_card_after_two_pages_swipes_then_clicks():
         ((562, 394), 0.97),
         (None, 0.20),
         ((560, 580), 0.96),
+        ((561, 581), 0.98),
     ])
     waits = []
 
@@ -89,8 +98,8 @@ def test_card_after_two_pages_swipes_then_clicks():
     )
 
     assert client.swipes == [(1650, 550, 350, 550, 500)] * 2
-    assert waits == [1.0, 1.0]
-    assert client.taps == [(560, 580)]
+    assert waits == [1.0, 1.0, 3.0, 3.0]
+    assert client.taps == [(561, 581)]
     assert summary.swipes == 2
 
 
@@ -123,6 +132,24 @@ def test_card_label_without_corresponding_button_raises_without_clicking():
 
     assert client.taps == []
     assert client.swipes == []
+
+
+def test_card_button_disappearing_during_pre_wait_does_not_click_old_coordinate():
+    client = NavigationClient()
+    results = iter([
+        ((562, 394), 0.99), (None, 0.30),
+        ((548, 585), 0.98), (None, 0.40),
+    ])
+
+    with pytest.raises(VisualError, match="点击前等待后已消失"):
+        navigate_to_card(
+            client,
+            card_action(),
+            template_matcher=lambda *args: next(results),
+            sleep=lambda _: None,
+        )
+
+    assert client.taps == []
 
 
 def test_completed_card_after_two_pages_stops_without_clicking(caplog):

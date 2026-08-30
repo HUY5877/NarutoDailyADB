@@ -80,12 +80,34 @@ def navigate_to_card(
                     f"找到{name}，但未找到它下方的立刻前往，最后相似度 {button_score:.3f}"
                 )
             LOGGER.info(
-                "发现对应的立刻前往，相似度 %.3f，点击坐标：(%d, %d)",
+                "发现对应的立刻前往，相似度 %.3f，点击前等待 %.2f 秒",
                 button_score,
-                button_center[0],
-                button_center[1],
+                float(action.get("pre_click_wait_seconds", 3)),
             )
-            client.tap(*button_center)
+            sleep(float(action.get("pre_click_wait_seconds", 3)))
+            confirmed_center, confirmed_score = template_matcher(
+                client.screenshot(),
+                button_template_path,
+                button_roi,
+                float(action["button_threshold"]),
+            )
+            if confirmed_center is None:
+                raise VisualError(
+                    f"找到{name}的立刻前往，但点击前等待后已消失，"
+                    f"最后相似度 {confirmed_score:.3f}"
+                )
+            LOGGER.info(
+                "再次确认对应的立刻前往，相似度 %.3f，点击坐标：(%d, %d)",
+                confirmed_score,
+                confirmed_center[0],
+                confirmed_center[1],
+            )
+            client.tap(*confirmed_center)
+            LOGGER.info(
+                "点击立刻前往后等待页面响应 %.2f 秒",
+                float(action.get("post_click_wait_seconds", 3)),
+            )
+            sleep(float(action.get("post_click_wait_seconds", 3)))
             return NavigationSummary(swipes=swipe_count, completed=False)
 
         if swipe_count == max_swipes:

@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from naruto_daily.popup import cleanup_popups
+from naruto_daily.popup import cleanup_popups, return_to_main
 
 
 class ScreenshotClient:
@@ -81,3 +81,42 @@ def test_action_runner_dispatches_popup_cleanup():
     runner.run([popup_action()])
 
     assert client.taps == [(957, 907)]
+
+
+def test_return_to_main_closes_nested_pages_and_stops_after_two_idle_rounds(caplog):
+    client = ScreenshotClient()
+    results = iter([
+        ((1834, 67), 0.92), ((1835, 68), 0.94),
+        ((1828, 72), 0.91), ((1829, 71), 0.93),
+        (None, 0.31),
+        (None, 0.28),
+    ])
+    waits = []
+    action = {
+        "type": "return_to_main",
+        "max_rounds": 10,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "close_target": {
+            "name": "通用关闭按钮", "template": "close.png",
+            "left": 1700, "top": 0, "right": 1920, "bottom": 180,
+            "threshold": 0.78,
+        },
+    }
+
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        summary = return_to_main(
+            client,
+            action,
+            template_matcher=lambda *args: next(results),
+            asset_root=Path("assets"),
+            sleep=waits.append,
+        )
+
+    assert client.taps == [(1835, 68), (1829, 71)]
+    assert waits == [3.0, 3.0, 3.0, 3.0, 1.0]
+    assert summary.rounds == 4
+    assert summary.clicks == 2
+    assert "连续 2 轮没有发现关闭按钮，已回到主界面" in caplog.text

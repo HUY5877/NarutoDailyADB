@@ -8,10 +8,11 @@ from typing import Callable, Sequence
 
 from .adb_client import AdbClient
 from .visual import VisualError, find_template_in_png
-from .popup import cleanup_popups
+from .popup import cleanup_popups, return_to_main
 from .authorization import finish_login_authorization
 from .navigation import navigate_to_card
 from .prayer import handle_organization_prayer
+from .fortune import handle_coin_fortune
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -22,10 +23,12 @@ ACTION_NAMES = {
     "wait": "等待",
     "optional_template_tap": "识别后点击",
     "popup_cleanup": "循环清理弹窗",
+    "return_to_main": "逐层关闭界面并返回主界面",
     "required_template_tap": "等待识别后点击",
     "finish_login_authorization": "处理可选第二次授权",
     "find_card_and_click": "横向查找任务卡片",
     "handle_organization_prayer": "领取昨日奖励并执行铜币祈福",
+    "handle_coin_fortune": "执行两次免费招财",
 }
 
 
@@ -62,6 +65,12 @@ class ActionRunner:
             if action.get("type") == "wait"
             else float(action.get("rounds", 0)) * len(action.get("targets", [])) * float(action.get("wait_seconds", 0))
             if action.get("type") == "popup_cleanup"
+            else float(action.get("max_rounds", 0)) * (
+                float(action.get("poll_seconds", 0))
+                + float(action.get("pre_click_wait_seconds", 3))
+                + float(action.get("post_click_wait_seconds", 3))
+            )
+            if action.get("type") == "return_to_main"
             else float(action.get("timeout_seconds", 0))
             + float(action.get("pre_click_wait_seconds", 3))
             + float(action.get("post_click_wait_seconds", 3))
@@ -73,27 +82,41 @@ class ActionRunner:
             )
             if action.get("type") == "finish_login_authorization"
             else float(action.get("max_swipes", 0)) * float(action.get("wait_seconds", 0))
+            + float(action.get("pre_click_wait_seconds", 3))
+            + float(action.get("post_click_wait_seconds", 3))
             if action.get("type") == "find_card_and_click"
             else 3 * float(action.get("timeout_seconds", 0))
             + (float(action.get("max_claims", 0)) + 2) * float(action.get("wait_seconds", 0))
             if action.get("type") == "handle_organization_prayer"
+            else float(action.get("clicks", 0)) * (
+                float(action.get("timeout_seconds", 0))
+                + float(action.get("pre_click_wait_seconds", 3))
+                + float(action.get("post_click_wait_seconds", 3))
+            )
+            if action.get("type") == "handle_coin_fortune"
             else 0.0
             for action in actions
         )
-        if wait_seconds > 300:
-            raise ActionLimitError("动作序列等待时间超过 300 秒")
+        if wait_seconds > 600:
+            raise ActionLimitError("动作序列等待时间超过 600 秒")
         LOGGER.info("开始执行，共 %d 个动作", len(actions))
-        skip_prayer_handler = False
+        skip_action_type: str | None = None
+        completed_card_name = ""
         for index, action in enumerate(actions, start=1):
             LOGGER.info("动作 %d/%d：%s", index, len(actions), ACTION_NAMES.get(action["type"], "未知动作"))
             if self.dry_run:
                 LOGGER.info("模拟运行，不发送输入")
                 continue
             action_type = action["type"]
-            if skip_prayer_handler and action_type == "handle_organization_prayer":
-                LOGGER.info("组织祈福今日已完成，跳过本次组织祈福页面处理")
-                skip_prayer_handler = False
-                continue
+            if skip_action_type is not None:
+                if action_type == skip_action_type:
+                    LOGGER.info("%s今日已完成，跳过对应页面处理", completed_card_name)
+                    skip_action_type = None
+                    completed_card_name = ""
+                    continue
+                LOGGER.info("已完成任务后未紧跟对应处理动作，不继续保留跳过标记")
+                skip_action_type = None
+                completed_card_name = ""
             if action_type == "tap":
                 LOGGER.info("点击坐标：(%d, %d)", action["x"], action["y"])
                 self.client.tap(action["x"], action["y"])
@@ -119,6 +142,14 @@ class ActionRunner:
                     self.client.tap(*center)
             elif action_type == "popup_cleanup":
                 cleanup_popups(
+                    self.client,
+                    action,
+                    template_matcher=self.template_matcher,
+                    asset_root=self.asset_root,
+                    sleep=self.sleep,
+                )
+            elif action_type == "return_to_main":
+                return_to_main(
                     self.client,
                     action,
                     template_matcher=self.template_matcher,
@@ -190,9 +221,18 @@ class ActionRunner:
                     sleep=self.sleep,
                 )
                 if navigation.completed:
-                    skip_prayer_handler = True
+                    skip_action_type = action.get("completed_skip_type", "handle_organization_prayer")
+                    completed_card_name = action["name"]
             elif action_type == "handle_organization_prayer":
                 handle_organization_prayer(
+                    self.client,
+                    action,
+                    template_matcher=self.template_matcher,
+                    asset_root=self.asset_root,
+                    sleep=self.sleep,
+                )
+            elif action_type == "handle_coin_fortune":
+                handle_coin_fortune(
                     self.client,
                     action,
                     template_matcher=self.template_matcher,

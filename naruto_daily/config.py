@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+LOGGER = logging.getLogger("naruto_daily")
 
 
 class ConfigError(ValueError):
@@ -34,6 +38,10 @@ ACTION_KEYS = {
     "back": {"type"},
     "optional_template_tap": {"type", "template", "left", "top", "right", "bottom", "threshold"},
     "popup_cleanup": {"type", "rounds", "idle_rounds", "wait_seconds", "targets"},
+    "return_to_main": {
+        "type", "max_rounds", "idle_rounds", "poll_seconds",
+        "pre_click_wait_seconds", "post_click_wait_seconds", "close_target",
+    },
     "required_template_tap": {
         "type", "name", "template", "left", "top", "right", "bottom", "threshold",
         "timeout_seconds", "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds",
@@ -49,11 +57,16 @@ ACTION_KEYS = {
         "button_left_offset", "button_top_offset", "button_right_offset", "button_bottom_offset",
         "max_swipes",
         "swipe_x1", "swipe_y1", "swipe_x2", "swipe_y2",
-        "swipe_duration_ms", "wait_seconds",
+        "swipe_duration_ms", "wait_seconds", "pre_click_wait_seconds",
+        "post_click_wait_seconds", "completed_skip_type",
     },
     "handle_organization_prayer": {
         "type", "timeout_seconds", "poll_seconds", "wait_seconds", "max_claims",
         "dismiss_x", "dismiss_y", "yesterday_reward", "panel_marker", "claim_button", "coin_prayer",
+    },
+    "handle_coin_fortune": {
+        "type", "clicks", "timeout_seconds", "poll_seconds",
+        "pre_click_wait_seconds", "post_click_wait_seconds", "free_button",
     },
 }
 CLICK_WAIT_KEYS = {"pre_click_wait_seconds", "post_click_wait_seconds"}
@@ -103,13 +116,60 @@ def _validate_template_target(target: Any, width: int, height: int, context: str
         raise ConfigError(f"{context} 的 threshold 必须大于 0 且不超过 1")
 
 
+def _validate_click_waits(action: dict, context: str) -> tuple[float, float]:
+    pre_wait = action.get("pre_click_wait_seconds", 3)
+    post_wait = action.get("post_click_wait_seconds", 3)
+    for key, value in (("pre_click_wait_seconds", pre_wait), ("post_click_wait_seconds", post_wait)):
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 10:
+            raise ConfigError(f"{context} 的 {key} 必须在 0 到 10 之间")
+    return float(pre_wait), float(post_wait)
+
+
+def _normalize_action(action: Any) -> Any:
+    """把已发布的旧授权坐标结构迁移为按钮模板结构。"""
+
+    if not isinstance(action, dict) or action.get("type") != "finish_login_authorization":
+        return action
+    second = action.get("second_authorization")
+    if not isinstance(second, dict):
+        return action
+    template = second.get("template")
+    if (
+        not isinstance(template, str)
+        or Path(template).name != "qq_second_authorization_marker.png"
+        or not {"click_x", "click_y"}.issubset(second)
+    ):
+        return action
+
+    normalized = dict(action)
+    new_template = Path(template).with_name("qq_agree_game_info.png").as_posix()
+    normalized["second_authorization"] = {
+        "name": "第二次授权同意按钮",
+        "template": new_template,
+        "left": 700,
+        "top": 700,
+        "right": 1220,
+        "bottom": 930,
+        "threshold": second.get("threshold", 0.85),
+    }
+    LOGGER.info("检测到旧版第二次授权配置，已迁移为按钮模板识别")
+    return normalized
+
+
 def _validate_action(action: Any, width: int, height: int, context: str) -> float:
     if not isinstance(action, dict) or not isinstance(action.get("type"), str):
         raise ConfigError(f"{context} 必须是包含 type 的动作对象")
     action_type = action["type"]
     if action_type not in ACTION_KEYS:
         raise ConfigError(f"{context} 包含不支持的动作：{action_type!r}")
-    optional_keys = CLICK_WAIT_KEYS if action_type in {"required_template_tap", "finish_login_authorization"} else set()
+    if action_type in {
+        "required_template_tap", "finish_login_authorization", "return_to_main", "handle_coin_fortune",
+    }:
+        optional_keys = CLICK_WAIT_KEYS
+    elif action_type == "find_card_and_click":
+        optional_keys = {"completed_skip_type"} | CLICK_WAIT_KEYS
+    else:
+        optional_keys = set()
     _require_exact_keys(action, ACTION_KEYS[action_type], context, optional_keys)
     if action_type == "tap":
         _coordinate(action["x"], width, context)
@@ -145,6 +205,29 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         for index, target in enumerate(targets):
             _validate_template_target(target, width, height, f"{context}.targets[{index}]", require_name=True)
         return float(rounds * len(targets) * wait_seconds)
+    elif action_type == "return_to_main":
+        max_rounds = action["max_rounds"]
+        idle_rounds = action["idle_rounds"]
+        poll_seconds = action["poll_seconds"]
+        if not isinstance(max_rounds, int) or isinstance(max_rounds, bool) or not 1 <= max_rounds <= 10:
+            raise ConfigError(f"{context} 的 max_rounds 必须在 1 到 10 之间")
+        if not isinstance(idle_rounds, int) or isinstance(idle_rounds, bool) or not 1 <= idle_rounds <= max_rounds:
+            raise ConfigError(f"{context} 的 idle_rounds 必须在 1 到 max_rounds 之间")
+        if not isinstance(poll_seconds, (int, float)) or isinstance(poll_seconds, bool) or not 0.2 <= poll_seconds <= 5:
+            raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
+        pre_wait, post_wait = _validate_click_waits(action, context)
+        close_target = action["close_target"]
+        _validate_template_target(close_target, width, height, f"{context}.close_target", require_name=True)
+        if not (
+            close_target["left"] >= 1500
+            and close_target["top"] <= 200
+            and close_target["right"] <= width
+            and close_target["bottom"] <= 300
+        ):
+            raise ConfigError(f"{context} 的关闭按钮搜索区域必须限制在右上角")
+        if close_target["threshold"] < 0.70:
+            raise ConfigError(f"{context} 的关闭按钮阈值不能低于 0.70")
+        return float(max_rounds * (poll_seconds + pre_wait + post_wait))
     elif action_type == "required_template_tap":
         target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
         target = {key: action[key] for key in target_keys}
@@ -157,11 +240,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
         if poll_seconds > timeout_seconds:
             raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
-        pre_wait = action.get("pre_click_wait_seconds", 3)
-        post_wait = action.get("post_click_wait_seconds", 3)
-        for key, value in (("pre_click_wait_seconds", pre_wait), ("post_click_wait_seconds", post_wait)):
-            if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 10:
-                raise ConfigError(f"{context} 的 {key} 必须在 0 到 10 之间")
+        pre_wait, post_wait = _validate_click_waits(action, context)
         return float(timeout_seconds + pre_wait + post_wait)
     elif action_type == "finish_login_authorization":
         timeout_seconds = action["timeout_seconds"]
@@ -172,11 +251,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
         if poll_seconds > timeout_seconds:
             raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
-        pre_wait = action.get("pre_click_wait_seconds", 3)
-        post_wait = action.get("post_click_wait_seconds", 3)
-        for key, value in (("pre_click_wait_seconds", pre_wait), ("post_click_wait_seconds", post_wait)):
-            if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 10:
-                raise ConfigError(f"{context} 的 {key} 必须在 0 到 10 之间")
+        pre_wait, post_wait = _validate_click_waits(action, context)
 
         second = action["second_authorization"]
         if not isinstance(second, dict):
@@ -236,7 +311,11 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         wait_seconds = action["wait_seconds"]
         if not isinstance(wait_seconds, (int, float)) or isinstance(wait_seconds, bool) or not 0 <= wait_seconds <= 10:
             raise ConfigError(f"{context} 的 wait_seconds 必须在 0 到 10 之间")
-        return float(max_swipes * wait_seconds)
+        pre_wait, post_wait = _validate_click_waits(action, context)
+        completed_skip_type = action.get("completed_skip_type", "handle_organization_prayer")
+        if completed_skip_type not in {"handle_organization_prayer", "handle_coin_fortune"}:
+            raise ConfigError(f"{context} 的 completed_skip_type 不是允许的页面处理动作")
+        return float(max_swipes * wait_seconds + pre_wait + post_wait)
     elif action_type == "handle_organization_prayer":
         timeout_seconds = action["timeout_seconds"]
         poll_seconds = action["poll_seconds"]
@@ -269,6 +348,31 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         if not (1200 <= action["dismiss_x"] <= 1700 and 100 <= action["dismiss_y"] <= 400):
             raise ConfigError(f"{context} 的奖励关闭坐标必须位于右上安全空白区域")
         return float(3 * timeout_seconds + (max_claims + 2) * wait_seconds)
+    elif action_type == "handle_coin_fortune":
+        clicks = action["clicks"]
+        timeout_seconds = action["timeout_seconds"]
+        poll_seconds = action["poll_seconds"]
+        if clicks != 2 or isinstance(clicks, bool):
+            raise ConfigError(f"{context} 的 clicks 必须固定为 2")
+        if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or not 1 <= timeout_seconds <= 60:
+            raise ConfigError(f"{context} 的 timeout_seconds 必须在 1 到 60 之间")
+        if not isinstance(poll_seconds, (int, float)) or isinstance(poll_seconds, bool) or not 0.2 <= poll_seconds <= 5:
+            raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
+        if poll_seconds > timeout_seconds:
+            raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
+        pre_wait, post_wait = _validate_click_waits(action, context)
+        free_button = action["free_button"]
+        _validate_template_target(free_button, width, height, f"{context}.free_button", require_name=True)
+        if not (
+            free_button["left"] >= 800
+            and free_button["top"] >= 650
+            and free_button["right"] <= 1500
+            and free_button["bottom"] <= height
+        ):
+            raise ConfigError(f"{context} 的免费招财搜索区域必须限制在底部中间安全区域")
+        if free_button["threshold"] < 0.80:
+            raise ConfigError(f"{context} 的免费招财阈值不能低于 0.80")
+        return float(clicks * (timeout_seconds + pre_wait + post_wait))
     return 0.0
 
 
@@ -299,10 +403,14 @@ def load_settings(path: Path) -> Settings:
             raise ConfigError(f"任务 {task_name} 必须是列表")
         if len(actions) > 100:
             raise ConfigError(f"任务 {task_name} 超过 100 个动作")
-        total_wait = sum(_validate_action(action, width, height, f"{task_name}[{index}]") for index, action in enumerate(actions))
+        normalized_actions = [_normalize_action(action) for action in actions]
+        total_wait = sum(
+            _validate_action(action, width, height, f"{task_name}[{index}]")
+            for index, action in enumerate(normalized_actions)
+        )
         if total_wait > 300:
             raise ConfigError(f"任务 {task_name} 超过 300 秒")
-        validated[task_name] = actions
+        validated[task_name] = normalized_actions
     serial = payload["serial"]
     if serial is not None and (not isinstance(serial, str) or not serial.strip()):
         raise ConfigError("serial 必须是 null 或非空字符串")
