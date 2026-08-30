@@ -237,6 +237,18 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         _coordinate(action["dismiss_y"], height, context)
         for key in ("yesterday_reward", "panel_marker", "claim_button", "coin_prayer"):
             _validate_template_target(action[key], width, height, f"{context}.{key}", require_name=True)
+        coin_prayer = action["coin_prayer"]
+        if not (
+            coin_prayer["left"] >= 500
+            and coin_prayer["top"] >= 650
+            and coin_prayer["right"] <= 1100
+            and coin_prayer["bottom"] <= height
+        ):
+            raise ConfigError(f"{context} 的铜币祈福搜索区域必须限制在左下安全区域")
+        if coin_prayer["threshold"] < 0.80:
+            raise ConfigError(f"{context} 的铜币祈福阈值不能低于 0.80")
+        if not (1200 <= action["dismiss_x"] <= 1700 and 100 <= action["dismiss_y"] <= 400):
+            raise ConfigError(f"{context} 的奖励关闭坐标必须位于右上安全空白区域")
         return float(3 * timeout_seconds + (max_claims + 2) * wait_seconds)
     return 0.0
 

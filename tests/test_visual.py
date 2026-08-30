@@ -54,3 +54,18 @@ def test_transparent_template_ignores_popup_background(tmp_path):
 
     assert center == (102, 62)
     assert score >= 0.99
+
+
+def test_claim_template_rejects_unreached_reward():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "prayer_unreached.png").read_bytes()
+
+    center, score = find_template_in_png(
+        screenshot,
+        project_root / "assets" / "prayer_claim.png",
+        (0, 0, 341, 255),
+        0.85,
+    )
+
+    assert center is None
+    assert score < 0.5

@@ -215,6 +215,24 @@ def test_organization_prayer_action_accepts_reward_and_coin_targets(tmp_path):
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
+        (lambda action: action["coin_prayer"].update({"right": 1500}), "铜币祈福搜索区域"),
+        (lambda action: action["coin_prayer"].update({"threshold": 0.40}), "铜币祈福阈值"),
+        (lambda action: action.update({"dismiss_x": 900}), "奖励关闭坐标"),
+    ],
+)
+def test_organization_prayer_rejects_unsafe_click_settings(tmp_path, mutate, message):
+    project_root = Path(__file__).parents[1]
+    payload = json.loads((project_root / "config.example.json").read_text(encoding="utf-8"))
+    action = payload["tasks"]["organization_pray"][-1]
+    mutate(action)
+
+    with pytest.raises(ConfigError, match=message):
+        load_settings(write_config(tmp_path, payload))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
         (lambda p: p["screen"].update(width=0), "screen width"),
         (lambda p: p["tasks"]["sign_in"][0].update(x=-1), "坐标"),
         (lambda p: p["tasks"]["sign_in"][0].update(x=1280), "坐标"),
