@@ -202,7 +202,7 @@ def test_action_runner_dispatches_card_navigation():
     assert client.calls == [("tap", 548, 585)]
 
 
-def test_completed_card_stops_following_prayer_actions(caplog):
+def test_completed_card_skips_only_prayer_handler_and_keeps_later_tasks(caplog):
     client = RecordingClient()
     client.screenshot = lambda: b"screen"
     action = {
@@ -222,10 +222,14 @@ def test_completed_card_stops_following_prayer_actions(caplog):
             client,
             sleep=lambda _: None,
             template_matcher=lambda *args: next(results),
-        ).run([action, {"type": "tap", "x": 1, "y": 2}])
+        ).run([
+            action,
+            {"type": "handle_organization_prayer"},
+            {"type": "tap", "x": 1, "y": 2},
+        ])
 
-    assert client.calls == []
-    assert "跳过后续动作" in caplog.text
+    assert client.calls == [("tap", 1, 2)]
+    assert "跳过本次组织祈福页面处理" in caplog.text
 
 
 def test_action_runner_dispatches_organization_prayer():

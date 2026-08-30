@@ -75,12 +75,17 @@ class ActionRunner:
         if wait_seconds > 300:
             raise ActionLimitError("动作序列等待时间超过 300 秒")
         LOGGER.info("开始执行，共 %d 个动作", len(actions))
+        skip_prayer_handler = False
         for index, action in enumerate(actions, start=1):
             LOGGER.info("动作 %d/%d：%s", index, len(actions), ACTION_NAMES.get(action["type"], "未知动作"))
             if self.dry_run:
                 LOGGER.info("模拟运行，不发送输入")
                 continue
             action_type = action["type"]
+            if skip_prayer_handler and action_type == "handle_organization_prayer":
+                LOGGER.info("组织祈福今日已完成，跳过本次组织祈福页面处理")
+                skip_prayer_handler = False
+                continue
             if action_type == "tap":
                 LOGGER.info("点击坐标：(%d, %d)", action["x"], action["y"])
                 self.client.tap(action["x"], action["y"])
@@ -155,8 +160,7 @@ class ActionRunner:
                     sleep=self.sleep,
                 )
                 if navigation.completed:
-                    LOGGER.info("目标任务今日已完成，跳过后续动作")
-                    break
+                    skip_prayer_handler = True
             elif action_type == "handle_organization_prayer":
                 handle_organization_prayer(
                     self.client,
