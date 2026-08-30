@@ -35,12 +35,14 @@ def finish_login_authorization(
     """兼容一次授权和两次授权，并最终点击开始游戏。"""
     timeout_seconds = float(action["timeout_seconds"])
     poll_seconds = float(action["poll_seconds"])
-    pre_click_wait_seconds = float(action["pre_click_wait_seconds"])
-    post_click_wait_seconds = float(action["post_click_wait_seconds"])
+    pre_click_wait_seconds = float(action.get("pre_click_wait_seconds", 3))
+    post_click_wait_seconds = float(action.get("post_click_wait_seconds", 3))
     elapsed = 0.0
     used_second_authorization = False
 
     while True:
+        if elapsed >= timeout_seconds:
+            raise VisualError("等待授权完成页面超时")
         start_center, start_score = _match_target(
             client, action["start_game"], template_matcher, Path(asset_root)
         )
@@ -51,6 +53,7 @@ def finish_login_authorization(
                 LOGGER.info("无需第二次授权，直接发现开始游戏按钮，相似度 %.3f", start_score)
             LOGGER.info("点击开始游戏前等待 %.2f 秒", pre_click_wait_seconds)
             sleep(pre_click_wait_seconds)
+            elapsed += pre_click_wait_seconds
             confirmed_center, confirmed_score = _match_target(
                 client, action["start_game"], template_matcher, Path(asset_root)
             )
@@ -84,18 +87,23 @@ def finish_login_authorization(
                 LOGGER.info("发现第二次授权页面，相似度 %.3f", second_score)
                 LOGGER.info("点击第二次授权前等待 %.2f 秒", pre_click_wait_seconds)
                 sleep(pre_click_wait_seconds)
+                elapsed += pre_click_wait_seconds
                 confirmed_center, confirmed_score = _match_target(
                     client, action["second_authorization"], template_matcher, Path(asset_root)
                 )
                 if confirmed_center is None:
                     LOGGER.info("等待后第二次授权页面已消失，相似度 %.3f，继续识别", confirmed_score)
                 else:
-                    click_x = action["second_authorization"]["click_x"]
-                    click_y = action["second_authorization"]["click_y"]
-                    LOGGER.info("再次确认第二次授权页面，点击同意坐标：(%d, %d)", click_x, click_y)
-                    client.tap(click_x, click_y)
+                    LOGGER.info(
+                        "再次确认第二次授权同意按钮，相似度 %.3f，点击坐标：(%d, %d)",
+                        confirmed_score,
+                        confirmed_center[0],
+                        confirmed_center[1],
+                    )
+                    client.tap(*confirmed_center)
                     LOGGER.info("点击完成，等待 %.2f 秒让页面响应", post_click_wait_seconds)
                     sleep(post_click_wait_seconds)
+                    elapsed += post_click_wait_seconds
                     used_second_authorization = True
                     continue
 

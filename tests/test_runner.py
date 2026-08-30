@@ -159,6 +159,44 @@ def test_required_template_tap_times_out_and_stops_following_actions():
     assert client.calls == []
 
 
+def test_old_required_action_uses_three_second_defaults():
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    action = required_action()
+    action.pop("pre_click_wait_seconds")
+    action.pop("post_click_wait_seconds")
+    waits = []
+
+    ActionRunner(
+        client,
+        sleep=waits.append,
+        template_matcher=lambda *args: ((961, 910), 0.99),
+    ).run([action])
+
+    assert client.calls == [("tap", 961, 910)]
+    assert waits == [3.0, 3.0]
+
+
+def test_repeated_unstable_required_button_respects_timeout():
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    checks = 0
+    waits = []
+
+    def matcher(*args):
+        nonlocal checks
+        checks += 1
+        if checks % 2 == 1:
+            return (961, 910), 0.99
+        return None, 0.20
+
+    with pytest.raises(VisualError, match="超时"):
+        ActionRunner(client, sleep=waits.append, template_matcher=matcher).run([required_action()])
+
+    assert client.calls == []
+    assert waits == [3.0]
+
+
 def test_action_runner_dispatches_optional_second_authorization():
     client = RecordingClient()
     client.screenshot = lambda: b"screen"
@@ -169,9 +207,9 @@ def test_action_runner_dispatches_optional_second_authorization():
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 3,
         "second_authorization": {
-            "name": "第二次授权页面", "template": "second.png",
-            "left": 0, "top": 200, "right": 1300, "bottom": 450,
-            "threshold": 0.85, "click_x": 961, "click_y": 806,
+            "name": "第二次授权同意按钮", "template": "second.png",
+            "left": 700, "top": 700, "right": 1220, "bottom": 930,
+            "threshold": 0.85,
         },
         "start_game": {
             "name": "开始游戏按钮", "template": "start.png",

@@ -44,15 +44,13 @@
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 3,
         "second_authorization": {
-          "name": "第二次授权页面",
-          "template": "assets/qq_second_authorization_marker.png",
-          "left": 0,
-          "top": 200,
-          "right": 1300,
-          "bottom": 450,
-          "threshold": 0.85,
-          "click_x": 961,
-          "click_y": 806
+          "name": "第二次授权同意按钮",
+          "template": "assets/qq_agree_game_info.png",
+          "left": 700,
+          "top": 700,
+          "right": 1220,
+          "bottom": 930,
+          "threshold": 0.85
         },
         "start_game": {
           "name": "开始游戏按钮",

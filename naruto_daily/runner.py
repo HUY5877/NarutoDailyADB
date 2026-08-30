@@ -63,13 +63,13 @@ class ActionRunner:
             else float(action.get("rounds", 0)) * len(action.get("targets", [])) * float(action.get("wait_seconds", 0))
             if action.get("type") == "popup_cleanup"
             else float(action.get("timeout_seconds", 0))
-            + float(action.get("pre_click_wait_seconds", 0))
-            + float(action.get("post_click_wait_seconds", 0))
+            + float(action.get("pre_click_wait_seconds", 3))
+            + float(action.get("post_click_wait_seconds", 3))
             if action.get("type") == "required_template_tap"
             else float(action.get("timeout_seconds", 0))
             + 2 * (
-                float(action.get("pre_click_wait_seconds", 0))
-                + float(action.get("post_click_wait_seconds", 0))
+                float(action.get("pre_click_wait_seconds", 3))
+                + float(action.get("post_click_wait_seconds", 3))
             )
             if action.get("type") == "finish_login_authorization"
             else float(action.get("max_swipes", 0)) * float(action.get("wait_seconds", 0))
@@ -130,6 +130,8 @@ class ActionRunner:
                 roi = (action["left"], action["top"], action["right"], action["bottom"])
                 timeout_seconds = float(action["timeout_seconds"])
                 poll_seconds = float(action["poll_seconds"])
+                pre_click_wait_seconds = float(action.get("pre_click_wait_seconds", 3))
+                post_click_wait_seconds = float(action.get("post_click_wait_seconds", 3))
                 elapsed = 0.0
                 while True:
                     center, score = self.template_matcher(
@@ -138,9 +140,10 @@ class ActionRunner:
                     if center is not None:
                         LOGGER.info(
                             "发现%s，相似度 %.3f，点击前等待 %.2f 秒",
-                            action["name"], score, float(action["pre_click_wait_seconds"]),
+                            action["name"], score, pre_click_wait_seconds,
                         )
-                        self.sleep(float(action["pre_click_wait_seconds"]))
+                        self.sleep(pre_click_wait_seconds)
+                        elapsed += pre_click_wait_seconds
                         confirmed_center, confirmed_score = self.template_matcher(
                             self.client.screenshot(), template_path, roi, float(action["threshold"])
                         )
@@ -157,9 +160,9 @@ class ActionRunner:
                             self.client.tap(*confirmed_center)
                             LOGGER.info(
                                 "点击完成，等待 %.2f 秒让页面响应",
-                                float(action["post_click_wait_seconds"]),
+                                post_click_wait_seconds,
                             )
-                            self.sleep(float(action["post_click_wait_seconds"]))
+                            self.sleep(post_click_wait_seconds)
                             break
                     if elapsed >= timeout_seconds:
                         raise VisualError(f"等待{action['name']}超时，最后相似度 {score:.3f}")

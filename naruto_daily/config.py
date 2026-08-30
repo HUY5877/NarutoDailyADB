@@ -56,11 +56,18 @@ ACTION_KEYS = {
         "dismiss_x", "dismiss_y", "yesterday_reward", "panel_marker", "claim_button", "coin_prayer",
     },
 }
+CLICK_WAIT_KEYS = {"pre_click_wait_seconds", "post_click_wait_seconds"}
 
 
-def _require_exact_keys(value: dict[str, Any], expected: set[str], context: str) -> None:
+def _require_exact_keys(
+    value: dict[str, Any],
+    expected: set[str],
+    context: str,
+    optional: set[str] | None = None,
+) -> None:
+    optional = optional or set()
     unknown = set(value) - expected
-    missing = expected - set(value)
+    missing = expected - set(value) - optional
     if unknown:
         raise ConfigError(f"{context} 包含未知字段：{sorted(unknown)}")
     if missing:
@@ -102,7 +109,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
     action_type = action["type"]
     if action_type not in ACTION_KEYS:
         raise ConfigError(f"{context} 包含不支持的动作：{action_type!r}")
-    _require_exact_keys(action, ACTION_KEYS[action_type], context)
+    optional_keys = CLICK_WAIT_KEYS if action_type in {"required_template_tap", "finish_login_authorization"} else set()
+    _require_exact_keys(action, ACTION_KEYS[action_type], context, optional_keys)
     if action_type == "tap":
         _coordinate(action["x"], width, context)
         _coordinate(action["y"], height, context)
@@ -149,8 +157,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
         if poll_seconds > timeout_seconds:
             raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
-        pre_wait = action["pre_click_wait_seconds"]
-        post_wait = action["post_click_wait_seconds"]
+        pre_wait = action.get("pre_click_wait_seconds", 3)
+        post_wait = action.get("post_click_wait_seconds", 3)
         for key, value in (("pre_click_wait_seconds", pre_wait), ("post_click_wait_seconds", post_wait)):
             if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 10:
                 raise ConfigError(f"{context} 的 {key} 必须在 0 到 10 之间")
@@ -164,8 +172,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
         if poll_seconds > timeout_seconds:
             raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
-        pre_wait = action["pre_click_wait_seconds"]
-        post_wait = action["post_click_wait_seconds"]
+        pre_wait = action.get("pre_click_wait_seconds", 3)
+        post_wait = action.get("post_click_wait_seconds", 3)
         for key, value in (("pre_click_wait_seconds", pre_wait), ("post_click_wait_seconds", post_wait)):
             if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 10:
                 raise ConfigError(f"{context} 的 {key} 必须在 0 到 10 之间")
@@ -175,13 +183,10 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context}.second_authorization 必须是对象")
         _require_exact_keys(
             second,
-            {"name", "template", "left", "top", "right", "bottom", "threshold", "click_x", "click_y"},
+            {"name", "template", "left", "top", "right", "bottom", "threshold"},
             f"{context}.second_authorization",
         )
-        second_target = {key: second[key] for key in ("name", "template", "left", "top", "right", "bottom", "threshold")}
-        _validate_template_target(second_target, width, height, f"{context}.second_authorization", require_name=True)
-        _coordinate(second["click_x"], width, f"{context}.second_authorization")
-        _coordinate(second["click_y"], height, f"{context}.second_authorization")
+        _validate_template_target(second, width, height, f"{context}.second_authorization", require_name=True)
 
         start_game = action["start_game"]
         _validate_template_target(start_game, width, height, f"{context}.start_game", require_name=True)

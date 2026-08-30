@@ -21,16 +21,15 @@ class AuthorizationClient:
 def authorization_action():
     return {
         "type": "finish_login_authorization",
-        "timeout_seconds": 4,
+        "timeout_seconds": 20,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 3,
         "second_authorization": {
-            "name": "第二次授权页面",
+            "name": "第二次授权同意按钮",
             "template": "second.png",
-            "left": 0, "top": 200, "right": 1300, "bottom": 450,
+            "left": 700, "top": 700, "right": 1220, "bottom": 930,
             "threshold": 0.85,
-            "click_x": 961, "click_y": 806,
         },
         "start_game": {
             "name": "开始游戏按钮",
@@ -91,7 +90,7 @@ def test_second_authorization_branch_then_clicks_start_game(caplog):
             sleep=waits.append,
         )
 
-    assert client.taps == [(961, 806), (956, 911)]
+    assert client.taps == [(400, 300), (956, 911)]
     assert waits == [3.0, 3.0, 3.0, 3.0]
     assert second_checks == 2
     assert summary.used_second_authorization is True
@@ -123,6 +122,53 @@ def test_button_disappearing_during_pre_wait_is_not_clicked():
     assert client.taps == [(956, 911)]
     assert waits == [3.0, 1.0, 3.0, 3.0]
     assert summary.used_second_authorization is False
+
+
+def test_old_authorization_action_uses_three_second_defaults():
+    client = AuthorizationClient()
+    action = authorization_action()
+    action.pop("pre_click_wait_seconds")
+    action.pop("post_click_wait_seconds")
+    waits = []
+
+    summary = finish_login_authorization(
+        client,
+        action,
+        template_matcher=lambda *args: ((956, 911), 0.99),
+        sleep=waits.append,
+    )
+
+    assert client.taps == [(956, 911)]
+    assert waits == [3.0, 3.0]
+    assert summary.used_second_authorization is False
+
+
+def test_repeated_unstable_start_button_respects_timeout():
+    client = AuthorizationClient()
+    checks = 0
+    waits = []
+
+    def matcher(png, path, roi, threshold):
+        nonlocal checks
+        if path.name != "start.png":
+            return None, 0.10
+        checks += 1
+        if checks % 2 == 1:
+            return (956, 911), 0.99
+        return None, 0.20
+
+    with pytest.raises(VisualError, match="超时"):
+        action = authorization_action()
+        action["timeout_seconds"] = 4
+        finish_login_authorization(
+            client,
+            action,
+            template_matcher=matcher,
+            sleep=waits.append,
+        )
+
+    assert client.taps == []
+    assert waits == [3.0, 1.0]
 
 
 def test_authorization_timeout_stops_without_clicking():

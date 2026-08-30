@@ -133,11 +133,10 @@ def test_finish_login_authorization_accepts_optional_second_page(tmp_path):
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 3,
         "second_authorization": {
-            "name": "第二次授权页面",
-            "template": "assets/qq_second_authorization_marker.png",
-            "left": 0, "top": 200, "right": 1300, "bottom": 450,
+            "name": "第二次授权同意按钮",
+            "template": "assets/qq_agree_game_info.png",
+            "left": 700, "top": 700, "right": 1220, "bottom": 930,
             "threshold": 0.85,
-            "click_x": 961, "click_y": 806
         },
         "start_game": {
             "name": "开始游戏按钮",
@@ -151,9 +150,23 @@ def test_finish_login_authorization_accepts_optional_second_page(tmp_path):
 
     action = settings.tasks["login"][0]
     assert action["timeout_seconds"] == 40
-    assert action["second_authorization"]["click_x"] == 961
+    assert action["second_authorization"]["template"] == "assets/qq_agree_game_info.png"
     assert action["pre_click_wait_seconds"] == 3
     assert action["post_click_wait_seconds"] == 3
+
+
+def test_old_click_actions_without_wait_fields_are_still_accepted(tmp_path):
+    project_root = Path(__file__).parents[1]
+    payload = json.loads((project_root / "config.example.json").read_text(encoding="utf-8"))
+    for actions in payload["tasks"].values():
+        for action in actions:
+            if action["type"] in {"required_template_tap", "finish_login_authorization"}:
+                action.pop("pre_click_wait_seconds")
+                action.pop("post_click_wait_seconds")
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    assert settings.tasks["login"][2].get("pre_click_wait_seconds") is None
 
 
 def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
