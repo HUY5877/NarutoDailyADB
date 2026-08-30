@@ -111,13 +111,20 @@ def required_action():
         "threshold": 0.85,
         "timeout_seconds": 3,
         "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
     }
 
 
 def test_required_template_tap_waits_until_button_appears(caplog):
     client = RecordingClient()
     client.screenshot = lambda: b"screen"
-    results = iter([(None, 0.20), (None, 0.40), ((961, 910), 0.96)])
+    results = iter([
+        (None, 0.20),
+        (None, 0.40),
+        ((961, 910), 0.96),
+        ((961, 910), 0.97),
+    ])
     waits = []
     runner = ActionRunner(
         client,
@@ -130,9 +137,11 @@ def test_required_template_tap_waits_until_button_appears(caplog):
         runner.run([required_action()])
 
     assert client.calls == [("tap", 961, 910)]
-    assert waits == [1.0, 1.0]
+    assert waits == [1.0, 1.0, 3.0, 3.0]
     assert "等待开始游戏按钮" in caplog.text
     assert "发现开始游戏按钮" in caplog.text
+    assert "点击前等待 3.00 秒" in caplog.text
+    assert "点击完成，等待 3.00 秒" in caplog.text
 
 
 def test_required_template_tap_times_out_and_stops_following_actions():
@@ -157,6 +166,8 @@ def test_action_runner_dispatches_optional_second_authorization():
         "type": "finish_login_authorization",
         "timeout_seconds": 4,
         "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
         "second_authorization": {
             "name": "第二次授权页面", "template": "second.png",
             "left": 0, "top": 200, "right": 1300, "bottom": 450,

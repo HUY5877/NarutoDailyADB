@@ -111,12 +111,16 @@ def test_required_template_tap_accepts_timeout_and_poll_interval(tmp_path):
         "threshold": 0.85,
         "timeout_seconds": 20,
         "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
     }]
 
     settings = load_settings(write_config(tmp_path, payload))
 
     assert settings.tasks["login"][0]["timeout_seconds"] == 20
     assert settings.tasks["login"][0]["poll_seconds"] == 1
+    assert settings.tasks["login"][0]["pre_click_wait_seconds"] == 3
+    assert settings.tasks["login"][0]["post_click_wait_seconds"] == 3
 
 
 def test_finish_login_authorization_accepts_optional_second_page(tmp_path):
@@ -126,6 +130,8 @@ def test_finish_login_authorization_accepts_optional_second_page(tmp_path):
         "type": "finish_login_authorization",
         "timeout_seconds": 40,
         "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
         "second_authorization": {
             "name": "第二次授权页面",
             "template": "assets/qq_second_authorization_marker.png",
@@ -146,6 +152,8 @@ def test_finish_login_authorization_accepts_optional_second_page(tmp_path):
     action = settings.tasks["login"][0]
     assert action["timeout_seconds"] == 40
     assert action["second_authorization"]["click_x"] == 961
+    assert action["pre_click_wait_seconds"] == 3
+    assert action["post_click_wait_seconds"] == 3
 
 
 def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):

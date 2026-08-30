@@ -69,3 +69,18 @@ def test_claim_template_rejects_unreached_reward():
 
     assert center is None
     assert score < 0.5
+
+
+def test_organization_prayer_label_rejects_ninja_recruit_card():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "ninja_recruit_card.png").read_bytes()
+
+    center, score = find_template_in_png(
+        screenshot,
+        project_root / "assets" / "organization_pray_label.png",
+        (0, 0, 400, 220),
+        0.85,
+    )
+
+    assert center is None
+    assert score < 0.6

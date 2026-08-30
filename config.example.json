@@ -19,7 +19,9 @@
         "bottom": 900,
         "threshold": 0.85,
         "timeout_seconds": 20,
-        "poll_seconds": 1
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3
       },
       {
         "type": "required_template_tap",
@@ -31,12 +33,16 @@
         "bottom": 930,
         "threshold": 0.85,
         "timeout_seconds": 20,
-        "poll_seconds": 1
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3
       },
       {
         "type": "finish_login_authorization",
         "timeout_seconds": 40,
         "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
         "second_authorization": {
           "name": "第二次授权页面",
           "template": "assets/qq_second_authorization_marker.png",
@@ -106,9 +112,10 @@
         "bottom": 700,
         "threshold": 0.85,
         "timeout_seconds": 20,
-        "poll_seconds": 1
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3
       },
-      {"type": "wait", "seconds": 2},
       {
         "type": "find_card_and_click",
         "name": "组织祈福",

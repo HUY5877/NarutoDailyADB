@@ -23,6 +23,8 @@ def authorization_action():
         "type": "finish_login_authorization",
         "timeout_seconds": 4,
         "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
         "second_authorization": {
             "name": "第二次授权页面",
             "template": "second.png",
@@ -41,9 +43,13 @@ def authorization_action():
 
 def test_direct_start_game_branch_clicks_once(caplog):
     client = AuthorizationClient()
+    waits = []
+    start_checks = 0
 
     def matcher(png, path, roi, threshold):
+        nonlocal start_checks
         if path.name == "start.png":
+            start_checks += 1
             return (956, 911), 0.99
         return None, 0.10
 
@@ -53,21 +59,26 @@ def test_direct_start_game_branch_clicks_once(caplog):
             authorization_action(),
             template_matcher=matcher,
             asset_root=Path("assets"),
-            sleep=lambda _: None,
+            sleep=waits.append,
         )
 
     assert client.taps == [(956, 911)]
+    assert waits == [3.0, 3.0]
+    assert start_checks == 2
     assert summary.used_second_authorization is False
     assert "无需第二次授权" in caplog.text
 
 
 def test_second_authorization_branch_then_clicks_start_game(caplog):
     client = AuthorizationClient()
-    start_results = iter([(None, 0.20), ((956, 911), 0.98)])
+    start_results = iter([(None, 0.20), ((956, 911), 0.98), ((956, 911), 0.99)])
+    second_checks = 0
 
     def matcher(png, path, roi, threshold):
+        nonlocal second_checks
         if path.name == "start.png":
             return next(start_results)
+        second_checks += 1
         return ((400, 300), 0.97)
 
     waits = []
@@ -81,9 +92,37 @@ def test_second_authorization_branch_then_clicks_start_game(caplog):
         )
 
     assert client.taps == [(961, 806), (956, 911)]
-    assert waits == [1.0]
+    assert waits == [3.0, 3.0, 3.0, 3.0]
+    assert second_checks == 2
     assert summary.used_second_authorization is True
     assert "发现第二次授权页面" in caplog.text
+
+
+def test_button_disappearing_during_pre_wait_is_not_clicked():
+    client = AuthorizationClient()
+    start_results = iter([
+        ((956, 911), 0.99),
+        (None, 0.20),
+        ((956, 911), 0.98),
+        ((956, 911), 0.99),
+    ])
+    waits = []
+
+    def matcher(png, path, roi, threshold):
+        if path.name == "start.png":
+            return next(start_results)
+        return None, 0.10
+
+    summary = finish_login_authorization(
+        client,
+        authorization_action(),
+        template_matcher=matcher,
+        sleep=waits.append,
+    )
+
+    assert client.taps == [(956, 911)]
+    assert waits == [3.0, 1.0, 3.0, 3.0]
+    assert summary.used_second_authorization is False
 
 
 def test_authorization_timeout_stops_without_clicking():

@@ -35,9 +35,13 @@ ACTION_KEYS = {
     "optional_template_tap": {"type", "template", "left", "top", "right", "bottom", "threshold"},
     "popup_cleanup": {"type", "rounds", "idle_rounds", "wait_seconds", "targets"},
     "required_template_tap": {
-        "type", "name", "template", "left", "top", "right", "bottom", "threshold", "timeout_seconds", "poll_seconds"
+        "type", "name", "template", "left", "top", "right", "bottom", "threshold",
+        "timeout_seconds", "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds",
     },
-    "finish_login_authorization": {"type", "timeout_seconds", "poll_seconds", "second_authorization", "start_game"},
+    "finish_login_authorization": {
+        "type", "timeout_seconds", "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds",
+        "second_authorization", "start_game",
+    },
     "find_card_and_click": {
         "type", "name", "template", "left", "top", "right", "bottom", "threshold",
         "button_template", "button_threshold",
@@ -145,7 +149,12 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
         if poll_seconds > timeout_seconds:
             raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
-        return float(timeout_seconds)
+        pre_wait = action["pre_click_wait_seconds"]
+        post_wait = action["post_click_wait_seconds"]
+        for key, value in (("pre_click_wait_seconds", pre_wait), ("post_click_wait_seconds", post_wait)):
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 10:
+                raise ConfigError(f"{context} 的 {key} 必须在 0 到 10 之间")
+        return float(timeout_seconds + pre_wait + post_wait)
     elif action_type == "finish_login_authorization":
         timeout_seconds = action["timeout_seconds"]
         poll_seconds = action["poll_seconds"]
@@ -155,6 +164,11 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
         if poll_seconds > timeout_seconds:
             raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
+        pre_wait = action["pre_click_wait_seconds"]
+        post_wait = action["post_click_wait_seconds"]
+        for key, value in (("pre_click_wait_seconds", pre_wait), ("post_click_wait_seconds", post_wait)):
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 10:
+                raise ConfigError(f"{context} 的 {key} 必须在 0 到 10 之间")
 
         second = action["second_authorization"]
         if not isinstance(second, dict):
@@ -171,7 +185,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
 
         start_game = action["start_game"]
         _validate_template_target(start_game, width, height, f"{context}.start_game", require_name=True)
-        return float(timeout_seconds)
+        return float(timeout_seconds + 2 * (pre_wait + post_wait))
     elif action_type == "find_card_and_click":
         target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
         target = {key: action[key] for key in target_keys}
