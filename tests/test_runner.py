@@ -199,3 +199,38 @@ def test_action_runner_dispatches_card_navigation():
     ).run([action])
 
     assert client.calls == [("tap", 548, 585)]
+
+
+def test_action_runner_dispatches_organization_prayer():
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    action = {
+        "type": "handle_organization_prayer",
+        "timeout_seconds": 20, "poll_seconds": 1, "wait_seconds": 1,
+        "max_claims": 3, "dismiss_x": 1500, "dismiss_y": 200,
+        "yesterday_reward": {
+            "name": "昨日奖励", "template": "yesterday.png",
+            "left": 500, "top": 150, "right": 850, "bottom": 380, "threshold": 0.85,
+        },
+        "panel_marker": {
+            "name": "昨日祈福奖励面板", "template": "panel.png",
+            "left": 400, "top": 50, "right": 1550, "bottom": 350, "threshold": 0.95,
+        },
+        "claim_button": {
+            "name": "可领取奖励", "template": "claim.png",
+            "left": 400, "top": 100, "right": 1550, "bottom": 980, "threshold": 0.85,
+        },
+        "coin_prayer": {
+            "name": "6000铜币焚香祈福", "template": "coin.png",
+            "left": 650, "top": 750, "right": 1100, "bottom": 1020, "threshold": 0.85,
+        },
+    }
+    results = iter([((866, 875), 0.99), (None, 0.20), ((866, 875), 0.99)])
+
+    ActionRunner(
+        client,
+        sleep=lambda _: None,
+        template_matcher=lambda *args: next(results),
+    ).run([action])
+
+    assert client.calls == [("tap", 866, 875)]

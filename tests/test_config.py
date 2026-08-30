@@ -175,6 +175,40 @@ def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
     assert settings.tasks["organization_pray"][0]["button_template"] == "assets/go_now_button.png"
 
 
+def test_organization_prayer_action_accepts_reward_and_coin_targets(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["organization_pray"] = [{
+        "type": "handle_organization_prayer",
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "wait_seconds": 1,
+        "max_claims": 3,
+        "dismiss_x": 1500,
+        "dismiss_y": 200,
+        "yesterday_reward": {
+            "name": "昨日奖励", "template": "assets/yesterday_reward.png",
+            "left": 500, "top": 150, "right": 850, "bottom": 380, "threshold": 0.85,
+        },
+        "panel_marker": {
+            "name": "昨日祈福奖励面板", "template": "assets/yesterday_panel.png",
+            "left": 400, "top": 50, "right": 1550, "bottom": 350, "threshold": 0.95,
+        },
+        "claim_button": {
+            "name": "可领取奖励", "template": "assets/prayer_claim.png",
+            "left": 400, "top": 100, "right": 1550, "bottom": 980, "threshold": 0.85,
+        },
+        "coin_prayer": {
+            "name": "6000铜币焚香祈福", "template": "assets/coin_prayer.png",
+            "left": 650, "top": 750, "right": 1100, "bottom": 1020, "threshold": 0.85,
+        },
+    }]
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    assert settings.tasks["organization_pray"][0]["max_claims"] == 3
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [

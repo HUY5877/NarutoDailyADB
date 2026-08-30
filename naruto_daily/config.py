@@ -46,6 +46,10 @@ ACTION_KEYS = {
         "swipe_x1", "swipe_y1", "swipe_x2", "swipe_y2",
         "swipe_duration_ms", "wait_seconds",
     },
+    "handle_organization_prayer": {
+        "type", "timeout_seconds", "poll_seconds", "wait_seconds", "max_claims",
+        "dismiss_x", "dismiss_y", "yesterday_reward", "panel_marker", "claim_button", "coin_prayer",
+    },
 }
 
 
@@ -212,6 +216,26 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         if not isinstance(wait_seconds, (int, float)) or isinstance(wait_seconds, bool) or not 0 <= wait_seconds <= 10:
             raise ConfigError(f"{context} 的 wait_seconds 必须在 0 到 10 之间")
         return float(max_swipes * wait_seconds)
+    elif action_type == "handle_organization_prayer":
+        timeout_seconds = action["timeout_seconds"]
+        poll_seconds = action["poll_seconds"]
+        wait_seconds = action["wait_seconds"]
+        max_claims = action["max_claims"]
+        if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or not 1 <= timeout_seconds <= 60:
+            raise ConfigError(f"{context} 的 timeout_seconds 必须在 1 到 60 之间")
+        if not isinstance(poll_seconds, (int, float)) or isinstance(poll_seconds, bool) or not 0.2 <= poll_seconds <= 5:
+            raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
+        if poll_seconds > timeout_seconds:
+            raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
+        if not isinstance(wait_seconds, (int, float)) or isinstance(wait_seconds, bool) or not 0 <= wait_seconds <= 10:
+            raise ConfigError(f"{context} 的 wait_seconds 必须在 0 到 10 之间")
+        if not isinstance(max_claims, int) or isinstance(max_claims, bool) or not 1 <= max_claims <= 3:
+            raise ConfigError(f"{context} 的 max_claims 必须在 1 到 3 之间")
+        _coordinate(action["dismiss_x"], width, context)
+        _coordinate(action["dismiss_y"], height, context)
+        for key in ("yesterday_reward", "panel_marker", "claim_button", "coin_prayer"):
+            _validate_template_target(action[key], width, height, f"{context}.{key}", require_name=True)
+        return float(3 * timeout_seconds + (max_claims + 2) * wait_seconds)
     return 0.0
 
 

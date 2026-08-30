@@ -11,6 +11,7 @@ from .visual import VisualError, find_template_in_png
 from .popup import cleanup_popups
 from .authorization import finish_login_authorization
 from .navigation import navigate_to_card
+from .prayer import handle_organization_prayer
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -24,6 +25,7 @@ ACTION_NAMES = {
     "required_template_tap": "等待识别后点击",
     "finish_login_authorization": "处理可选第二次授权",
     "find_card_and_click": "横向查找任务卡片",
+    "handle_organization_prayer": "领取昨日奖励并执行铜币祈福",
 }
 
 
@@ -64,6 +66,9 @@ class ActionRunner:
             if action.get("type") in {"required_template_tap", "finish_login_authorization"}
             else float(action.get("max_swipes", 0)) * float(action.get("wait_seconds", 0))
             if action.get("type") == "find_card_and_click"
+            else 3 * float(action.get("timeout_seconds", 0))
+            + (float(action.get("max_claims", 0)) + 2) * float(action.get("wait_seconds", 0))
+            if action.get("type") == "handle_organization_prayer"
             else 0.0
             for action in actions
         )
@@ -143,6 +148,14 @@ class ActionRunner:
                 )
             elif action_type == "find_card_and_click":
                 navigate_to_card(
+                    self.client,
+                    action,
+                    template_matcher=self.template_matcher,
+                    asset_root=self.asset_root,
+                    sleep=self.sleep,
+                )
+            elif action_type == "handle_organization_prayer":
+                handle_organization_prayer(
                     self.client,
                     action,
                     template_matcher=self.template_matcher,
