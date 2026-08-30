@@ -68,6 +68,8 @@
         "rounds": 4,
         "idle_rounds": 1,
         "wait_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
         "targets": [
           {
             "name": "公告关闭按钮",
@@ -103,7 +105,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 180,
-          "threshold": 0.78
+          "threshold": 0.82
         }
       }
     ],
@@ -155,6 +157,8 @@
         "timeout_seconds": 20,
         "poll_seconds": 1,
         "wait_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
         "max_claims": 3,
         "dismiss_x": 1500,
         "dismiss_y": 200,
@@ -209,7 +213,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 180,
-          "threshold": 0.78
+          "threshold": 0.82
         }
       },
       {

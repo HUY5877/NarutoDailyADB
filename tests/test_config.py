@@ -78,6 +78,8 @@ def test_popup_cleanup_accepts_two_safe_targets(tmp_path):
         "rounds": 4,
         "idle_rounds": 1,
         "wait_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
         "targets": [
             {
                 "name": "登录奖励领取按钮",
@@ -97,6 +99,7 @@ def test_popup_cleanup_accepts_two_safe_targets(tmp_path):
     settings = load_settings(write_config(tmp_path, payload))
 
     assert settings.tasks["login"][0]["rounds"] == 4
+    assert settings.tasks["login"][0]["pre_click_wait_seconds"] == 3
     assert [target["name"] for target in settings.tasks["login"][0]["targets"]] == ["登录奖励领取按钮", "推广弹窗关闭按钮"]
 
 
@@ -198,14 +201,34 @@ def test_return_to_main_accepts_ten_round_close_settings(tmp_path):
             "name": "通用关闭按钮",
             "template": "assets/promo_close.png",
             "left": 1700, "top": 0, "right": 1920, "bottom": 180,
-            "threshold": 0.78,
+            "threshold": 0.82,
         },
     }]
 
     settings = load_settings(write_config(tmp_path, payload))
 
     assert settings.tasks["login"][0]["max_rounds"] == 10
-    assert settings.tasks["login"][0]["close_target"]["threshold"] == 0.78
+    assert settings.tasks["login"][0]["close_target"]["threshold"] == 0.82
+
+
+def test_return_to_main_rejects_close_threshold_without_main_page_margin(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["login"] = [{
+        "type": "return_to_main",
+        "max_rounds": 10,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "close_target": {
+            "name": "通用关闭按钮",
+            "template": "assets/promo_close.png",
+            "left": 1700, "top": 0, "right": 1920, "bottom": 180,
+            "threshold": 0.81,
+        },
+    }]
+
+    with pytest.raises(ConfigError, match="关闭按钮阈值不能低于 0.82"):
+        load_settings(write_config(tmp_path, payload))
 
 
 def test_coin_fortune_accepts_two_free_clicks_in_safe_region(tmp_path):
@@ -307,6 +330,8 @@ def test_organization_prayer_action_accepts_reward_and_coin_targets(tmp_path):
         "timeout_seconds": 20,
         "poll_seconds": 1,
         "wait_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
         "max_claims": 3,
         "dismiss_x": 1500,
         "dismiss_y": 200,
@@ -331,6 +356,7 @@ def test_organization_prayer_action_accepts_reward_and_coin_targets(tmp_path):
     settings = load_settings(write_config(tmp_path, payload))
 
     assert settings.tasks["organization_pray"][0]["max_claims"] == 3
+    assert settings.tasks["organization_pray"][0]["post_click_wait_seconds"] == 3
 
 
 @pytest.mark.parametrize(

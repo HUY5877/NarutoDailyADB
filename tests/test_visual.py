@@ -113,3 +113,18 @@ def test_free_fortune_template_matches_free_button_but_rejects_paid_button():
     assert free_score >= 0.99
     assert paid_center is None
     assert paid_score < 0.85
+
+
+def test_generic_close_template_rejects_real_main_page_top_right_icons():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "main_page_top_right.png").read_bytes()
+
+    center, score = find_template_in_png(
+        screenshot,
+        project_root / "assets" / "promo_close.png",
+        (0, 0, 220, 180),
+        0.82,
+    )
+
+    assert center is None
+    assert score < 0.82

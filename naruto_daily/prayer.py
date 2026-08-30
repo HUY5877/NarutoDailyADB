@@ -74,6 +74,8 @@ def handle_organization_prayer(
     timeout_seconds = float(action["timeout_seconds"])
     poll_seconds = float(action["poll_seconds"])
     wait_seconds = float(action["wait_seconds"])
+    pre_click_wait = float(action.get("pre_click_wait_seconds", 3))
+    post_click_wait = float(action.get("post_click_wait_seconds", 3))
     coin_prayer = action["coin_prayer"]
 
     _wait_for_target(
@@ -99,14 +101,34 @@ def handle_organization_prayer(
         LOGGER.info("未发现昨日奖励，相似度 %.3f，跳过奖励领取", yesterday_score)
     else:
         LOGGER.info(
-            "发现昨日奖励，相似度 %.3f，点击坐标：(%d, %d)",
+            "发现昨日奖励，相似度 %.3f，点击前等待 %.2f 秒",
             yesterday_score,
-            yesterday_center[0],
-            yesterday_center[1],
+            pre_click_wait,
         )
-        client.tap(*yesterday_center)
-        sleep(wait_seconds)
+        sleep(pre_click_wait)
+        confirmed_yesterday, confirmed_yesterday_score = _match(
+            client,
+            action["yesterday_reward"],
+            template_matcher,
+            asset_root,
+        )
+        if confirmed_yesterday is None:
+            LOGGER.info(
+                "等待后昨日奖励已消失，相似度 %.3f，跳过奖励领取",
+                confirmed_yesterday_score,
+            )
+            yesterday_opened = False
+        else:
+            LOGGER.info(
+                "再次确认昨日奖励，相似度 %.3f，点击坐标：(%d, %d)",
+                confirmed_yesterday_score,
+                confirmed_yesterday[0],
+                confirmed_yesterday[1],
+            )
+            client.tap(*confirmed_yesterday)
+            sleep(post_click_wait)
 
+    if yesterday_opened:
         _wait_for_target(
             client,
             action["panel_marker"],
@@ -128,15 +150,35 @@ def handle_organization_prayer(
                 LOGGER.info("没有更多可领取的昨日奖励，当前相似度 %.3f", claim_score)
                 break
             LOGGER.info(
-                "领取第 %d 项昨日奖励，相似度 %.3f，点击坐标：(%d, %d)",
+                "发现第 %d 项昨日奖励，相似度 %.3f，点击前等待 %.2f 秒",
                 claim_number,
                 claim_score,
-                claim_center[0],
-                claim_center[1],
+                pre_click_wait,
             )
-            client.tap(*claim_center)
+            sleep(pre_click_wait)
+            confirmed_claim, confirmed_claim_score = _match(
+                client,
+                action["claim_button"],
+                template_matcher,
+                asset_root,
+            )
+            if confirmed_claim is None:
+                LOGGER.info(
+                    "等待后第 %d 项昨日奖励已消失，相似度 %.3f，不点击旧坐标",
+                    claim_number,
+                    confirmed_claim_score,
+                )
+                continue
+            LOGGER.info(
+                "再次确认第 %d 项昨日奖励，相似度 %.3f，点击坐标：(%d, %d)",
+                claim_number,
+                confirmed_claim_score,
+                confirmed_claim[0],
+                confirmed_claim[1],
+            )
+            client.tap(*confirmed_claim)
             claims += 1
-            sleep(wait_seconds)
+            sleep(post_click_wait)
 
         LOGGER.info("昨日奖励领取结束，共领取 %d 项，点击空白处关闭界面", claims)
         client.tap(action["dismiss_x"], action["dismiss_y"])
@@ -151,6 +193,25 @@ def handle_organization_prayer(
         asset_root=asset_root,
         sleep=sleep,
     )
-    LOGGER.info("点击 6000 铜币焚香祈福：(%d, %d)", coin_center[0], coin_center[1])
-    client.tap(*coin_center)
+    LOGGER.info("发现 6000 铜币焚香祈福，点击前等待 %.2f 秒", pre_click_wait)
+    sleep(pre_click_wait)
+    confirmed_coin, confirmed_coin_score = _match(
+        client,
+        coin_prayer,
+        template_matcher,
+        asset_root,
+    )
+    if confirmed_coin is None:
+        raise VisualError(
+            f"6000 铜币焚香祈福在点击前等待后已消失，最后相似度 {confirmed_coin_score:.3f}"
+        )
+    LOGGER.info(
+        "再次确认 6000 铜币焚香祈福，相似度 %.3f，点击坐标：(%d, %d)",
+        confirmed_coin_score,
+        confirmed_coin[0],
+        confirmed_coin[1],
+    )
+    client.tap(*confirmed_coin)
+    LOGGER.info("点击铜币祈福后等待页面响应 %.2f 秒", post_click_wait)
+    sleep(post_click_wait)
     return PrayerSummary(yesterday_opened=yesterday_opened, claims=claims)

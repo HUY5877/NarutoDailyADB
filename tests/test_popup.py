@@ -23,6 +23,8 @@ def popup_action():
         "rounds": 4,
         "idle_rounds": 1,
         "wait_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
         "targets": [
             {
                 "name": "登录奖励领取按钮", "template": "claim.png",
@@ -39,8 +41,8 @@ def popup_action():
 def test_cleanup_handles_changing_popup_order_and_stops_after_idle_round(caplog):
     client = ScreenshotClient()
     results = iter([
-        (None, 0.20), ((1842, 60), 0.96),
-        ((957, 907), 0.99), (None, 0.30),
+        (None, 0.20), ((1842, 60), 0.96), ((1843, 61), 0.97),
+        ((957, 907), 0.99), ((958, 908), 0.98), (None, 0.30),
         (None, 0.25), (None, 0.22),
     ])
 
@@ -57,10 +59,10 @@ def test_cleanup_handles_changing_popup_order_and_stops_after_idle_round(caplog)
             sleep=waits.append,
         )
 
-    assert client.taps == [(1842, 60), (957, 907)]
+    assert client.taps == [(1843, 61), (958, 908)]
     assert summary.rounds == 3
     assert summary.clicks == 2
-    assert waits == [1.0, 1.0]
+    assert waits == [3.0, 3.0, 3.0, 3.0]
     assert "第 1 轮" in caplog.text
     assert "推广弹窗关闭按钮" in caplog.text
     assert "连续 1 轮没有发现可处理弹窗，结束清理" in caplog.text
@@ -70,7 +72,10 @@ def test_action_runner_dispatches_popup_cleanup():
     from naruto_daily.runner import ActionRunner
 
     client = ScreenshotClient()
-    results = iter([((957, 907), 0.99), (None, 0.10), (None, 0.10), (None, 0.10)])
+    results = iter([
+        ((957, 907), 0.99), ((958, 908), 0.98), (None, 0.10),
+        (None, 0.10), (None, 0.10),
+    ])
     runner = ActionRunner(
         client,
         sleep=lambda _: None,
@@ -80,7 +85,7 @@ def test_action_runner_dispatches_popup_cleanup():
 
     runner.run([popup_action()])
 
-    assert client.taps == [(957, 907)]
+    assert client.taps == [(958, 908)]
 
 
 def test_return_to_main_closes_nested_pages_and_stops_after_two_idle_rounds(caplog):
@@ -102,7 +107,7 @@ def test_return_to_main_closes_nested_pages_and_stops_after_two_idle_rounds(capl
         "close_target": {
             "name": "通用关闭按钮", "template": "close.png",
             "left": 1700, "top": 0, "right": 1920, "bottom": 180,
-            "threshold": 0.78,
+            "threshold": 0.82,
         },
     }
 

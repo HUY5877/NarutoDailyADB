@@ -318,7 +318,10 @@ def test_action_runner_dispatches_organization_prayer():
             "left": 650, "top": 750, "right": 1100, "bottom": 1020, "threshold": 0.85,
         },
     }
-    results = iter([((866, 875), 0.99), (None, 0.20), ((866, 875), 0.99)])
+    results = iter([
+        ((866, 875), 0.99), (None, 0.20),
+        ((866, 875), 0.99), ((867, 876), 0.98),
+    ])
 
     ActionRunner(
         client,
@@ -326,7 +329,7 @@ def test_action_runner_dispatches_organization_prayer():
         template_matcher=lambda *args: next(results),
     ).run([action])
 
-    assert client.calls == [("tap", 866, 875)]
+    assert client.calls == [("tap", 867, 876)]
 
 
 def test_action_runner_dispatches_return_to_main():

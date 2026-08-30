@@ -37,7 +37,10 @@ ACTION_KEYS = {
     "wait": {"type", "seconds"},
     "back": {"type"},
     "optional_template_tap": {"type", "template", "left", "top", "right", "bottom", "threshold"},
-    "popup_cleanup": {"type", "rounds", "idle_rounds", "wait_seconds", "targets"},
+    "popup_cleanup": {
+        "type", "rounds", "idle_rounds", "wait_seconds", "pre_click_wait_seconds",
+        "post_click_wait_seconds", "targets",
+    },
     "return_to_main": {
         "type", "max_rounds", "idle_rounds", "poll_seconds",
         "pre_click_wait_seconds", "post_click_wait_seconds", "close_target",
@@ -61,7 +64,8 @@ ACTION_KEYS = {
         "post_click_wait_seconds", "completed_skip_type",
     },
     "handle_organization_prayer": {
-        "type", "timeout_seconds", "poll_seconds", "wait_seconds", "max_claims",
+        "type", "timeout_seconds", "poll_seconds", "wait_seconds", "pre_click_wait_seconds",
+        "post_click_wait_seconds", "max_claims",
         "dismiss_x", "dismiss_y", "yesterday_reward", "panel_marker", "claim_button", "coin_prayer",
     },
     "handle_coin_fortune": {
@@ -163,7 +167,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
     if action_type not in ACTION_KEYS:
         raise ConfigError(f"{context} 包含不支持的动作：{action_type!r}")
     if action_type in {
-        "required_template_tap", "finish_login_authorization", "return_to_main", "handle_coin_fortune",
+            "required_template_tap", "finish_login_authorization", "return_to_main",
+            "handle_coin_fortune", "popup_cleanup", "handle_organization_prayer",
     }:
         optional_keys = CLICK_WAIT_KEYS
     elif action_type == "find_card_and_click":
@@ -204,7 +209,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的 targets 必须包含 1 到 5 个目标")
         for index, target in enumerate(targets):
             _validate_template_target(target, width, height, f"{context}.targets[{index}]", require_name=True)
-        return float(rounds * len(targets) * wait_seconds)
+        pre_wait, post_wait = _validate_click_waits(action, context)
+        return float(rounds * len(targets) * (wait_seconds + pre_wait + post_wait))
     elif action_type == "return_to_main":
         max_rounds = action["max_rounds"]
         idle_rounds = action["idle_rounds"]
@@ -225,8 +231,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             and close_target["bottom"] <= 300
         ):
             raise ConfigError(f"{context} 的关闭按钮搜索区域必须限制在右上角")
-        if close_target["threshold"] < 0.70:
-            raise ConfigError(f"{context} 的关闭按钮阈值不能低于 0.70")
+        if close_target["threshold"] < 0.82:
+            raise ConfigError(f"{context} 的关闭按钮阈值不能低于 0.82")
         return float(max_rounds * (poll_seconds + pre_wait + post_wait))
     elif action_type == "required_template_tap":
         target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
@@ -321,6 +327,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         poll_seconds = action["poll_seconds"]
         wait_seconds = action["wait_seconds"]
         max_claims = action["max_claims"]
+        pre_wait, post_wait = _validate_click_waits(action, context)
         if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or not 1 <= timeout_seconds <= 60:
             raise ConfigError(f"{context} 的 timeout_seconds 必须在 1 到 60 之间")
         if not isinstance(poll_seconds, (int, float)) or isinstance(poll_seconds, bool) or not 0.2 <= poll_seconds <= 5:
@@ -347,7 +354,10 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的铜币祈福阈值不能低于 0.80")
         if not (1200 <= action["dismiss_x"] <= 1700 and 100 <= action["dismiss_y"] <= 400):
             raise ConfigError(f"{context} 的奖励关闭坐标必须位于右上安全空白区域")
-        return float(3 * timeout_seconds + (max_claims + 2) * wait_seconds)
+        return float(
+            3 * timeout_seconds
+            + (max_claims + 2) * (wait_seconds + pre_wait + post_wait)
+        )
     elif action_type == "handle_coin_fortune":
         clicks = action["clicks"]
         timeout_seconds = action["timeout_seconds"]

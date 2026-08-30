@@ -63,7 +63,11 @@ class ActionRunner:
         wait_seconds = sum(
             float(action.get("seconds", 0))
             if action.get("type") == "wait"
-            else float(action.get("rounds", 0)) * len(action.get("targets", [])) * float(action.get("wait_seconds", 0))
+            else float(action.get("rounds", 0)) * len(action.get("targets", [])) * (
+                float(action.get("wait_seconds", 0))
+                + float(action.get("pre_click_wait_seconds", 3))
+                + float(action.get("post_click_wait_seconds", 3))
+            )
             if action.get("type") == "popup_cleanup"
             else float(action.get("max_rounds", 0)) * (
                 float(action.get("poll_seconds", 0))
@@ -86,7 +90,11 @@ class ActionRunner:
             + float(action.get("post_click_wait_seconds", 3))
             if action.get("type") == "find_card_and_click"
             else 3 * float(action.get("timeout_seconds", 0))
-            + (float(action.get("max_claims", 0)) + 2) * float(action.get("wait_seconds", 0))
+            + (float(action.get("max_claims", 0)) + 2) * (
+                float(action.get("wait_seconds", 0))
+                + float(action.get("pre_click_wait_seconds", 3))
+                + float(action.get("post_click_wait_seconds", 3))
+            )
             if action.get("type") == "handle_organization_prayer"
             else float(action.get("clicks", 0)) * (
                 float(action.get("timeout_seconds", 0))

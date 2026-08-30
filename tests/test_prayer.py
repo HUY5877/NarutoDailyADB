@@ -23,6 +23,8 @@ def prayer_action():
         "timeout_seconds": 20,
         "poll_seconds": 1,
         "wait_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
         "max_claims": 3,
         "dismiss_x": 1500,
         "dismiss_y": 200,
@@ -55,7 +57,10 @@ def prayer_action():
 
 def test_without_yesterday_reward_clicks_coin_prayer_directly(caplog):
     client = PrayerClient()
-    results = iter([((866, 875), 0.99), (None, 0.20), ((866, 875), 0.99)])
+    results = iter([
+        ((866, 875), 0.99), (None, 0.20),
+        ((866, 875), 0.99), ((867, 876), 0.98),
+    ])
 
     with caplog.at_level(logging.INFO, logger="naruto_daily"):
         summary = handle_organization_prayer(
@@ -66,7 +71,7 @@ def test_without_yesterday_reward_clicks_coin_prayer_directly(caplog):
             sleep=lambda _: None,
         )
 
-    assert client.taps == [(866, 875)]
+    assert client.taps == [(867, 876)]
     assert summary.yesterday_opened is False
     assert summary.claims == 0
     assert "未发现昨日奖励" in caplog.text
@@ -77,11 +82,15 @@ def test_claims_every_available_yesterday_reward_then_dismisses_and_prays():
     results = iter([
         ((866, 875), 0.99),
         ((670, 285), 0.98),
+        ((671, 286), 0.99),
         ((950, 160), 0.99),
         ((1130, 360), 0.99),
+        ((1131, 361), 0.98),
         ((1130, 585), 0.98),
+        ((1132, 586), 0.99),
         (None, 0.30),
         ((866, 875), 0.99),
+        ((867, 876), 0.98),
     ])
     waits = []
 
@@ -93,13 +102,13 @@ def test_claims_every_available_yesterday_reward_then_dismisses_and_prays():
     )
 
     assert client.taps == [
-        (670, 285),
-        (1130, 360),
-        (1130, 585),
+        (671, 286),
+        (1131, 361),
+        (1132, 586),
         (1500, 200),
-        (866, 875),
+        (867, 876),
     ]
-    assert waits == [1.0, 1.0, 1.0, 1.0]
+    assert waits == [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 1.0, 3.0, 3.0]
     assert summary.yesterday_opened is True
     assert summary.claims == 2
 
@@ -109,9 +118,11 @@ def test_yesterday_panel_with_no_available_reward_dismisses_without_false_click(
     results = iter([
         ((866, 875), 0.99),
         ((670, 285), 0.98),
+        ((671, 286), 0.99),
         ((950, 160), 0.99),
         (None, 0.30),
         ((866, 875), 0.99),
+        ((867, 876), 0.98),
     ])
 
     summary = handle_organization_prayer(
@@ -121,7 +132,7 @@ def test_yesterday_panel_with_no_available_reward_dismisses_without_false_click(
         sleep=lambda _: None,
     )
 
-    assert client.taps == [(670, 285), (1500, 200), (866, 875)]
+    assert client.taps == [(671, 286), (1500, 200), (867, 876)]
     assert summary.claims == 0
 
 
@@ -130,11 +141,16 @@ def test_all_three_rewards_can_be_claimed_without_hitting_safety_error():
     results = iter([
         ((866, 875), 0.99),
         ((670, 285), 0.98),
+        ((671, 286), 0.99),
         ((950, 160), 0.99),
         ((1130, 360), 0.99),
+        ((1131, 361), 0.98),
         ((1130, 585), 0.98),
+        ((1132, 586), 0.99),
         ((1130, 810), 0.97),
+        ((1133, 811), 0.98),
         ((866, 875), 0.99),
+        ((867, 876), 0.98),
     ])
 
     summary = handle_organization_prayer(
@@ -145,11 +161,11 @@ def test_all_three_rewards_can_be_claimed_without_hitting_safety_error():
     )
 
     assert client.taps == [
-        (670, 285),
-        (1130, 360),
-        (1130, 585),
-        (1130, 810),
+        (671, 286),
+        (1131, 361),
+        (1132, 586),
+        (1133, 811),
         (1500, 200),
-        (866, 875),
+        (867, 876),
     ]
     assert summary.claims == 3

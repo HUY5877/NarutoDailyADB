@@ -32,6 +32,8 @@ def cleanup_popups(
     click_count = 0
     completed_rounds = 0
     wait_seconds = float(action["wait_seconds"])
+    pre_click_wait = float(action.get("pre_click_wait_seconds", 3))
+    post_click_wait = float(action.get("post_click_wait_seconds", 3))
 
     for round_number in range(1, int(action["rounds"]) + 1):
         completed_rounds = round_number
@@ -53,19 +55,39 @@ def cleanup_popups(
                 )
                 continue
             LOGGER.info(
-                "第 %d 轮：发现%s，相似度 %.3f，点击坐标 (%d, %d)",
+                "第 %d 轮：发现%s，相似度 %.3f，点击前等待 %.2f 秒",
                 round_number,
                 target["name"],
                 score,
-                center[0],
-                center[1],
+                pre_click_wait,
             )
-            client.tap(*center)
+            sleep(pre_click_wait)
+            confirmed_center, confirmed_score = template_matcher(
+                client.screenshot(), template_path, roi, float(target["threshold"])
+            )
+            if confirmed_center is None:
+                LOGGER.info(
+                    "第 %d 轮：等待后%s已消失，相似度 %.3f，不点击旧坐标",
+                    round_number,
+                    target["name"],
+                    confirmed_score,
+                )
+                if wait_seconds:
+                    sleep(wait_seconds)
+                continue
+            LOGGER.info(
+                "第 %d 轮：再次确认%s，相似度 %.3f，点击坐标 (%d, %d)",
+                round_number,
+                target["name"],
+                confirmed_score,
+                confirmed_center[0],
+                confirmed_center[1],
+            )
+            client.tap(*confirmed_center)
             click_count += 1
             round_clicked = True
-            if wait_seconds:
-                LOGGER.info("等待弹窗切换 %.2f 秒", wait_seconds)
-                sleep(wait_seconds)
+            LOGGER.info("等待弹窗切换 %.2f 秒", post_click_wait)
+            sleep(post_click_wait)
 
         if round_clicked:
             idle_count = 0
