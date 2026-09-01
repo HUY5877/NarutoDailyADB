@@ -123,8 +123,8 @@ def test_generic_close_template_rejects_real_main_page_top_right_icons():
         screenshot,
         project_root / "assets" / "promo_close.png",
         (0, 0, 220, 180),
-        0.82,
+        0.95,
     )
 
     assert center is None
-    assert score < 0.82
+    assert score < 0.95

@@ -109,22 +109,53 @@ def return_to_main(
     asset_root: Path = Path("."),
     sleep: Callable[[float], None] = time.sleep,
 ) -> PopupCleanupSummary:
-    """逐层关闭带叉界面，直到连续多轮没有发现关闭按钮。"""
+    """逐层关闭带叉界面，并在识别到主界面后立即停止。"""
 
     idle_count = 0
     click_count = 0
     completed_rounds = 0
-    target = action["close_target"]
-    template_path = Path(asset_root) / target["template"]
-    roi = (target["left"], target["top"], target["right"], target["bottom"])
-    threshold = float(target["threshold"])
+    main_target = action["main_page_marker"]
+    main_template_path = Path(asset_root) / main_target["template"]
+    main_roi = (
+        main_target["left"], main_target["top"],
+        main_target["right"], main_target["bottom"],
+    )
+    main_threshold = float(main_target["threshold"])
+    close_target = action["close_target"]
+    close_template_path = Path(asset_root) / close_target["template"]
+    close_roi = (
+        close_target["left"], close_target["top"],
+        close_target["right"], close_target["bottom"],
+    )
+    close_threshold = float(close_target["threshold"])
     pre_click_wait = float(action.get("pre_click_wait_seconds", 3))
     post_click_wait = float(action.get("post_click_wait_seconds", 3))
     poll_seconds = float(action["poll_seconds"])
 
     for round_number in range(1, int(action["max_rounds"]) + 1):
         completed_rounds = round_number
-        center, score = template_matcher(client.screenshot(), template_path, roi, threshold)
+        screenshot = client.screenshot()
+        main_center, main_score = template_matcher(
+            screenshot,
+            main_template_path,
+            main_roi,
+            main_threshold,
+        )
+        if main_center is not None:
+            LOGGER.info(
+                "回主界面第 %d 轮：发现%s，相似度 %.3f，确认已处于主界面",
+                round_number,
+                main_target["name"],
+                main_score,
+            )
+            break
+
+        center, score = template_matcher(
+            screenshot,
+            close_template_path,
+            close_roi,
+            close_threshold,
+        )
         if center is None:
             idle_count += 1
             LOGGER.info(
@@ -147,8 +178,26 @@ def return_to_main(
             pre_click_wait,
         )
         sleep(pre_click_wait)
+        confirmed_screenshot = client.screenshot()
+        confirmed_main_center, confirmed_main_score = template_matcher(
+            confirmed_screenshot,
+            main_template_path,
+            main_roi,
+            main_threshold,
+        )
+        if confirmed_main_center is not None:
+            LOGGER.info(
+                "点击前发现%s，相似度 %.3f，确认已处于主界面，取消点击",
+                main_target["name"],
+                confirmed_main_score,
+            )
+            break
+
         confirmed_center, confirmed_score = template_matcher(
-            client.screenshot(), template_path, roi, threshold
+            confirmed_screenshot,
+            close_template_path,
+            close_roi,
+            close_threshold,
         )
         if confirmed_center is None:
             LOGGER.info(

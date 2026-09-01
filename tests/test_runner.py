@@ -339,15 +339,22 @@ def test_action_runner_dispatches_return_to_main():
         "type": "return_to_main",
         "max_rounds": 10, "idle_rounds": 2, "poll_seconds": 1,
         "pre_click_wait_seconds": 3, "post_click_wait_seconds": 3,
+        "main_page_marker": {
+            "name": "主界面奖励入口", "template": "main.png",
+            "left": 1700, "top": 400, "right": 1920, "bottom": 700,
+            "threshold": 0.90,
+        },
         "close_target": {
             "name": "通用关闭按钮", "template": "close.png",
             "left": 1700, "top": 0, "right": 1920, "bottom": 180,
-            "threshold": 0.78,
+            "threshold": 0.95,
         },
     }
     results = iter([
-        ((1834, 67), 0.92), ((1835, 68), 0.94),
-        (None, 0.30), (None, 0.25),
+        (None, 0.20), ((1834, 67), 0.97),
+        (None, 0.21), ((1835, 68), 0.98),
+        (None, 0.22), (None, 0.30),
+        (None, 0.23), (None, 0.25),
     ])
 
     ActionRunner(

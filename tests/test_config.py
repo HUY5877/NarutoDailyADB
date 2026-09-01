@@ -197,21 +197,106 @@ def test_return_to_main_accepts_ten_round_close_settings(tmp_path):
         "poll_seconds": 1,
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 3,
+        "main_page_marker": {
+            "name": "主界面奖励入口",
+            "template": "assets/reward_entry.png",
+            "left": 1700, "top": 400, "right": 1920, "bottom": 700,
+            "threshold": 0.90,
+        },
         "close_target": {
             "name": "通用关闭按钮",
             "template": "assets/promo_close.png",
             "left": 1700, "top": 0, "right": 1920, "bottom": 180,
-            "threshold": 0.82,
+            "threshold": 0.95,
         },
     }]
 
     settings = load_settings(write_config(tmp_path, payload))
 
     assert settings.tasks["login"][0]["max_rounds"] == 10
-    assert settings.tasks["login"][0]["close_target"]["threshold"] == 0.82
+    assert settings.tasks["login"][0]["main_page_marker"]["threshold"] == 0.90
+    assert settings.tasks["login"][0]["close_target"]["threshold"] == 0.95
 
 
-def test_return_to_main_rejects_close_threshold_without_main_page_margin(tmp_path):
+def test_return_to_main_rejects_close_threshold_below_safe_margin(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["login"] = [{
+        "type": "return_to_main",
+        "max_rounds": 10,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "main_page_marker": {
+            "name": "主界面奖励入口",
+            "template": "assets/reward_entry.png",
+            "left": 1700, "top": 400, "right": 1920, "bottom": 700,
+            "threshold": 0.90,
+        },
+        "close_target": {
+            "name": "通用关闭按钮",
+            "template": "assets/promo_close.png",
+            "left": 1700, "top": 0, "right": 1920, "bottom": 180,
+            "threshold": 0.94,
+        },
+    }]
+
+    with pytest.raises(ConfigError, match="关闭按钮阈值不能低于 0.95"):
+        load_settings(write_config(tmp_path, payload))
+
+
+def test_return_to_main_rejects_main_page_marker_threshold_below_safe_margin(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["login"] = [{
+        "type": "return_to_main",
+        "max_rounds": 10,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "main_page_marker": {
+            "name": "主界面奖励入口",
+            "template": "assets/reward_entry.png",
+            "left": 1700, "top": 400, "right": 1920, "bottom": 700,
+            "threshold": 0.89,
+        },
+        "close_target": {
+            "name": "通用关闭按钮",
+            "template": "assets/promo_close.png",
+            "left": 1700, "top": 0, "right": 1920, "bottom": 180,
+            "threshold": 0.95,
+        },
+    }]
+
+    with pytest.raises(ConfigError, match="主界面标记阈值不能低于 0.90"):
+        load_settings(write_config(tmp_path, payload))
+
+
+def test_return_to_main_rejects_main_page_marker_outside_reward_area(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["login"] = [{
+        "type": "return_to_main",
+        "max_rounds": 10,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "main_page_marker": {
+            "name": "主界面奖励入口",
+            "template": "assets/reward_entry.png",
+            "left": 1400, "top": 100, "right": 1920, "bottom": 900,
+            "threshold": 0.90,
+        },
+        "close_target": {
+            "name": "通用关闭按钮",
+            "template": "assets/promo_close.png",
+            "left": 1700, "top": 0, "right": 1920, "bottom": 180,
+            "threshold": 0.95,
+        },
+    }]
+
+    with pytest.raises(ConfigError, match="主界面标记搜索区域必须限制在右侧奖励区域"):
+        load_settings(write_config(tmp_path, payload))
+
+
+def test_old_return_to_main_action_is_migrated_to_safe_settings(tmp_path):
     payload = valid_payload()
     payload["screen"] = {"width": 1920, "height": 1080}
     payload["tasks"]["login"] = [{
@@ -223,12 +308,20 @@ def test_return_to_main_rejects_close_threshold_without_main_page_margin(tmp_pat
             "name": "通用关闭按钮",
             "template": "assets/promo_close.png",
             "left": 1700, "top": 0, "right": 1920, "bottom": 180,
-            "threshold": 0.81,
+            "threshold": 0.82,
         },
     }]
 
-    with pytest.raises(ConfigError, match="关闭按钮阈值不能低于 0.82"):
-        load_settings(write_config(tmp_path, payload))
+    settings = load_settings(write_config(tmp_path, payload))
+
+    action = settings.tasks["login"][0]
+    assert action["close_target"]["threshold"] == 0.95
+    assert action["main_page_marker"] == {
+        "name": "主界面奖励入口",
+        "template": "assets/reward_entry.png",
+        "left": 1700, "top": 400, "right": 1920, "bottom": 700,
+        "threshold": 0.90,
+    }
 
 
 def test_coin_fortune_accepts_two_free_clicks_in_safe_region(tmp_path):

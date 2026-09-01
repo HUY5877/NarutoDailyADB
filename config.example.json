@@ -98,6 +98,15 @@
         "poll_seconds": 1,
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 3,
+        "main_page_marker": {
+          "name": "主界面奖励入口",
+          "template": "assets/reward_entry.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9
+        },
         "close_target": {
           "name": "通用关闭按钮",
           "template": "assets/promo_close.png",
@@ -105,7 +114,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 180,
-          "threshold": 0.82
+          "threshold": 0.95
         }
       }
     ],
@@ -206,6 +215,15 @@
         "poll_seconds": 1,
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 3,
+        "main_page_marker": {
+          "name": "主界面奖励入口",
+          "template": "assets/reward_entry.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9
+        },
         "close_target": {
           "name": "通用关闭按钮",
           "template": "assets/promo_close.png",
@@ -213,7 +231,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 180,
-          "threshold": 0.82
+          "threshold": 0.95
         }
       },
       {

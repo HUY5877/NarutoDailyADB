@@ -43,7 +43,7 @@ ACTION_KEYS = {
     },
     "return_to_main": {
         "type", "max_rounds", "idle_rounds", "poll_seconds",
-        "pre_click_wait_seconds", "post_click_wait_seconds", "close_target",
+        "pre_click_wait_seconds", "post_click_wait_seconds", "main_page_marker", "close_target",
     },
     "required_template_tap": {
         "type", "name", "template", "left", "top", "right", "bottom", "threshold",
@@ -130,9 +130,32 @@ def _validate_click_waits(action: dict, context: str) -> tuple[float, float]:
 
 
 def _normalize_action(action: Any) -> Any:
-    """把已发布的旧授权坐标结构迁移为按钮模板结构。"""
+    """把已发布的旧动作配置迁移为当前安全结构。"""
 
-    if not isinstance(action, dict) or action.get("type") != "finish_login_authorization":
+    if not isinstance(action, dict):
+        return action
+    if action.get("type") == "return_to_main" and "main_page_marker" not in action:
+        normalized = dict(action)
+        normalized["main_page_marker"] = {
+            "name": "主界面奖励入口",
+            "template": "assets/reward_entry.png",
+            "left": 1700,
+            "top": 400,
+            "right": 1920,
+            "bottom": 700,
+            "threshold": 0.90,
+        }
+        close_target = action.get("close_target")
+        if isinstance(close_target, dict):
+            normalized_close_target = dict(close_target)
+            threshold = normalized_close_target.get("threshold")
+            if isinstance(threshold, (int, float)) and not isinstance(threshold, bool) and threshold < 0.95:
+                normalized_close_target["threshold"] = 0.95
+            normalized["close_target"] = normalized_close_target
+        LOGGER.info("检测到旧版回主界面配置，已增加主界面识别并提高关闭阈值")
+        return normalized
+
+    if action.get("type") != "finish_login_authorization":
         return action
     second = action.get("second_authorization")
     if not isinstance(second, dict):
@@ -222,6 +245,23 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         if not isinstance(poll_seconds, (int, float)) or isinstance(poll_seconds, bool) or not 0.2 <= poll_seconds <= 5:
             raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
         pre_wait, post_wait = _validate_click_waits(action, context)
+        main_page_marker = action["main_page_marker"]
+        _validate_template_target(
+            main_page_marker,
+            width,
+            height,
+            f"{context}.main_page_marker",
+            require_name=True,
+        )
+        if not (
+            main_page_marker["left"] >= 1500
+            and main_page_marker["top"] >= 300
+            and main_page_marker["right"] <= width
+            and main_page_marker["bottom"] <= 800
+        ):
+            raise ConfigError(f"{context} 的主界面标记搜索区域必须限制在右侧奖励区域")
+        if main_page_marker["threshold"] < 0.90:
+            raise ConfigError(f"{context} 的主界面标记阈值不能低于 0.90")
         close_target = action["close_target"]
         _validate_template_target(close_target, width, height, f"{context}.close_target", require_name=True)
         if not (
@@ -231,8 +271,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             and close_target["bottom"] <= 300
         ):
             raise ConfigError(f"{context} 的关闭按钮搜索区域必须限制在右上角")
-        if close_target["threshold"] < 0.82:
-            raise ConfigError(f"{context} 的关闭按钮阈值不能低于 0.82")
+        if close_target["threshold"] < 0.95:
+            raise ConfigError(f"{context} 的关闭按钮阈值不能低于 0.95")
         return float(max_rounds * (poll_seconds + pre_wait + post_wait))
     elif action_type == "required_template_tap":
         target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
