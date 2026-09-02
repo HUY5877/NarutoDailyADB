@@ -14,5 +14,8 @@ test = ["pytest>=8"]
 [project.scripts]
 naruto-daily = "naruto_daily.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["naruto_daily*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
