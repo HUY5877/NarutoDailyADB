@@ -38,7 +38,9 @@ def navigate_to_card(
     threshold = float(action["threshold"])
     max_swipes = action["max_swipes"]
 
-    for swipe_count in range(max_swipes + 1):
+    swipe_count = 0
+    alignment_swipe_used = False
+    while True:
         screenshot = client.screenshot()
         center, score = template_matcher(screenshot, template_path, roi, threshold)
         if center is not None:
@@ -76,6 +78,28 @@ def navigate_to_card(
                 float(action["button_threshold"]),
             )
             if button_center is None:
+                if not alignment_swipe_used:
+                    LOGGER.info(
+                        "找到%s文字，但按钮和已完成标记都不完整，额外左滑一次后重新判断",
+                        name,
+                    )
+                    client.swipe(
+                        action["swipe_x1"],
+                        action["swipe_y1"],
+                        action["swipe_x2"],
+                        action["swipe_y2"],
+                        action["swipe_duration_ms"],
+                    )
+                    swipe_count += 1
+                    alignment_swipe_used = True
+                    sleep(float(action["wait_seconds"]))
+                    continue
+                if action.get("completed_skip_type"):
+                    LOGGER.info(
+                        "额外左滑后仍未找到可执行按钮，跳过%s这个可选任务",
+                        name,
+                    )
+                    return NavigationSummary(swipes=swipe_count, completed=True)
                 raise VisualError(
                     f"找到{name}，但未找到它下方的立刻前往，最后相似度 {button_score:.3f}"
                 )
@@ -110,7 +134,23 @@ def navigate_to_card(
             sleep(float(action.get("post_click_wait_seconds", 3)))
             return NavigationSummary(swipes=swipe_count, completed=False)
 
+        if alignment_swipe_used:
+            if action.get("completed_skip_type"):
+                LOGGER.info(
+                    "额外左滑后未再找到%s，跳过这个可选任务",
+                    name,
+                )
+                return NavigationSummary(swipes=swipe_count, completed=True)
+            raise VisualError(f"额外左滑后未再找到{name}，最后相似度 {score:.3f}")
+
         if swipe_count == max_swipes:
+            if action.get("completed_skip_type"):
+                LOGGER.info(
+                    "滑动 %d 次后仍未找到%s，跳过这个可选任务",
+                    max_swipes,
+                    name,
+                )
+                return NavigationSummary(swipes=swipe_count, completed=True)
             raise VisualError(f"滑动 {max_swipes} 次后仍未找到{name}，最后相似度 {score:.3f}")
 
         LOGGER.info(
@@ -127,6 +167,5 @@ def navigate_to_card(
             action["swipe_y2"],
             action["swipe_duration_ms"],
         )
+        swipe_count += 1
         sleep(float(action["wait_seconds"]))
-
-    raise AssertionError("横向查找循环不应运行到此处")

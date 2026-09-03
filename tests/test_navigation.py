@@ -120,7 +120,10 @@ def test_card_missing_after_max_swipes_raises_without_clicking():
 
 def test_card_label_without_corresponding_button_raises_without_clicking():
     client = NavigationClient()
-    results = iter([((562, 394), 0.99), (None, 0.30), (None, 0.40)])
+    results = iter([
+        ((1823, 394), 0.99), (None, 0.30), (None, 0.40),
+        ((562, 394), 0.99), (None, 0.30), (None, 0.40),
+    ])
 
     with pytest.raises(VisualError, match="找到组织祈福，但未找到它下方的立刻前往"):
         navigate_to_card(
@@ -131,7 +134,74 @@ def test_card_label_without_corresponding_button_raises_without_clicking():
         )
 
     assert client.taps == []
-    assert client.swipes == []
+    assert client.swipes == [(1650, 550, 350, 550, 500)]
+
+
+def test_optional_card_partially_visible_gets_only_one_extra_swipe_then_detects_completed(caplog):
+    client = NavigationClient()
+    action = card_action()
+    action["completed_skip_type"] = "handle_organization_prayer"
+    results = iter([
+        ((1823, 394), 0.99), (None, 0.30), (None, 0.81),
+        ((562, 394), 0.99), ((562, 580), 0.98),
+    ])
+
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        summary = navigate_to_card(
+            client,
+            action,
+            template_matcher=lambda *args: next(results),
+            sleep=lambda _: None,
+        )
+
+    assert client.taps == []
+    assert client.swipes == [(1650, 550, 350, 550, 500)]
+    assert summary.swipes == 1
+    assert summary.completed is True
+    assert "额外左滑一次" in caplog.text
+    assert "今日组织祈福已完成" in caplog.text
+
+
+def test_optional_card_still_unusable_after_one_extra_swipe_is_skipped(caplog):
+    client = NavigationClient()
+    action = card_action()
+    action["completed_skip_type"] = "handle_organization_prayer"
+    results = iter([
+        ((1823, 394), 0.99), (None, 0.30), (None, 0.81),
+        ((562, 394), 0.99), (None, 0.30), (None, 0.40),
+    ])
+
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        summary = navigate_to_card(
+            client,
+            action,
+            template_matcher=lambda *args: next(results),
+            sleep=lambda _: None,
+        )
+
+    assert client.taps == []
+    assert client.swipes == [(1650, 550, 350, 550, 500)]
+    assert summary.completed is True
+    assert "额外左滑后仍未找到可执行按钮" in caplog.text
+
+
+def test_optional_card_missing_after_max_swipes_is_skipped(caplog):
+    client = NavigationClient()
+    action = card_action()
+    action["completed_skip_type"] = "handle_organization_prayer"
+
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        summary = navigate_to_card(
+            client,
+            action,
+            template_matcher=lambda *args: (None, 0.20),
+            sleep=lambda _: None,
+        )
+
+    assert client.taps == []
+    assert len(client.swipes) == 6
+    assert summary.completed is True
+    assert "仍未找到组织祈福，跳过这个可选任务" in caplog.text
 
 
 def test_card_button_disappearing_during_pre_wait_does_not_click_old_coordinate():
