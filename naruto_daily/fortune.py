@@ -42,12 +42,15 @@ def handle_coin_fortune(
     post_click_wait = float(action.get("post_click_wait_seconds", 3))
     required_clicks = int(action["clicks"])
     completed_clicks = 0
+    max_missing_checks = 3
 
     for click_number in range(1, required_clicks + 1):
         elapsed = 0.0
+        missing_checks = 0
         while True:
             center, score = _match(client, target, template_matcher, asset_root)
             if center is not None:
+                missing_checks = 0
                 LOGGER.info(
                     "发现第 %d/%d 次%s，相似度 %.3f，点击前等待 %.2f 秒",
                     click_number,
@@ -62,6 +65,7 @@ def handle_coin_fortune(
                     client, target, template_matcher, asset_root
                 )
                 if confirmed_center is None:
+                    missing_checks = 1
                     LOGGER.info(
                         "等待后%s已消失，相似度 %.3f，不点击旧坐标并继续识别",
                         target["name"],
@@ -85,6 +89,16 @@ def handle_coin_fortune(
                     )
                     sleep(post_click_wait)
                     break
+            else:
+                missing_checks += 1
+
+            if missing_checks >= max_missing_checks:
+                LOGGER.info(
+                    "连续 %d 次未发现%s，结束招财并交给后续动作返回主界面",
+                    max_missing_checks,
+                    target["name"],
+                )
+                return FortuneSummary(clicks=completed_clicks)
 
             if elapsed >= timeout_seconds:
                 raise VisualError(

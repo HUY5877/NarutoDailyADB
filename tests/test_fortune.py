@@ -84,3 +84,23 @@ def test_coin_fortune_does_not_click_disappeared_button():
 
     assert client.taps == [(1263, 852), (1264, 853)]
     assert summary.clicks == 2
+
+
+def test_coin_fortune_returns_after_three_consecutive_missing_checks(caplog):
+    client = FortuneClient()
+    waits = []
+
+    with caplog.at_level(logging.INFO, logger="naruto_daily"):
+        summary = handle_coin_fortune(
+            client,
+            fortune_action(),
+            template_matcher=lambda *args: (None, 0.54),
+            sleep=waits.append,
+        )
+
+    assert client.screenshot_count == 3
+    assert client.taps == []
+    assert waits == [1.0, 1.0]
+    assert summary.clicks == 0
+    assert "连续 3 次未发现免费一次" in caplog.text
+    assert "结束招财并交给后续动作返回主界面" in caplog.text
