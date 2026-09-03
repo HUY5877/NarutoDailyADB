@@ -316,10 +316,10 @@
         "close_target": {
           "name": "通用关闭按钮",
           "template": "assets/promo_close.png",
-          "left": 1700,
+          "left": 1650,
           "top": 0,
           "right": 1920,
-          "bottom": 180,
+          "bottom": 300,
           "threshold": 0.95
         }
       },

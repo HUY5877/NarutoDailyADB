@@ -230,3 +230,42 @@ def test_recruit_confirm_template_matches_left_confirm_and_rejects_paid_choices(
     assert confirm_score >= 0.99
     assert paid_center is None
     assert paid_score < 0.90
+
+
+def test_fortune_close_is_found_only_after_extending_recruit_return_area_downward():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "fortune_page_close.png").read_bytes()
+    template = project_root / "assets" / "promo_close.png"
+
+    old_center, old_score = find_template_in_png(
+        screenshot,
+        template,
+        (1700, 0, 1920, 180),
+        0.95,
+    )
+    extended_center, extended_score = find_template_in_png(
+        screenshot,
+        template,
+        (1650, 0, 1920, 300),
+        0.95,
+    )
+
+    assert old_center is None
+    assert old_score < 0.95
+    assert extended_center == (1754, 175)
+    assert extended_score >= 0.99
+
+
+def test_extended_fortune_close_area_still_rejects_main_page_activity_button():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "main_page_activity_icon.png").read_bytes()
+
+    center, score = find_template_in_png(
+        screenshot,
+        project_root / "assets" / "promo_close.png",
+        (1650, 0, 1920, 300),
+        0.95,
+    )
+
+    assert center is None
+    assert score < 0.95

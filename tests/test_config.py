@@ -634,3 +634,35 @@ def test_more_than_three_hundred_wait_seconds_is_rejected(tmp_path):
 
     with pytest.raises(ConfigError, match="300 秒"):
         load_settings(write_config(tmp_path, payload))
+
+
+def test_only_recruit_return_action_uses_extended_fortune_close_area():
+    project_root = Path(__file__).parents[1]
+    settings = load_settings(project_root / "config.example.json")
+
+    login_return = next(
+        action for action in settings.tasks["login"]
+        if action["type"] == "return_to_main"
+    )
+    prayer_return = next(
+        action for action in settings.tasks["organization_pray"]
+        if action["type"] == "return_to_main"
+    )
+    recruit_return = next(
+        action for action in settings.tasks["recruit"]
+        if action["type"] == "return_to_main"
+    )
+
+    assert login_return["close_target"] == prayer_return["close_target"]
+    assert (
+        login_return["close_target"]["left"],
+        login_return["close_target"]["top"],
+        login_return["close_target"]["right"],
+        login_return["close_target"]["bottom"],
+    ) == (1700, 0, 1920, 180)
+    assert (
+        recruit_return["close_target"]["left"],
+        recruit_return["close_target"]["top"],
+        recruit_return["close_target"]["right"],
+        recruit_return["close_target"]["bottom"],
+    ) == (1650, 0, 1920, 300)
