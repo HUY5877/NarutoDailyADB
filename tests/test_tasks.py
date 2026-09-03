@@ -22,19 +22,20 @@ def test_each_task_is_independently_selectable():
     assert build_task(settings, "recruit") == [{"type": "tap", "x": 3, "y": 3}]
 
 
-def test_login_main_flow_continues_to_organization_pray_after_cleanup():
+def test_login_main_flow_continues_to_prayer_and_recruit_after_cleanup():
     tasks = {
         "login": [{"type": "popup_cleanup", "rounds": 1}],
         "organization_pray": [{"type": "tap", "x": 5, "y": 5}],
         "sign_in": [],
         "stamina": [],
-        "recruit": [],
+        "recruit": [{"type": "tap", "x": 3, "y": 3}],
         "abundance": [],
     }
 
     assert build_task(settings_with_tasks(tasks), "login") == [
         {"type": "popup_cleanup", "rounds": 1},
         {"type": "tap", "x": 5, "y": 5},
+        {"type": "tap", "x": 3, "y": 3},
     ]
 
 
@@ -43,7 +44,7 @@ def test_build_all_preserves_approved_order():
         ["login", "organization_pray", "sign_in", "stamina", "recruit", "abundance"], start=1
     )}
 
-    assert [action["x"] for action in build_all(settings_with_tasks(tasks))] == [1, 2, 3, 4, 5, 6]
+    assert [action["x"] for action in build_all(settings_with_tasks(tasks))] == [1, 2, 5, 3, 4, 6]
 
 
 def test_build_all_rejects_combined_sequence_over_limits():

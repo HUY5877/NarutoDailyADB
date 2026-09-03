@@ -72,6 +72,12 @@ ACTION_KEYS = {
         "type", "clicks", "timeout_seconds", "poll_seconds",
         "pre_click_wait_seconds", "post_click_wait_seconds", "free_button",
     },
+    "handle_free_recruit": {
+        "type", "timeout_seconds", "poll_seconds",
+        "pre_click_wait_seconds", "post_click_wait_seconds",
+        "advanced_tab", "advanced_red_dot", "ordinary_tab", "ordinary_red_dot",
+        "free_button", "result_confirm",
+    },
 }
 CLICK_WAIT_KEYS = {"pre_click_wait_seconds", "post_click_wait_seconds"}
 
@@ -192,6 +198,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
     if action_type in {
             "required_template_tap", "finish_login_authorization", "return_to_main",
             "handle_coin_fortune", "popup_cleanup", "handle_organization_prayer",
+            "handle_free_recruit",
     }:
         optional_keys = CLICK_WAIT_KEYS
     elif action_type == "find_card_and_click":
@@ -359,7 +366,9 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的 wait_seconds 必须在 0 到 10 之间")
         pre_wait, post_wait = _validate_click_waits(action, context)
         completed_skip_type = action.get("completed_skip_type", "handle_organization_prayer")
-        if completed_skip_type not in {"handle_organization_prayer", "handle_coin_fortune"}:
+        if completed_skip_type not in {
+            "handle_organization_prayer", "handle_coin_fortune", "handle_free_recruit",
+        }:
             raise ConfigError(f"{context} 的 completed_skip_type 不是允许的页面处理动作")
         return float(max_swipes * wait_seconds + pre_wait + post_wait)
     elif action_type == "handle_organization_prayer":
@@ -423,6 +432,82 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         if free_button["threshold"] < 0.80:
             raise ConfigError(f"{context} 的免费招财阈值不能低于 0.80")
         return float(clicks * (timeout_seconds + pre_wait + post_wait))
+    elif action_type == "handle_free_recruit":
+        timeout_seconds = action["timeout_seconds"]
+        poll_seconds = action["poll_seconds"]
+        if (width, height) != (1920, 1080):
+            raise ConfigError(f"{context} 只支持 1920×1080 安卓画面")
+        if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or not 1 <= timeout_seconds <= 60:
+            raise ConfigError(f"{context} 的 timeout_seconds 必须在 1 到 60 之间")
+        if not isinstance(poll_seconds, (int, float)) or isinstance(poll_seconds, bool) or not 0.2 <= poll_seconds <= 5:
+            raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
+        if poll_seconds > timeout_seconds:
+            raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
+        pre_wait, post_wait = _validate_click_waits(action, context)
+        if pre_wait != 3 or post_wait != 3:
+            raise ConfigError(f"{context} 的点击前后等待必须固定为 3 秒")
+        for key in (
+            "advanced_tab", "advanced_red_dot", "ordinary_tab", "ordinary_red_dot",
+            "free_button", "result_confirm",
+        ):
+            _validate_template_target(action[key], width, height, f"{context}.{key}", require_name=True)
+        advanced_tab = action["advanced_tab"]
+        if not (
+            advanced_tab["left"] == 0
+            and advanced_tab["top"] >= 100
+            and advanced_tab["right"] <= 350
+            and advanced_tab["bottom"] <= 450
+        ):
+            raise ConfigError(f"{context} 的高级招募标签搜索区域必须限制在左侧上方")
+        ordinary_tab = action["ordinary_tab"]
+        if not (
+            ordinary_tab["left"] == 0
+            and ordinary_tab["top"] >= 700
+            and ordinary_tab["right"] <= 350
+            and ordinary_tab["bottom"] <= height
+        ):
+            raise ConfigError(f"{context} 的普通招募标签搜索区域必须限制在左侧下方")
+        advanced_red_dot = action["advanced_red_dot"]
+        if not (
+            advanced_red_dot["left"] >= 150
+            and advanced_red_dot["top"] >= 150
+            and advanced_red_dot["right"] <= 300
+            and advanced_red_dot["bottom"] <= 350
+        ):
+            raise ConfigError(f"{context} 的高级招募红点搜索区域必须限制在高级招募标签旁")
+        ordinary_red_dot = action["ordinary_red_dot"]
+        if not (
+            ordinary_red_dot["left"] >= 150
+            and ordinary_red_dot["top"] >= 700
+            and ordinary_red_dot["right"] <= 300
+            and ordinary_red_dot["bottom"] <= height
+        ):
+            raise ConfigError(f"{context} 的普通招募红点搜索区域必须限制在普通招募标签旁")
+        if advanced_red_dot["threshold"] < 0.95 or ordinary_red_dot["threshold"] < 0.95:
+            raise ConfigError(f"{context} 的招募红点阈值不能低于 0.95")
+        if advanced_red_dot["template"] != ordinary_red_dot["template"]:
+            raise ConfigError(f"{context} 的高级和普通招募必须共用同一张红点模板")
+        free_button = action["free_button"]
+        if not (
+            free_button["left"] >= 800
+            and free_button["top"] >= 650
+            and free_button["right"] <= 1500
+            and free_button["bottom"] <= height
+        ):
+            raise ConfigError(f"{context} 的免费招募搜索区域必须限制在底部中间安全区域")
+        if free_button["threshold"] < 0.80:
+            raise ConfigError(f"{context} 的免费招募阈值不能低于 0.80")
+        result_confirm = action["result_confirm"]
+        if not (
+            result_confirm["left"] >= 300
+            and result_confirm["top"] >= 650
+            and result_confirm["right"] <= 850
+            and result_confirm["bottom"] <= height
+        ):
+            raise ConfigError(f"{context} 的招募结果确定按钮搜索区域必须限制在左下安全区域")
+        if result_confirm["threshold"] < 0.85:
+            raise ConfigError(f"{context} 的招募结果确定按钮阈值不能低于 0.85")
+        return float(6 * (timeout_seconds + pre_wait + post_wait))
     return 0.0
 
 

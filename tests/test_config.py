@@ -415,6 +415,135 @@ def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
     assert settings.tasks["organization_pray"][0]["pre_click_wait_seconds"] == 3
 
 
+def test_free_recruit_accepts_red_dot_and_safe_button_targets(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["recruit"] = [{
+        "type": "handle_free_recruit",
+        "timeout_seconds": 40,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "advanced_tab": {
+            "name": "高级招募标签", "template": "assets/advanced_recruit_tab.png",
+            "left": 0, "top": 150, "right": 300, "bottom": 350, "threshold": 0.90,
+        },
+        "advanced_red_dot": {
+            "name": "高级招募红点", "template": "assets/recruit_red_dot.png",
+            "left": 170, "top": 180, "right": 270, "bottom": 300, "threshold": 0.95,
+        },
+        "ordinary_tab": {
+            "name": "普通招募标签", "template": "assets/ordinary_recruit_tab.png",
+            "left": 0, "top": 780, "right": 300, "bottom": 1030, "threshold": 0.90,
+        },
+        "ordinary_red_dot": {
+            "name": "普通招募红点", "template": "assets/recruit_red_dot.png",
+            "left": 170, "top": 800, "right": 270, "bottom": 980, "threshold": 0.95,
+        },
+        "free_button": {
+            "name": "免费招募按钮", "template": "assets/free_recruit.png",
+            "left": 900, "top": 700, "right": 1500, "bottom": 1020, "threshold": 0.85,
+        },
+        "result_confirm": {
+            "name": "招募结果确定按钮", "template": "assets/recruit_confirm.png",
+            "left": 350, "top": 700, "right": 800, "bottom": 1000, "threshold": 0.90,
+        },
+    }]
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    action = settings.tasks["recruit"][0]
+    assert action["timeout_seconds"] == 40
+    assert action["advanced_red_dot"]["template"] == action["ordinary_red_dot"]["template"]
+    assert action["free_button"]["right"] == 1500
+    assert action["result_confirm"]["right"] == 800
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda action: action["free_button"].update({"right": 1750}),
+            "免费招募搜索区域",
+        ),
+        (
+            lambda action: action["result_confirm"].update({"right": 1100}),
+            "招募结果确定按钮搜索区域",
+        ),
+        (
+            lambda action: action["advanced_red_dot"].update({"threshold": 0.89}),
+            "招募红点阈值",
+        ),
+        (
+            lambda action: action["ordinary_red_dot"].update({"left": 0}),
+            "普通招募红点搜索区域",
+        ),
+        (
+            lambda action: action["ordinary_red_dot"].update(
+                {"template": "assets/another_red_dot.png"}
+            ),
+            "必须共用同一张红点模板",
+        ),
+        (
+            lambda action: action.update({"pre_click_wait_seconds": 2}),
+            "点击前后等待必须固定为 3 秒",
+        ),
+    ],
+)
+def test_free_recruit_rejects_paid_button_and_unrelated_red_dot_risk(
+    tmp_path,
+    mutate,
+    message,
+):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    action = {
+        "type": "handle_free_recruit",
+        "timeout_seconds": 40,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 3,
+        "advanced_tab": {
+            "name": "高级招募标签", "template": "assets/advanced_recruit_tab.png",
+            "left": 0, "top": 150, "right": 300, "bottom": 350, "threshold": 0.90,
+        },
+        "advanced_red_dot": {
+            "name": "高级招募红点", "template": "assets/recruit_red_dot.png",
+            "left": 170, "top": 180, "right": 270, "bottom": 300, "threshold": 0.95,
+        },
+        "ordinary_tab": {
+            "name": "普通招募标签", "template": "assets/ordinary_recruit_tab.png",
+            "left": 0, "top": 780, "right": 300, "bottom": 1030, "threshold": 0.90,
+        },
+        "ordinary_red_dot": {
+            "name": "普通招募红点", "template": "assets/recruit_red_dot.png",
+            "left": 170, "top": 800, "right": 270, "bottom": 980, "threshold": 0.95,
+        },
+        "free_button": {
+            "name": "免费招募按钮", "template": "assets/free_recruit.png",
+            "left": 900, "top": 700, "right": 1500, "bottom": 1020, "threshold": 0.85,
+        },
+        "result_confirm": {
+            "name": "招募结果确定按钮", "template": "assets/recruit_confirm.png",
+            "left": 350, "top": 700, "right": 800, "bottom": 1000, "threshold": 0.90,
+        },
+    }
+    payload["tasks"]["recruit"] = [action]
+    mutate(action)
+
+    with pytest.raises(ConfigError, match=message):
+        load_settings(write_config(tmp_path, payload))
+
+
+def test_free_recruit_requires_fixed_1920_by_1080_screen(tmp_path):
+    project_root = Path(__file__).parents[1]
+    payload = json.loads((project_root / "config.example.json").read_text(encoding="utf-8"))
+    payload["screen"] = {"width": 2560, "height": 1440}
+
+    with pytest.raises(ConfigError, match="只支持 1920×1080 安卓画面"):
+        load_settings(write_config(tmp_path, payload))
+
+
 def test_organization_prayer_action_accepts_reward_and_coin_targets(tmp_path):
     payload = valid_payload()
     payload["screen"] = {"width": 1920, "height": 1080}

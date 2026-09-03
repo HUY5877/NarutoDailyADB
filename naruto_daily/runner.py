@@ -13,6 +13,7 @@ from .authorization import finish_login_authorization
 from .navigation import navigate_to_card
 from .prayer import handle_organization_prayer
 from .fortune import handle_coin_fortune
+from .recruit import handle_free_recruit
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -29,6 +30,7 @@ ACTION_NAMES = {
     "find_card_and_click": "横向查找任务卡片",
     "handle_organization_prayer": "领取昨日奖励并执行铜币祈福",
     "handle_coin_fortune": "执行两次免费招财",
+    "handle_free_recruit": "检查并执行高级和普通免费招募",
 }
 
 
@@ -102,11 +104,17 @@ class ActionRunner:
                 + float(action.get("post_click_wait_seconds", 3))
             )
             if action.get("type") == "handle_coin_fortune"
+            else 6 * (
+                float(action.get("timeout_seconds", 0))
+                + float(action.get("pre_click_wait_seconds", 3))
+                + float(action.get("post_click_wait_seconds", 3))
+            )
+            if action.get("type") == "handle_free_recruit"
             else 0.0
             for action in actions
         )
-        if wait_seconds > 600:
-            raise ActionLimitError("动作序列等待时间超过 600 秒")
+        if wait_seconds > 900:
+            raise ActionLimitError("动作序列等待时间超过 900 秒")
         LOGGER.info("开始执行，共 %d 个动作", len(actions))
         skip_action_type: str | None = None
         completed_card_name = ""
@@ -241,6 +249,14 @@ class ActionRunner:
                 )
             elif action_type == "handle_coin_fortune":
                 handle_coin_fortune(
+                    self.client,
+                    action,
+                    template_matcher=self.template_matcher,
+                    asset_root=self.asset_root,
+                    sleep=self.sleep,
+                )
+            elif action_type == "handle_free_recruit":
+                handle_free_recruit(
                     self.client,
                     action,
                     template_matcher=self.template_matcher,

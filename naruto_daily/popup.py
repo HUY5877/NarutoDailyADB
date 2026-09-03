@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from .adb_client import AdbClient
-from .visual import find_template_in_png
+from .visual import VisualError, find_template_in_png
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -166,8 +166,12 @@ def return_to_main(
                 int(action["idle_rounds"]),
             )
             if idle_count >= int(action["idle_rounds"]):
-                LOGGER.info("连续 %d 轮没有发现关闭按钮，已回到主界面", idle_count)
-                break
+                message = (
+                    f"连续 {idle_count} 轮既未发现主界面标记，也未发现关闭按钮，"
+                    "未能确认已经返回主界面"
+                )
+                LOGGER.error(message)
+                raise VisualError(message)
             sleep(poll_seconds)
             continue
 
@@ -206,8 +210,12 @@ def return_to_main(
             )
             idle_count += 1
             if idle_count >= int(action["idle_rounds"]):
-                LOGGER.info("连续 %d 轮没有发现关闭按钮，已回到主界面", idle_count)
-                break
+                message = (
+                    f"连续 {idle_count} 轮既未发现主界面标记，也未发现关闭按钮，"
+                    "未能确认已经返回主界面"
+                )
+                LOGGER.error(message)
+                raise VisualError(message)
             sleep(poll_seconds)
             continue
 
@@ -223,7 +231,12 @@ def return_to_main(
         LOGGER.info("关闭一层界面后等待 %.2f 秒", post_click_wait)
         sleep(post_click_wait)
     else:
-        LOGGER.info("已达到最多 %d 轮回主界面检查", int(action["max_rounds"]))
+        message = (
+            f"已达到最多 {int(action['max_rounds'])} 轮回主界面检查，"
+            "未能确认已经返回主界面"
+        )
+        LOGGER.error(message)
+        raise VisualError(message)
 
     LOGGER.info("回主界面结束：检查 %d 轮，点击关闭 %d 次", completed_rounds, click_count)
     return PopupCleanupSummary(completed_rounds, click_count)

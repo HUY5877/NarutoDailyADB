@@ -1,7 +1,10 @@
 import logging
 from pathlib import Path
 
+import pytest
+
 from naruto_daily.popup import cleanup_popups, return_to_main
+from naruto_daily.visual import VisualError
 
 
 class ScreenshotClient:
@@ -88,7 +91,7 @@ def test_action_runner_dispatches_popup_cleanup():
     assert client.taps == [(958, 908)]
 
 
-def test_return_to_main_closes_nested_pages_and_stops_after_two_idle_rounds(caplog):
+def test_return_to_main_rejects_unknown_page_after_closing_nested_pages(caplog):
     client = ScreenshotClient()
     results = iter([
         (None, 0.20), ((1834, 67), 0.97), (None, 0.21), ((1835, 68), 0.98),
@@ -117,19 +120,18 @@ def test_return_to_main_closes_nested_pages_and_stops_after_two_idle_rounds(capl
     }
 
     with caplog.at_level(logging.INFO, logger="naruto_daily"):
-        summary = return_to_main(
-            client,
-            action,
-            template_matcher=lambda *args: next(results),
-            asset_root=Path("assets"),
-            sleep=waits.append,
-        )
+        with pytest.raises(VisualError, match="未能确认已经返回主界面"):
+            return_to_main(
+                client,
+                action,
+                template_matcher=lambda *args: next(results),
+                asset_root=Path("assets"),
+                sleep=waits.append,
+            )
 
     assert client.taps == [(1835, 68), (1829, 71)]
     assert waits == [3.0, 3.0, 3.0, 3.0, 1.0]
-    assert summary.rounds == 4
-    assert summary.clicks == 2
-    assert "连续 2 轮没有发现关闭按钮，已回到主界面" in caplog.text
+    assert "连续 2 轮既未发现主界面标记，也未发现关闭按钮" in caplog.text
 
 
 def test_return_to_main_stops_immediately_when_real_main_page_is_visible(caplog):

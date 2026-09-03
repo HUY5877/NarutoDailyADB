@@ -128,3 +128,105 @@ def test_generic_close_template_rejects_real_main_page_top_right_icons():
 
     assert center is None
     assert score < 0.95
+
+
+def test_ninja_recruit_label_matches_only_its_task_card():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "ninja_recruit_card.png").read_bytes()
+
+    center, score = find_template_in_png(
+        screenshot,
+        project_root / "assets" / "ninja_recruit_label.png",
+        (0, 0, 400, 220),
+        0.85,
+    )
+
+    assert center == (232, 100)
+    assert score >= 0.99
+
+
+def test_recruit_sidebar_templates_match_labels_and_dedicated_red_dots():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "advanced_recruit_page.png").read_bytes()
+
+    advanced_tab, advanced_tab_score = find_template_in_png(
+        screenshot,
+        project_root / "assets" / "advanced_recruit_tab.png",
+        (0, 150, 300, 350),
+        0.90,
+    )
+    advanced_dot, advanced_dot_score = find_template_in_png(
+        screenshot,
+        project_root / "assets" / "recruit_red_dot.png",
+        (170, 180, 270, 300),
+        0.95,
+    )
+    ordinary_tab, ordinary_tab_score = find_template_in_png(
+        screenshot,
+        project_root / "assets" / "ordinary_recruit_tab.png",
+        (0, 780, 300, 1030),
+        0.90,
+    )
+    ordinary_dot, ordinary_dot_score = find_template_in_png(
+        screenshot,
+        project_root / "assets" / "recruit_red_dot.png",
+        (170, 800, 270, 980),
+        0.95,
+    )
+
+    assert advanced_tab == (126, 263)
+    assert advanced_tab_score >= 0.99
+    assert advanced_dot == (219, 230)
+    assert advanced_dot_score >= 0.99
+    assert ordinary_tab == (128, 909)
+    assert ordinary_tab_score >= 0.99
+    assert ordinary_dot == (219, 871)
+    assert ordinary_dot_score >= 0.95
+
+
+def test_free_recruit_template_matches_free_button_but_rejects_paid_button():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "advanced_recruit_page.png").read_bytes()
+    template = project_root / "assets" / "free_recruit.png"
+
+    free_center, free_score = find_template_in_png(
+        screenshot,
+        template,
+        (900, 700, 1500, 1020),
+        0.85,
+    )
+    paid_center, paid_score = find_template_in_png(
+        screenshot,
+        template,
+        (1500, 700, 1920, 1020),
+        0.85,
+    )
+
+    assert free_center == (1282, 850)
+    assert free_score >= 0.99
+    assert paid_center is None
+    assert paid_score < 0.85
+
+
+def test_recruit_confirm_template_matches_left_confirm_and_rejects_paid_choices():
+    project_root = Path(__file__).parents[1]
+    screenshot = (project_root / "tests" / "fixtures" / "recruit_result.png").read_bytes()
+    template = project_root / "assets" / "recruit_confirm.png"
+
+    confirm_center, confirm_score = find_template_in_png(
+        screenshot,
+        template,
+        (350, 700, 800, 1000),
+        0.90,
+    )
+    paid_center, paid_score = find_template_in_png(
+        screenshot,
+        template,
+        (800, 700, 1500, 1000),
+        0.90,
+    )
+
+    assert confirm_center == (598, 843)
+    assert confirm_score >= 0.99
+    assert paid_center is None
+    assert paid_score < 0.90

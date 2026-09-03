@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 
 from naruto_daily.adb_client import AdbError
+from naruto_daily.config import load_settings
 from naruto_daily.runner import ActionLimitError, ActionRunner
+from naruto_daily.tasks import build_task
 from naruto_daily.visual import VisualError
 
 
@@ -74,9 +76,25 @@ def test_runner_accepts_combined_daily_flow_under_six_hundred_seconds():
     assert summary.wait_seconds == 501
 
 
-def test_runner_rejects_more_than_six_hundred_seconds():
-    with pytest.raises(ActionLimitError, match="600 秒"):
+def test_runner_accepts_configured_login_prayer_and_recruit_flow():
+    project_root = Path(__file__).parents[1]
+    settings = load_settings(project_root / "config.example.json")
+    actions = build_task(settings, "login")
+
+    summary = ActionRunner(
+        RecordingClient(),
+        sleep=lambda _: None,
+        dry_run=True,
+    ).run(actions)
+
+    assert summary.action_count == 19
+    assert summary.wait_seconds == 803
+
+
+def test_runner_rejects_more_than_nine_hundred_seconds():
+    with pytest.raises(ActionLimitError, match="900 秒"):
         ActionRunner(RecordingClient(), sleep=lambda _: None).run([
+            {"type": "wait", "seconds": 300},
             {"type": "wait", "seconds": 300},
             {"type": "wait", "seconds": 300},
             {"type": "wait", "seconds": 1},
@@ -353,8 +371,7 @@ def test_action_runner_dispatches_return_to_main():
     results = iter([
         (None, 0.20), ((1834, 67), 0.97),
         (None, 0.21), ((1835, 68), 0.98),
-        (None, 0.22), (None, 0.30),
-        (None, 0.23), (None, 0.25),
+        ((1810, 550), 0.96),
     ])
 
     ActionRunner(
@@ -416,6 +433,35 @@ def test_completed_fortune_card_skips_only_fortune_handler():
     ).run([
         card,
         {"type": "handle_coin_fortune"},
+        {"type": "tap", "x": 1, "y": 2},
+    ])
+
+    assert client.calls == [("tap", 1, 2)]
+
+
+def test_completed_recruit_card_skips_only_recruit_handler():
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    card = {
+        "type": "find_card_and_click", "name": "忍者招募", "template": "recruit.png",
+        "left": 0, "top": 0, "right": 1920, "bottom": 1080, "threshold": 0.85,
+        "button_template": "go_now.png", "button_threshold": 0.85,
+        "completed_template": "completed.png", "completed_threshold": 0.90,
+        "button_left_offset": -140, "button_top_offset": 80,
+        "button_right_offset": 140, "button_bottom_offset": 260, "max_swipes": 6,
+        "swipe_x1": 1650, "swipe_y1": 550, "swipe_x2": 350, "swipe_y2": 550,
+        "swipe_duration_ms": 500, "wait_seconds": 1,
+        "completed_skip_type": "handle_free_recruit",
+    }
+    results = iter([((1185, 424), 0.99), ((1185, 590), 0.98)])
+
+    ActionRunner(
+        client,
+        sleep=lambda _: None,
+        template_matcher=lambda *args: next(results),
+    ).run([
+        card,
+        {"type": "handle_free_recruit"},
         {"type": "tap", "x": 1, "y": 2},
     ])
 
