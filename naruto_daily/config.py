@@ -32,8 +32,11 @@ class Settings:
 
 
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
-TASK_NAMES = {"login", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "secret_realm"}
+TASK_NAMES = {"login", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "secret_realm", "secret_realm_farm"}
 ACTION_KEYS = {
+    "enter_secret_realm": {"type", "method", "return_to_main", "reward_button", "card",
+                           "swipe", "timeout_seconds", "poll_seconds", "pre_click_wait_seconds",
+                           "post_click_wait_seconds", "multimodal"},
     "handle_secret_realm": {
         "type", "timeout_seconds", "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds",
         "load_wait_seconds", "create_room", "deploy_button", "result_marker", "result_return", "multimodal", "battle",
@@ -271,6 +274,33 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
     action_type = action["type"]
     if action_type not in ACTION_KEYS:
         raise ConfigError(f"{context} 包含不支持的动作：{action_type!r}")
+    if action_type == "enter_secret_realm":
+        method = action.get("method")
+        keys = {"type", "method", "return_to_main"}
+        if method == "rewards":
+            keys |= {"reward_button", "card"}
+            nested = {"return_to_main": "return_to_main", "reward_button": "required_template_tap", "card": "find_card_and_click"}
+        elif method == "ninja_challenge":
+            keys |= {"swipe", "timeout_seconds", "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds", "multimodal"}
+            nested = {"return_to_main": "return_to_main", "swipe": "swipe"}
+        else:
+            raise ConfigError(f"{context} 的秘境入口方式必须是 rewards 或 ninja_challenge")
+        _require_exact_keys(action, keys, context)
+        for key, expected_type in nested.items():
+            child = action[key]
+            if not isinstance(child, dict) or child.get("type") != expected_type:
+                raise ConfigError(f"{context}.{key} 必须是 {expected_type} 动作")
+            _validate_action(child, width, height, f"{context}.{key}")
+        if method == "ninja_challenge":
+            _validate_multimodal_config(action["multimodal"], f"{context}.multimodal")
+            _validate_click_waits(action, context)
+            if type(action["timeout_seconds"]) not in (int, float) or not 1 <= action["timeout_seconds"] <= 180:
+                raise ConfigError(f"{context}.timeout_seconds 必须在 1 到 180 之间")
+            if type(action["poll_seconds"]) not in (int, float) or not .2 <= action["poll_seconds"] <= 5:
+                raise ConfigError(f"{context}.poll_seconds 必须在 0.2 到 5 之间")
+            if action["swipe"]["x1"] >= action["swipe"]["x2"]:
+                raise ConfigError(f"{context} 的主界面滑动必须向右")
+        return
     if action_type in {
             "required_template_tap", "finish_login_authorization", "return_to_main",
             "handle_coin_fortune", "popup_cleanup", "handle_organization_prayer",
@@ -678,7 +708,7 @@ def load_settings(path: Path) -> Settings:
     tasks = payload["tasks"]
     if not isinstance(tasks, dict):
         raise ConfigError("tasks 必须是对象")
-    _require_exact_keys(tasks, TASK_NAMES, "tasks", optional={"secret_realm"})
+    _require_exact_keys(tasks, TASK_NAMES, "tasks", optional={"secret_realm", "secret_realm_farm"})
     validated: dict[str, list[dict[str, Any]]] = {}
     for task_name, actions in tasks.items():
         if not isinstance(actions, list):

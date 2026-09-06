@@ -12,7 +12,8 @@ from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.login import cleanup_popups
 from naruto_daily.return_to_main import return_to_main
 from naruto_daily.login.authorization import finish_login_authorization, authorize_account
-from naruto_daily.common.navigation import navigate_to_card
+from naruto_daily.common.navigation import navigate_to_card, required_template_tap
+from naruto_daily.secret_realm.enter import enter_secret_realm
 from naruto_daily.organization_prayer import handle_organization_prayer
 from .fortune import handle_coin_fortune
 from .recruit import handle_free_recruit
@@ -22,6 +23,7 @@ from .secret_realm import handle_secret_realm
 
 LOGGER = logging.getLogger("naruto_daily")
 ACTION_NAMES = {
+    "enter_secret_realm": "进入秘境探险",
     "handle_secret_realm": "创建秘境房间并按挑战券循环出战",
     "authorize_account": "选择指定 QQ 账号并授权",
     "handle_abundance": "挑战丰饶之间并执行通用战斗",
@@ -117,49 +119,8 @@ class ActionRunner:
                     sleep=self.sleep,
                 )
             elif action_type == "required_template_tap":
-                timeout_seconds = float(action["timeout_seconds"])
-                poll_seconds = float(action["poll_seconds"])
-                pre_click_wait_seconds = float(action.get("pre_click_wait_seconds", 1))
-                post_click_wait_seconds = float(action.get("post_click_wait_seconds", 1))
-                deadline = images.elapsed + timeout_seconds
-                round_number = 0
-                while True:
-                    round_number += 1
-                    LOGGER.info('[等待点击%s 第%d轮] 查找按钮→等待后复查→点击后结束；未确认则轮询，超时停止；剩余等待 %.2f 秒',
-                                action['name'], round_number, max(0, deadline - images.elapsed))
-                    center, score = images.find(action, deadline=deadline)
-                    if center is not None:
-                        LOGGER.info(
-                            "发现%s，相似度 %.3f，点击前等待 %.2f 秒",
-                            action["name"], score, pre_click_wait_seconds,
-                        )
-                        images.sleep(pre_click_wait_seconds)
-                        confirmed_center, confirmed_score = images.find(action, deadline=deadline)
-                        if confirmed_center is None:
-                            LOGGER.info(
-                                "等待后%s已消失，相似度 %.3f，继续识别",
-                                action["name"], confirmed_score,
-                            )
-                        else:
-                            LOGGER.info(
-                                "再次确认%s，相似度 %.3f，点击坐标 (%d, %d)",
-                                action["name"], confirmed_score, confirmed_center[0], confirmed_center[1],
-                            )
-                            self.client.tap(*confirmed_center)
-                            LOGGER.info(
-                                "点击完成，等待 %.2f 秒让页面响应",
-                                post_click_wait_seconds,
-                            )
-                            images.sleep(post_click_wait_seconds)
-                            break
-                    if images.elapsed >= deadline:
-                        raise VisualError(f"等待{action['name']}超时，最后相似度 {score:.3f}")
-                    delay = min(poll_seconds, deadline - images.elapsed)
-                    LOGGER.info(
-                        "等待%s，当前相似度 %.3f，%.2f 秒后重试",
-                        action["name"], score, delay,
-                    )
-                    images.sleep(delay)
+                required_template_tap(self.client, action, template_matcher=self.template_matcher,
+                                      asset_root=self.asset_root, sleep=self.sleep)
             elif action_type == "authorize_account":
                 authorize_account(self.client, action, template_matcher=self.template_matcher,
                                   asset_root=self.asset_root, sleep=self.sleep)
@@ -198,6 +159,12 @@ class ActionRunner:
                     asset_root=self.asset_root,
                     sleep=self.sleep,
                 )
+            elif action_type == "enter_secret_realm":
+                entered = enter_secret_realm(self.client, action, template_matcher=self.template_matcher,
+                                             asset_root=self.asset_root, sleep=self.sleep)
+                if not entered:
+                    skip_action_type = "handle_secret_realm"
+                    completed_card_name = "秘境探险"
             elif action_type == "handle_secret_realm":
                 handle_secret_realm(self.client, action, template_matcher=self.template_matcher,
                                     asset_root=self.asset_root, sleep=self.sleep)

@@ -171,3 +171,52 @@ def navigate_to_card(
         )
         swipe_count += 1
         sleep(float(action["wait_seconds"]))
+
+
+def required_template_tap(client, action, *, template_matcher=find_template_in_png,
+                          asset_root=Path("."), sleep=time.sleep):
+    """等待、复查并点击必需按钮，供任务执行器和入口流程共用。"""
+    images = ImageRecognition(client, template_matcher, asset_root, sleep)
+    timeout_seconds = float(action["timeout_seconds"])
+    poll_seconds = float(action["poll_seconds"])
+    pre_click_wait_seconds = float(action.get("pre_click_wait_seconds", 1))
+    post_click_wait_seconds = float(action.get("post_click_wait_seconds", 1))
+    deadline = images.elapsed + timeout_seconds
+    round_number = 0
+    while True:
+        round_number += 1
+        LOGGER.info('[等待点击%s 第%d轮] 查找按钮→等待后复查→点击后结束；未确认则轮询，超时停止；剩余等待 %.2f 秒',
+                    action['name'], round_number, max(0, deadline - images.elapsed))
+        center, score = images.find(action, deadline=deadline)
+        if center is not None:
+            LOGGER.info(
+                "发现%s，相似度 %.3f，点击前等待 %.2f 秒",
+                action["name"], score, pre_click_wait_seconds,
+            )
+            images.sleep(pre_click_wait_seconds)
+            confirmed_center, confirmed_score = images.find(action, deadline=deadline)
+            if confirmed_center is None:
+                LOGGER.info(
+                    "等待后%s已消失，相似度 %.3f，继续识别",
+                    action["name"], confirmed_score,
+                )
+            else:
+                LOGGER.info(
+                    "再次确认%s，相似度 %.3f，点击坐标 (%d, %d)",
+                    action["name"], confirmed_score, confirmed_center[0], confirmed_center[1],
+                )
+                client.tap(*confirmed_center)
+                LOGGER.info(
+                    "点击完成，等待 %.2f 秒让页面响应",
+                    post_click_wait_seconds,
+                )
+                images.sleep(post_click_wait_seconds)
+                break
+        if images.elapsed >= deadline:
+            raise VisualError(f"等待{action['name']}超时，最后相似度 {score:.3f}")
+        delay = min(poll_seconds, deadline - images.elapsed)
+        LOGGER.info(
+            "等待%s，当前相似度 %.3f，%.2f 秒后重试",
+            action["name"], score, delay,
+        )
+        images.sleep(delay)

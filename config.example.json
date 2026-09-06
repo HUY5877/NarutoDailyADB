@@ -655,75 +655,79 @@
     ],
     "secret_realm": [
       {
-        "type": "return_to_main",
-        "max_rounds": 10,
-        "idle_rounds": 3,
-        "poll_seconds": 3,
-        "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 5,
-        "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
+        "type": "enter_secret_realm",
+        "method": "rewards",
+        "return_to_main": {
+          "type": "return_to_main",
+          "max_rounds": 10,
+          "idle_rounds": 3,
+          "poll_seconds": 3,
+          "pre_click_wait_seconds": 1,
+          "post_click_wait_seconds": 5,
+          "main_page_marker": {
+            "name": "主界面奖励文字",
+            "template": "assets/main_reward_label.png",
+            "left": 1700,
+            "top": 400,
+            "right": 1920,
+            "bottom": 700,
+            "threshold": 0.9,
+            "alternate_templates": [
+              "assets/main_reward_label_red_dot.png"
+            ]
+          },
+          "close_target": {
+            "name": "通用关闭按钮",
+            "template": "assets/promo_close.png",
+            "left": 1650,
+            "top": 0,
+            "right": 1920,
+            "bottom": 300,
+            "threshold": 0.95
+          }
+        },
+        "reward_button": {
+          "type": "required_template_tap",
+          "name": "奖励入口",
+          "template": "assets/reward_entry.png",
           "left": 1700,
           "top": 400,
           "right": 1920,
           "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "threshold": 0.85,
+          "timeout_seconds": 20,
+          "poll_seconds": 1,
+          "pre_click_wait_seconds": 1,
+          "post_click_wait_seconds": 3
         },
-        "close_target": {
-          "name": "通用关闭按钮",
-          "template": "assets/promo_close.png",
-          "left": 1650,
-          "top": 0,
+        "card": {
+          "type": "find_card_and_click",
+          "name": "完成秘境探险",
+          "template": "assets/secret_realm_label.png",
+          "left": 0,
+          "top": 300,
           "right": 1920,
-          "bottom": 300,
-          "threshold": 0.95
+          "bottom": 560,
+          "threshold": 0.85,
+          "button_template": "assets/go_now_button.png",
+          "button_threshold": 0.85,
+          "completed_template": "assets/completed_stamp.png",
+          "completed_threshold": 0.9,
+          "button_left_offset": -150,
+          "button_top_offset": 90,
+          "button_right_offset": 150,
+          "button_bottom_offset": 280,
+          "max_swipes": 6,
+          "swipe_x1": 1650,
+          "swipe_y1": 550,
+          "swipe_x2": 350,
+          "swipe_y2": 550,
+          "swipe_duration_ms": 500,
+          "wait_seconds": 1,
+          "pre_click_wait_seconds": 1,
+          "post_click_wait_seconds": 5,
+          "completed_skip_type": "handle_secret_realm"
         }
-      },
-      {
-        "type": "required_template_tap",
-        "name": "奖励入口",
-        "template": "assets/reward_entry.png",
-        "left": 1700,
-        "top": 400,
-        "right": 1920,
-        "bottom": 700,
-        "threshold": 0.85,
-        "timeout_seconds": 20,
-        "poll_seconds": 1,
-        "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 3
-      },
-      {
-        "type": "find_card_and_click",
-        "name": "完成秘境探险",
-        "template": "assets/secret_realm_label.png",
-        "left": 0,
-        "top": 300,
-        "right": 1920,
-        "bottom": 560,
-        "threshold": 0.85,
-        "button_template": "assets/go_now_button.png",
-        "button_threshold": 0.85,
-        "completed_template": "assets/completed_stamp.png",
-        "completed_threshold": 0.9,
-        "button_left_offset": -150,
-        "button_top_offset": 90,
-        "button_right_offset": 150,
-        "button_bottom_offset": 280,
-        "max_swipes": 6,
-        "swipe_x1": 1650,
-        "swipe_y1": 550,
-        "swipe_x2": 350,
-        "swipe_y2": 550,
-        "swipe_duration_ms": 500,
-        "wait_seconds": 1,
-        "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 5,
-        "completed_skip_type": "handle_secret_realm"
       },
       {
         "type": "handle_secret_realm",
@@ -858,6 +862,59 @@
           "right": 1920,
           "bottom": 300,
           "threshold": 0.95
+        }
+      }
+    ],
+    "secret_realm_farm": [
+      {
+        "type": "enter_secret_realm",
+        "method": "ninja_challenge",
+        "return_to_main": {
+          "type": "return_to_main",
+          "max_rounds": 10,
+          "idle_rounds": 3,
+          "poll_seconds": 3,
+          "pre_click_wait_seconds": 1,
+          "post_click_wait_seconds": 5,
+          "main_page_marker": {
+            "name": "主界面奖励文字",
+            "template": "assets/main_reward_label.png",
+            "left": 1700,
+            "top": 400,
+            "right": 1920,
+            "bottom": 700,
+            "threshold": 0.9,
+            "alternate_templates": [
+              "assets/main_reward_label_red_dot.png"
+            ]
+          },
+          "close_target": {
+            "name": "通用关闭按钮",
+            "template": "assets/promo_close.png",
+            "left": 1650,
+            "top": 0,
+            "right": 1920,
+            "bottom": 300,
+            "threshold": 0.95
+          }
+        },
+        "swipe": {
+          "type": "swipe",
+          "x1": 500,
+          "y1": 750,
+          "x2": 1450,
+          "y2": 750,
+          "duration_ms": 600
+        },
+        "timeout_seconds": 120,
+        "poll_seconds": 3,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 5,
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 6
         }
       }
     ]

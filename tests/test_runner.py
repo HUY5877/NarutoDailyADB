@@ -96,7 +96,7 @@ def test_runner_accepts_configured_login_prayer_and_recruit_flow():
         dry_run=True,
     ).run(actions)
 
-    assert summary.action_count == 29
+    assert summary.action_count == len(actions)
 
 
 def test_runner_executes_more_than_one_hundred_actions_without_wait_budget():
