@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from naruto_daily.navigation import navigate_to_card
-from naruto_daily.visual import VisualError
+from naruto_daily.common.navigation import navigate_to_card
+from naruto_daily.common.visual import VisualError
 
 
 class NavigationClient:
@@ -48,8 +48,12 @@ def card_action():
 def test_card_visible_now_clicks_corresponding_button_without_swiping(caplog):
     client = NavigationClient()
     results = iter([
-        ((562, 394), 0.99), (None, 0.20),
-        ((548, 585), 0.98), ((549, 586), 0.99),
+        ((562, 394), 0.99),
+        (None, 0.3),
+        ((548, 585), 0.98),
+        ((562, 394), 0.99),
+        (None, 0.3),
+        ((549, 586), 0.99),
     ])
     regions = []
     waits = []
@@ -71,7 +75,8 @@ def test_card_visible_now_clicks_corresponding_button_without_swiping(caplog):
     assert client.swipes == []
     assert regions[1] == (422, 474, 702, 654)
     assert regions[2] == (422, 474, 702, 654)
-    assert regions[3] == (422, 474, 702, 654)
+    assert regions[4] == (422, 474, 702, 654)
+    assert regions[5] == (422, 474, 702, 654)
     assert waits == [3.0, 3.0]
     assert summary.swipes == 0
     assert "发现组织祈福" in caplog.text
@@ -81,11 +86,15 @@ def test_card_visible_now_clicks_corresponding_button_without_swiping(caplog):
 def test_card_after_two_pages_swipes_then_clicks():
     client = NavigationClient()
     results = iter([
-        (None, 0.20),
-        (None, 0.30),
-        ((562, 394), 0.97),
-        (None, 0.20),
+        (None, 0.3),
+        (None, 0.3),
+        (None, 0.3),
+        (None, 0.3),
+        ((562, 394), 0.99),
+        (None, 0.3),
         ((560, 580), 0.96),
+        ((562, 394), 0.99),
+        (None, 0.3),
         ((561, 581), 0.98),
     ])
     waits = []
@@ -98,7 +107,7 @@ def test_card_after_two_pages_swipes_then_clicks():
     )
 
     assert client.swipes == [(1650, 550, 350, 550, 500)] * 2
-    assert waits == [1.0, 1.0, 3.0, 3.0]
+    assert waits == [1.0, 1.0, 1.0, 1.0, 3.0, 3.0]
     assert client.taps == [(561, 581)]
     assert summary.swipes == 2
 
@@ -121,8 +130,18 @@ def test_card_missing_after_max_swipes_raises_without_clicking():
 def test_card_label_without_corresponding_button_raises_without_clicking():
     client = NavigationClient()
     results = iter([
-        ((1823, 394), 0.99), (None, 0.30), (None, 0.40),
-        ((562, 394), 0.99), (None, 0.30), (None, 0.40),
+        ((1823, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
+        ((1823, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
+        ((562, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
+        ((562, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
     ])
 
     with pytest.raises(VisualError, match="找到组织祈福，但未找到它下方的立刻前往"):
@@ -142,8 +161,14 @@ def test_optional_card_partially_visible_gets_only_one_extra_swipe_then_detects_
     action = card_action()
     action["completed_skip_type"] = "handle_organization_prayer"
     results = iter([
-        ((1823, 394), 0.99), (None, 0.30), (None, 0.81),
-        ((562, 394), 0.99), ((562, 580), 0.98),
+        ((1823, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
+        ((1823, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
+        ((562, 394), 0.99),
+        ((562, 580), 0.98),
     ])
 
     with caplog.at_level(logging.INFO, logger="naruto_daily"):
@@ -167,8 +192,18 @@ def test_optional_card_still_unusable_after_one_extra_swipe_is_skipped(caplog):
     action = card_action()
     action["completed_skip_type"] = "handle_organization_prayer"
     results = iter([
-        ((1823, 394), 0.99), (None, 0.30), (None, 0.81),
-        ((562, 394), 0.99), (None, 0.30), (None, 0.40),
+        ((1823, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
+        ((1823, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
+        ((562, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
+        ((562, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
     ])
 
     with caplog.at_level(logging.INFO, logger="naruto_daily"):
@@ -207,11 +242,18 @@ def test_optional_card_missing_after_max_swipes_is_skipped(caplog):
 def test_card_button_disappearing_during_pre_wait_does_not_click_old_coordinate():
     client = NavigationClient()
     results = iter([
-        ((562, 394), 0.99), (None, 0.30),
-        ((548, 585), 0.98), (None, 0.40),
+        ((562, 394), 0.99),
+        (None, 0.3),
+        ((548, 585), 0.98),
+        ((562, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
+        ((562, 394), 0.99),
+        (None, 0.3),
+        (None, 0.3),
     ])
 
-    with pytest.raises(VisualError, match="点击前等待后已消失"):
+    with pytest.raises(VisualError, match="点击前复查及补查均未确认"):
         navigate_to_card(
             client,
             card_action(),
@@ -225,8 +267,10 @@ def test_card_button_disappearing_during_pre_wait_does_not_click_old_coordinate(
 def test_completed_card_after_two_pages_stops_without_clicking(caplog):
     client = NavigationClient()
     results = iter([
-        (None, 0.20),
-        (None, 0.30),
+        (None, 0.3),
+        (None, 0.3),
+        (None, 0.3),
+        (None, 0.3),
         ((1185, 424), 0.99),
         ((1185, 590), 0.98),
     ])

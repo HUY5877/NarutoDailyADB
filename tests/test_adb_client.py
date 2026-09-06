@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from naruto_daily.adb_client import AdbClient, AdbError, CommandResult
+from naruto_daily.common.adb_client import AdbClient, AdbError, CommandResult
 
 
 class FakeRunner:

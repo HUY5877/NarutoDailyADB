@@ -3,8 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from naruto_daily.popup import cleanup_popups, return_to_main
-from naruto_daily.visual import VisualError
+from naruto_daily.login import cleanup_popups
+from naruto_daily.return_to_main import return_to_main
+from naruto_daily.common.visual import VisualError
 
 
 class ScreenshotClient:
@@ -44,9 +45,9 @@ def popup_action():
 def test_cleanup_handles_changing_popup_order_and_stops_after_idle_round(caplog):
     client = ScreenshotClient()
     results = iter([
-        (None, 0.20), ((1842, 60), 0.96), ((1843, 61), 0.97),
-        ((957, 907), 0.99), ((958, 908), 0.98), (None, 0.30),
-        (None, 0.25), (None, 0.22),
+        (None, 0.20), (None, 0.20), ((1842, 60), 0.96), ((1843, 61), 0.97),
+        ((957, 907), 0.99), ((958, 908), 0.98), (None, 0.30), (None, 0.30),
+        (None, 0.25), (None, 0.25), (None, 0.22), (None, 0.22),
     ])
 
     def matcher(png, path, roi, threshold):
@@ -65,7 +66,7 @@ def test_cleanup_handles_changing_popup_order_and_stops_after_idle_round(caplog)
     assert client.taps == [(1843, 61), (958, 908)]
     assert summary.rounds == 3
     assert summary.clicks == 2
-    assert waits == [3.0, 3.0, 3.0, 3.0]
+    assert waits == [1.0, 3.0, 3.0, 3.0, 3.0, 1.0, 1.0, 1.0]
     assert "第 1 轮" in caplog.text
     assert "推广弹窗关闭按钮" in caplog.text
     assert "连续 1 轮没有发现可处理弹窗，结束清理" in caplog.text
@@ -76,8 +77,8 @@ def test_action_runner_dispatches_popup_cleanup():
 
     client = ScreenshotClient()
     results = iter([
-        ((957, 907), 0.99), ((958, 908), 0.98), (None, 0.10),
-        (None, 0.10), (None, 0.10),
+        ((957, 907), 0.99), ((958, 908), 0.98), (None, 0.10), (None, 0.10),
+        (None, 0.10), (None, 0.10), (None, 0.10), (None, 0.10),
     ])
     runner = ActionRunner(
         client,
@@ -96,8 +97,8 @@ def test_return_to_main_rejects_unknown_page_after_closing_nested_pages(caplog):
     results = iter([
         (None, 0.20), ((1834, 67), 0.97), (None, 0.21), ((1835, 68), 0.98),
         (None, 0.22), ((1828, 72), 0.97), (None, 0.23), ((1829, 71), 0.98),
-        (None, 0.24), (None, 0.31),
-        (None, 0.25), (None, 0.28),
+        (None, 0.24), (None, 0.31), (None, 0.24), (None, 0.31),
+        (None, 0.25), (None, 0.28), (None, 0.25), (None, 0.28),
     ])
     waits = []
     action = {
@@ -130,7 +131,7 @@ def test_return_to_main_rejects_unknown_page_after_closing_nested_pages(caplog):
             )
 
     assert client.taps == [(1835, 68), (1829, 71)]
-    assert waits == [3.0, 3.0, 3.0, 3.0, 1.0]
+    assert waits == [3.0, 3.0, 3.0, 3.0, 1.0, 1.0, 1.0]
     assert "连续 2 轮既未发现主界面标记，也未发现关闭按钮" in caplog.text
 
 

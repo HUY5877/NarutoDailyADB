@@ -95,3 +95,10 @@ class AdbClient:
         if not stdout:
             raise AdbError("ADB 截图失败：返回内容为空")
         return stdout
+
+    def ui_hierarchy(self) -> str:
+        path = '/sdcard/naruto_daily_ui.xml'
+        # 先去掉上一次转储，防止 dump 失败时读取旧页面的坐标。
+        self._command('shell', 'rm', '-f', path)
+        self._command('shell', 'uiautomator', 'dump', path)
+        return self._command('shell', 'cat', path).stdout

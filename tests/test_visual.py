@@ -3,7 +3,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from naruto_daily.visual import find_template_in_png
+from naruto_daily.common.visual import find_template_in_png
 
 
 def encode(image):

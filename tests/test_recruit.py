@@ -22,8 +22,6 @@ def recruit_action():
         "type": "handle_free_recruit",
         "timeout_seconds": 40,
         "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
         "advanced_tab": {
             "name": "高级招募标签", "template": "advanced_tab.png",
             "left": 0, "top": 150, "right": 300, "bottom": 350, "threshold": 0.90,
@@ -90,7 +88,7 @@ def test_recruit_processes_advanced_then_ordinary_free_draw(caplog):
         (1201, 851),
         (601, 871),
     ]
-    assert waits == [3.0] * 14
+    assert waits == [1.0] * 14
     assert "高级招募免费次数处理完成" in caplog.text
     assert "普通招募免费次数处理完成" in caplog.text
 
@@ -99,8 +97,8 @@ def test_recruit_skips_each_category_without_red_dot(caplog):
     client = RecordingClient()
     results = iter([
         ((120, 250), 0.99),
-        (None, 0.30),
-        (None, 0.25),
+        (None, 0.30), (None, 0.30),
+        (None, 0.25), (None, 0.25),
     ])
 
     with caplog.at_level(logging.INFO, logger="naruto_daily"):
@@ -121,8 +119,8 @@ def test_recruit_skips_category_when_red_dot_disappears_during_wait(caplog):
     results = iter([
         ((120, 250), 0.99),
         ((218, 230), 0.99),
-        (None, 0.40),
-        (None, 0.25),
+        (None, 0.40), (None, 0.40),
+        (None, 0.25), (None, 0.25),
     ])
     waits = []
 
@@ -135,7 +133,7 @@ def test_recruit_skips_category_when_red_dot_disappears_during_wait(caplog):
         ).run([recruit_action()])
 
     assert client.taps == []
-    assert waits == [3.0]
+    assert waits == [1.0] * 3
     assert "等待后高级招募红点已消失，跳过高级招募" in caplog.text
 
 
@@ -147,8 +145,8 @@ def test_recruit_does_not_click_free_button_when_red_dot_disappears_after_tab(ca
         ((218, 230), 0.99),
         ((120, 250), 0.99), ((121, 251), 0.99),
         ((218, 230), 0.99),
-        (None, 0.40),
-        (None, 0.25),
+        (None, 0.40), (None, 0.40),
+        (None, 0.25), (None, 0.25),
     ])
     waits = []
 
@@ -161,7 +159,7 @@ def test_recruit_does_not_click_free_button_when_red_dot_disappears_after_tab(ca
         ).run([recruit_action()])
 
     assert client.taps == [(121, 251)]
-    assert waits == [3.0, 3.0, 3.0]
+    assert waits == [1.0] * 5
     assert "点击高级招募标签后红点已消失，不点击免费按钮" in caplog.text
 
 
@@ -173,8 +171,8 @@ def test_recruit_does_not_click_tab_when_red_dot_disappears_during_tab_wait(capl
         ((218, 230), 0.99),
         ((120, 250), 0.99),
         ((121, 251), 0.99),
-        (None, 0.40),
-        (None, 0.25),
+        (None, 0.40), ((121, 251), 0.99), (None, 0.40),
+        (None, 0.25), (None, 0.25),
     ])
     waits = []
 
@@ -187,7 +185,7 @@ def test_recruit_does_not_click_tab_when_red_dot_disappears_during_tab_wait(capl
         ).run([recruit_action()])
 
     assert client.taps == []
-    assert waits == [3.0, 3.0]
+    assert waits == [1.0] * 4
     assert "点击高级招募标签前红点已消失，取消点击" in caplog.text
 
 
@@ -203,8 +201,8 @@ def test_recruit_does_not_click_free_button_when_red_dot_disappears_during_butto
         ((218, 230), 0.99),
         ((1280, 880), 0.99),
         ((1281, 881), 0.99),
-        (None, 0.40),
-        (None, 0.25),
+        (None, 0.40), ((1281, 881), 0.99), (None, 0.40),
+        (None, 0.25), (None, 0.25),
     ])
     waits = []
 
@@ -217,5 +215,5 @@ def test_recruit_does_not_click_free_button_when_red_dot_disappears_during_butto
         ).run([recruit_action()])
 
     assert client.taps == [(121, 251)]
-    assert waits == [3.0, 3.0, 3.0, 3.0]
+    assert waits == [1.0] * 6
     assert "点击免费招募按钮前高级招募红点已消失，取消点击" in caplog.text

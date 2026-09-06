@@ -5,6 +5,10 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+from naruto_daily.common.recognition import extra_retry_wait
+from .abundance import abundance_wait_budget
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -32,6 +36,15 @@ class Settings:
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
 TASK_NAMES = {"login", "organization_pray", "sign_in", "stamina", "recruit", "abundance"}
 ACTION_KEYS = {
+    "authorize_account": {
+        "type", "account_name", "timeout_seconds", "poll_seconds",
+        "pre_click_wait_seconds", "post_click_wait_seconds", "picker_marker",
+        "multimodal", "switch_account", "agree_button",
+    },
+    "handle_abundance": {
+        "type", "timeout_seconds", "pre_click_wait_seconds", "post_click_wait_seconds",
+        "load_wait_seconds", "challenge_button", "result_return", "battle",
+    },
     "tap": {"type", "x", "y"},
     "swipe": {"type", "x1", "y1", "x2", "y2", "duration_ms"},
     "wait": {"type", "seconds"},
@@ -127,19 +140,27 @@ def _validate_template_target(target: Any, width: int, height: int, context: str
 
 
 def _validate_click_waits(action: dict, context: str) -> tuple[float, float]:
-    pre_wait = action.get("pre_click_wait_seconds", 3)
-    post_wait = action.get("post_click_wait_seconds", 3)
+    default_wait = 3 if action.get("type") in {"finish_login_authorization", "authorize_account"} else 1
+    pre_wait = action.get("pre_click_wait_seconds", default_wait)
+    post_wait = action.get("post_click_wait_seconds", default_wait)
     for key, value in (("pre_click_wait_seconds", pre_wait), ("post_click_wait_seconds", post_wait)):
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 10:
             raise ConfigError(f"{context} 的 {key} 必须在 0 到 10 之间")
     return float(pre_wait), float(post_wait)
 
 
-def _normalize_action(action: Any) -> Any:
+def _normalize_action(action: Any, task_name: str) -> Any:
     """把已发布的旧动作配置迁移为当前安全结构。"""
 
     if not isinstance(action, dict):
         return action
+    if task_name == "login" and action.get("type") in {
+        "required_template_tap", "finish_login_authorization", "authorize_account",
+    }:
+        # 登录按钮保留较长等待；日常动作由执行器默认使用 1 秒。
+        action = dict(action)
+        action.setdefault("pre_click_wait_seconds", 3)
+        action.setdefault("post_click_wait_seconds", 3)
     if action.get("type") == "return_to_main" and "main_page_marker" not in action:
         normalized = dict(action)
         normalized["main_page_marker"] = {
@@ -198,7 +219,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
     if action_type in {
             "required_template_tap", "finish_login_authorization", "return_to_main",
             "handle_coin_fortune", "popup_cleanup", "handle_organization_prayer",
-            "handle_free_recruit",
+            "handle_free_recruit", "handle_abundance", "authorize_account",
     }:
         optional_keys = CLICK_WAIT_KEYS
     elif action_type == "find_card_and_click":
@@ -295,6 +316,40 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
             raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
         pre_wait, post_wait = _validate_click_waits(action, context)
         return float(timeout_seconds + pre_wait + post_wait)
+    elif action_type == "authorize_account":
+        if (width, height) != (1920, 1080):
+            raise ConfigError(f'{context} 的账号选择只支持 1920×1080 安卓画面')
+        if not isinstance(action['account_name'], str) or not action['account_name'].strip():
+            raise ConfigError(f'{context}.account_name 必须是非空账号昵称')
+        for key, lower, upper in [('timeout_seconds', 1, 60), ('poll_seconds', 0.2, 5)]:
+            value = action[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not lower <= value <= upper:
+                raise ConfigError(f'{context}.{key} 必须在 {lower} 到 {upper} 之间')
+        if action['poll_seconds'] > action['timeout_seconds']:
+            raise ConfigError(f'{context}.poll_seconds 不能大于 timeout_seconds')
+        _validate_click_waits(action, context)
+        for key in ('picker_marker', 'switch_account', 'agree_button'):
+            _validate_template_target(action[key], width, height, f'{context}.{key}', require_name=True)
+            if action[key]['threshold'] < 0.9:
+                raise ConfigError(f'{context}.{key} 的账号识别阈值不能低于 0.90')
+        model = action['multimodal']
+        if not isinstance(model, dict):
+            raise ConfigError(f'{context}.multimodal 必须是对象')
+        _require_exact_keys(model, {'base_url', 'model', 'api_key_file', 'timeout_seconds', 'max_calls'}, f'{context}.multimodal')
+        url = urlsplit(model['base_url']) if isinstance(model['base_url'], str) else None
+        if not url or url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise ConfigError(f'{context}.multimodal.base_url 必须是 HTTPS API 地址')
+        if not isinstance(model['model'], str) or not model['model'].strip():
+            raise ConfigError(f'{context}.multimodal.model 必须是非空模型名称')
+        key_file = model['api_key_file']
+        if not isinstance(key_file, str) or not key_file.strip() or Path(key_file).is_absolute() or '..' in Path(key_file).parts:
+            raise ConfigError(f'{context}.multimodal.api_key_file 必须是配置目录内的相对路径')
+        request_timeout = model['timeout_seconds']
+        if type(request_timeout) not in (float, int) or not 1 <= request_timeout <= 30:
+            raise ConfigError(f'{context}.multimodal.timeout_seconds 必须在 1 到 30 之间')
+        if type(model['max_calls']) is not int or not 2 <= model['max_calls'] <= 10:
+            raise ConfigError(f'{context}.multimodal.max_calls 必须在 2 到 10 之间')
+        return float(action['timeout_seconds'])
     elif action_type == "finish_login_authorization":
         timeout_seconds = action["timeout_seconds"]
         poll_seconds = action["poll_seconds"]
@@ -367,10 +422,56 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         pre_wait, post_wait = _validate_click_waits(action, context)
         completed_skip_type = action.get("completed_skip_type", "handle_organization_prayer")
         if completed_skip_type not in {
-            "handle_organization_prayer", "handle_coin_fortune", "handle_free_recruit",
+            "handle_organization_prayer", "handle_coin_fortune", "handle_free_recruit", "handle_abundance",
         }:
             raise ConfigError(f"{context} 的 completed_skip_type 不是允许的页面处理动作")
         return float(max_swipes * wait_seconds + pre_wait + post_wait)
+    elif action_type == "handle_abundance":
+        if (width, height) != (1920, 1080):
+            raise ConfigError(f"{context} 只支持 1920×1080 安卓画面")
+        _validate_click_waits(action, context)
+        timeout = action["timeout_seconds"]
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 1 <= timeout <= 60:
+            raise ConfigError(f"{context} 的 timeout_seconds 必须在 1 到 60 之间")
+        if isinstance(action["load_wait_seconds"], bool) or action["load_wait_seconds"] != 10:
+            raise ConfigError(f"{context} 的战斗加载等待必须为 10 秒")
+        for key in ("challenge_button", "result_return"):
+            _validate_template_target(action[key], width, height, f"{context}.{key}", require_name=True)
+        challenge = action["challenge_button"]
+        if not (challenge["left"] >= 500 and challenge["right"] <= 1000 and challenge["top"] >= 800):
+            raise ConfigError(f"{context} 的挑战按钮必须限制在底部中间偏左，避开一键完成")
+        if challenge["threshold"] < 0.85:
+            raise ConfigError(f"{context} 的挑战识别阈值不能低于 0.85")
+        battle = action["battle"]
+        if not isinstance(battle, dict):
+            raise ConfigError(f"{context}.battle 必须是对象")
+        _require_exact_keys(battle, {"start_timeout_seconds", "timeout_seconds", "tap_interval_seconds",
+                                    "battle_marker", "end_targets", "buttons"}, f"{context}.battle")
+        for key, lower, upper in (("start_timeout_seconds", 1, 60), ("timeout_seconds", 1, 180),
+                                  ("tap_interval_seconds", 0.1, 2)):
+            value = battle[key]
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not lower <= value <= upper:
+                raise ConfigError(f"{context}.battle 的 {key} 必须在 {lower} 到 {upper} 之间")
+        _validate_template_target(battle["battle_marker"], width, height, f"{context}.battle.battle_marker", True)
+        ends = battle["end_targets"]
+        if not isinstance(ends, list) or not 1 <= len(ends) <= 3:
+            raise ConfigError(f"{context}.battle 必须配置 1 到 3 个战斗结束标记")
+        for index, target in enumerate(ends):
+            _validate_template_target(target, width, height, f"{context}.battle.end_targets[{index}]", True)
+        buttons = battle["buttons"]
+        if not isinstance(buttons, list) or len(buttons) != 4:
+            raise ConfigError(f"{context}.battle 必须按顺序配置四个战斗按钮")
+        for button, name in zip(buttons, ("一技能", "二技能", "大招", "普攻")):
+            if not isinstance(button, dict):
+                raise ConfigError(f"{context}.battle 战斗按钮必须是对象")
+            _require_exact_keys(button, {"name", "x", "y"}, f"{context}.battle.buttons")
+            if button["name"] != name:
+                raise ConfigError(f"{context}.battle 按钮顺序必须为一技能、二技能、大招、普攻")
+            _coordinate(button["x"], width, context)
+            _coordinate(button["y"], height, context)
+            if button["x"] < 1200 or button["y"] < 450:
+                raise ConfigError(f"{context}.battle 按钮必须位于右下战斗操作区域")
+        return abundance_wait_budget(action)
     elif action_type == "handle_organization_prayer":
         timeout_seconds = action["timeout_seconds"]
         poll_seconds = action["poll_seconds"]
@@ -444,8 +545,6 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> floa
         if poll_seconds > timeout_seconds:
             raise ConfigError(f"{context} 的 poll_seconds 不能大于 timeout_seconds")
         pre_wait, post_wait = _validate_click_waits(action, context)
-        if pre_wait != 3 or post_wait != 3:
-            raise ConfigError(f"{context} 的点击前后等待必须固定为 3 秒")
         for key in (
             "advanced_tab", "advanced_red_dot", "ordinary_tab", "ordinary_red_dot",
             "free_button", "result_confirm",
@@ -538,11 +637,12 @@ def load_settings(path: Path) -> Settings:
             raise ConfigError(f"任务 {task_name} 必须是列表")
         if len(actions) > 100:
             raise ConfigError(f"任务 {task_name} 超过 100 个动作")
-        normalized_actions = [_normalize_action(action) for action in actions]
+        normalized_actions = [_normalize_action(action, task_name) for action in actions]
         total_wait = sum(
             _validate_action(action, width, height, f"{task_name}[{index}]")
             for index, action in enumerate(normalized_actions)
         )
+        total_wait += sum(extra_retry_wait(action) for action in normalized_actions)
         if total_wait > 300:
             raise ConfigError(f"任务 {task_name} 超过 300 秒")
         validated[task_name] = normalized_actions

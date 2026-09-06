@@ -7,8 +7,15 @@
   },
   "tasks": {
     "login": [
-      {"type": "tap", "x": 158, "y": 924},
-      {"type": "wait", "seconds": 1},
+      {
+        "type": "tap",
+        "x": 158,
+        "y": 924
+      },
+      {
+        "type": "wait",
+        "seconds": 1
+      },
       {
         "type": "required_template_tap",
         "name": "与安卓QQ好友玩按钮",
@@ -24,18 +31,46 @@
         "post_click_wait_seconds": 3
       },
       {
-        "type": "required_template_tap",
-        "name": "第一次授权同意按钮",
-        "template": "assets/qq_agree_profile.png",
-        "left": 700,
-        "top": 700,
-        "right": 1220,
-        "bottom": 930,
-        "threshold": 0.85,
-        "timeout_seconds": 20,
+        "type": "authorize_account",
+        "account_name": "离落花开花败",
+        "timeout_seconds": 40,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3
+        "post_click_wait_seconds": 3,
+        "picker_marker": {
+          "name": "选择要登录的账号",
+          "template": "assets/qq_account_picker_marker.png",
+          "left": 0,
+          "top": 650,
+          "right": 500,
+          "bottom": 850,
+          "threshold": 0.95
+        },
+        "switch_account": {
+          "name": "切换账号",
+          "template": "assets/qq_account_switch_account.png",
+          "left": 800,
+          "top": 885,
+          "right": 1150,
+          "bottom": 960,
+          "threshold": 0.95
+        },
+        "agree_button": {
+          "name": "指定账号授权同意按钮",
+          "template": "assets/qq_account_agree_button.png",
+          "left": 700,
+          "top": 750,
+          "right": 1220,
+          "bottom": 885,
+          "threshold": 0.95
+        },
+        "multimodal": {
+          "base_url": "https://api.stepfun.com/step_plan/v1",
+          "model": "step-3.7-flash",
+          "api_key_file": ".secrets/stepfun_api_key",
+          "timeout_seconds": 20,
+          "max_calls": 6
+        }
       },
       {
         "type": "finish_login_authorization",
@@ -62,14 +97,17 @@
           "threshold": 0.85
         }
       },
-      {"type": "wait", "seconds": 15},
+      {
+        "type": "wait",
+        "seconds": 15
+      },
       {
         "type": "popup_cleanup",
         "rounds": 4,
         "idle_rounds": 1,
         "wait_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
         "targets": [
           {
             "name": "公告关闭按钮",
@@ -96,11 +134,11 @@
         "max_rounds": 10,
         "idle_rounds": 2,
         "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励入口",
-          "template": "assets/reward_entry.png",
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
           "left": 1700,
           "top": 400,
           "right": 1920,
@@ -130,8 +168,8 @@
         "threshold": 0.85,
         "timeout_seconds": 20,
         "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1
       },
       {
         "type": "find_card_and_click",
@@ -157,8 +195,8 @@
         "swipe_y2": 550,
         "swipe_duration_ms": 500,
         "wait_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
         "completed_skip_type": "handle_organization_prayer"
       },
       {
@@ -166,8 +204,8 @@
         "timeout_seconds": 20,
         "poll_seconds": 1,
         "wait_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
         "max_claims": 3,
         "dismiss_x": 1500,
         "dismiss_y": 200,
@@ -213,11 +251,11 @@
         "max_rounds": 10,
         "idle_rounds": 2,
         "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励入口",
-          "template": "assets/reward_entry.png",
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
           "left": 1700,
           "top": 400,
           "right": 1920,
@@ -245,8 +283,8 @@
         "threshold": 0.85,
         "timeout_seconds": 20,
         "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1
       },
       {
         "type": "find_card_and_click",
@@ -272,8 +310,8 @@
         "swipe_y2": 550,
         "swipe_duration_ms": 500,
         "wait_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
         "completed_skip_type": "handle_coin_fortune"
       },
       {
@@ -281,8 +319,8 @@
         "clicks": 2,
         "timeout_seconds": 20,
         "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
         "free_button": {
           "name": "免费一次",
           "template": "assets/free_fortune_once.png",
@@ -302,11 +340,11 @@
         "max_rounds": 10,
         "idle_rounds": 2,
         "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励入口",
-          "template": "assets/reward_entry.png",
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
           "left": 1700,
           "top": 400,
           "right": 1920,
@@ -334,8 +372,8 @@
         "threshold": 0.85,
         "timeout_seconds": 20,
         "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1
       },
       {
         "type": "find_card_and_click",
@@ -361,16 +399,16 @@
         "swipe_y2": 550,
         "swipe_duration_ms": 500,
         "wait_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
         "completed_skip_type": "handle_free_recruit"
       },
       {
         "type": "handle_free_recruit",
         "timeout_seconds": 20,
         "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
         "advanced_tab": {
           "name": "高级招募标签",
           "template": "assets/advanced_recruit_tab.png",
@@ -427,6 +465,173 @@
         }
       }
     ],
-    "abundance": []
+    "abundance": [
+      {
+        "type": "return_to_main",
+        "max_rounds": 5,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_page_marker": {
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      },
+      {
+        "type": "required_template_tap",
+        "name": "奖励入口",
+        "template": "assets/reward_entry.png",
+        "left": 1700,
+        "top": 400,
+        "right": 1920,
+        "bottom": 700,
+        "threshold": 0.85,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1
+      },
+      {
+        "type": "find_card_and_click",
+        "name": "挑战丰饶之间",
+        "template": "assets/abundance_label.png",
+        "left": 0,
+        "top": 300,
+        "right": 1920,
+        "bottom": 560,
+        "threshold": 0.85,
+        "button_template": "assets/go_now_button.png",
+        "button_threshold": 0.85,
+        "completed_template": "assets/completed_stamp.png",
+        "completed_threshold": 0.9,
+        "button_left_offset": -150,
+        "button_top_offset": 90,
+        "button_right_offset": 150,
+        "button_bottom_offset": 280,
+        "max_swipes": 6,
+        "swipe_x1": 1650,
+        "swipe_y1": 550,
+        "swipe_x2": 350,
+        "swipe_y2": 550,
+        "swipe_duration_ms": 500,
+        "wait_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "completed_skip_type": "handle_abundance"
+      },
+      {
+        "type": "handle_abundance",
+        "timeout_seconds": 20,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "load_wait_seconds": 10,
+        "challenge_button": {
+          "name": "丰饶之间挑战按钮",
+          "template": "assets/abundance_challenge.png",
+          "left": 600,
+          "top": 850,
+          "right": 970,
+          "bottom": 1060,
+          "threshold": 0.9
+        },
+        "result_return": {
+          "name": "点击任意位置关闭界面",
+          "template": "assets/abundance_result_dismiss.png",
+          "left": 650,
+          "top": 950,
+          "right": 1300,
+          "bottom": 1080,
+          "threshold": 0.85
+        },
+        "battle": {
+          "start_timeout_seconds": 20,
+          "timeout_seconds": 120,
+          "tap_interval_seconds": 0.2,
+          "battle_marker": {
+            "name": "战斗暂停按钮",
+            "template": "assets/battle_pause.png",
+            "left": 1750,
+            "top": 0,
+            "right": 1880,
+            "bottom": 140,
+            "threshold": 0.85
+          },
+          "end_targets": [
+            {
+              "name": "丰饶之间获得奖励",
+              "template": "assets/abundance_result.png",
+              "left": 700,
+              "top": 250,
+              "right": 1250,
+              "bottom": 430,
+              "threshold": 0.9
+            }
+          ],
+          "buttons": [
+            {
+              "name": "一技能",
+              "x": 1500,
+              "y": 960
+            },
+            {
+              "name": "二技能",
+              "x": 1535,
+              "y": 750
+            },
+            {
+              "name": "大招",
+              "x": 1725,
+              "y": 650
+            },
+            {
+              "name": "普攻",
+              "x": 1715,
+              "y": 885
+            }
+          ]
+        }
+      },
+      {
+        "type": "return_to_main",
+        "max_rounds": 5,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_page_marker": {
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      }
+    ]
   }
 }

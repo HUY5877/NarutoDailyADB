@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .visual import VisualError, find_template_in_png
+from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.visual import VisualError, find_template_in_png
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -20,47 +21,6 @@ class PrayerSummary:
     claims: int
 
 
-def _match(client, target: dict, template_matcher: Callable, asset_root: Path):
-    template_path = Path(asset_root) / target["template"]
-    roi = (target["left"], target["top"], target["right"], target["bottom"])
-    return template_matcher(client.screenshot(), template_path, roi, float(target["threshold"]))
-
-
-def _wait_for_target(
-    client,
-    target: dict,
-    *,
-    timeout_seconds: float,
-    poll_seconds: float,
-    template_matcher: Callable,
-    asset_root: Path,
-    sleep: Callable[[float], None],
-):
-    elapsed = 0.0
-    while True:
-        center, score = _match(client, target, template_matcher, asset_root)
-        if center is not None:
-            LOGGER.info(
-                "发现%s，相似度 %.3f，坐标：(%d, %d)",
-                target["name"],
-                score,
-                center[0],
-                center[1],
-            )
-            return center
-        if elapsed >= timeout_seconds:
-            raise VisualError(f"等待{target['name']}超时，最后相似度 {score:.3f}")
-        delay = min(poll_seconds, timeout_seconds - elapsed)
-        LOGGER.info(
-            "等待%s，当前相似度 %.3f，%.2f 秒后重试",
-            target["name"],
-            score,
-            delay,
-        )
-        sleep(delay)
-        elapsed += delay
-
-
 def handle_organization_prayer(
     client,
     action: dict,
@@ -71,29 +31,18 @@ def handle_organization_prayer(
 ) -> PrayerSummary:
     """领取昨日祈福奖励，并执行一次 6000 铜币焚香祈福。"""
 
+    images = ImageRecognition(client, template_matcher, asset_root, sleep)
+    sleep = images.sleep
     timeout_seconds = float(action["timeout_seconds"])
     poll_seconds = float(action["poll_seconds"])
     wait_seconds = float(action["wait_seconds"])
-    pre_click_wait = float(action.get("pre_click_wait_seconds", 3))
-    post_click_wait = float(action.get("post_click_wait_seconds", 3))
+    pre_click_wait = float(action.get("pre_click_wait_seconds", 1))
+    post_click_wait = float(action.get("post_click_wait_seconds", 1))
     coin_prayer = action["coin_prayer"]
 
-    _wait_for_target(
-        client,
-        coin_prayer,
-        timeout_seconds=timeout_seconds,
-        poll_seconds=poll_seconds,
-        template_matcher=template_matcher,
-        asset_root=asset_root,
-        sleep=sleep,
-    )
+    images.wait_for(coin_prayer, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
 
-    yesterday_center, yesterday_score = _match(
-        client,
-        action["yesterday_reward"],
-        template_matcher,
-        asset_root,
-    )
+    yesterday_center, yesterday_score = images.find(action["yesterday_reward"])
     yesterday_opened = yesterday_center is not None
     claims = 0
 
@@ -106,12 +55,7 @@ def handle_organization_prayer(
             pre_click_wait,
         )
         sleep(pre_click_wait)
-        confirmed_yesterday, confirmed_yesterday_score = _match(
-            client,
-            action["yesterday_reward"],
-            template_matcher,
-            asset_root,
-        )
+        confirmed_yesterday, confirmed_yesterday_score = images.find(action["yesterday_reward"])
         if confirmed_yesterday is None:
             LOGGER.info(
                 "等待后昨日奖励已消失，相似度 %.3f，跳过奖励领取",
@@ -129,23 +73,12 @@ def handle_organization_prayer(
             sleep(post_click_wait)
 
     if yesterday_opened:
-        _wait_for_target(
-            client,
-            action["panel_marker"],
-            timeout_seconds=timeout_seconds,
-            poll_seconds=poll_seconds,
-            template_matcher=template_matcher,
-            asset_root=asset_root,
-            sleep=sleep,
-        )
+        images.wait_for(action["panel_marker"], timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
 
         for claim_number in range(1, int(action["max_claims"]) + 1):
-            claim_center, claim_score = _match(
-                client,
-                action["claim_button"],
-                template_matcher,
-                asset_root,
-            )
+            LOGGER.info('[祈福领奖 第%d/%d轮] 查找领取按钮，等待后复查再点击；未找到则结束领奖并关闭奖励页',
+                        claim_number, action['max_claims'])
+            claim_center, claim_score = images.find(action["claim_button"])
             if claim_center is None:
                 LOGGER.info("没有更多可领取的昨日奖励，当前相似度 %.3f", claim_score)
                 break
@@ -156,12 +89,7 @@ def handle_organization_prayer(
                 pre_click_wait,
             )
             sleep(pre_click_wait)
-            confirmed_claim, confirmed_claim_score = _match(
-                client,
-                action["claim_button"],
-                template_matcher,
-                asset_root,
-            )
+            confirmed_claim, confirmed_claim_score = images.find(action["claim_button"])
             if confirmed_claim is None:
                 LOGGER.info(
                     "等待后第 %d 项昨日奖励已消失，相似度 %.3f，不点击旧坐标",
@@ -184,23 +112,10 @@ def handle_organization_prayer(
         client.tap(action["dismiss_x"], action["dismiss_y"])
         sleep(wait_seconds)
 
-    coin_center = _wait_for_target(
-        client,
-        coin_prayer,
-        timeout_seconds=timeout_seconds,
-        poll_seconds=poll_seconds,
-        template_matcher=template_matcher,
-        asset_root=asset_root,
-        sleep=sleep,
-    )
+    coin_center = images.wait_for(coin_prayer, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
     LOGGER.info("发现 6000 铜币焚香祈福，点击前等待 %.2f 秒", pre_click_wait)
     sleep(pre_click_wait)
-    confirmed_coin, confirmed_coin_score = _match(
-        client,
-        coin_prayer,
-        template_matcher,
-        asset_root,
-    )
+    confirmed_coin, confirmed_coin_score = images.find(coin_prayer)
     if confirmed_coin is None:
         raise VisualError(
             f"6000 铜币焚香祈福在点击前等待后已消失，最后相似度 {confirmed_coin_score:.3f}"

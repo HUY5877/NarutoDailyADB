@@ -3,11 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from naruto_daily.adb_client import AdbError
+from naruto_daily.common.adb_client import AdbError
 from naruto_daily.config import load_settings
 from naruto_daily.runner import ActionLimitError, ActionRunner
 from naruto_daily.tasks import build_task
-from naruto_daily.visual import VisualError
+from naruto_daily.common.visual import VisualError
 
 
 class RecordingClient:
@@ -23,6 +23,15 @@ class RecordingClient:
     def tap(self, x, y): self._record("tap", x, y)
     def swipe(self, x1, y1, x2, y2, duration_ms): self._record("swipe", x1, y1, x2, y2, duration_ms)
     def back(self): self._record("back")
+
+
+def test_optional_image_retry_cannot_exceed_runner_wait_limit():
+    actions = [{"type": "wait", "seconds": 300}] * 4 + [{
+        "type": "optional_template_tap", "template": "button.png",
+        "left": 0, "top": 0, "right": 100, "bottom": 100, "threshold": 0.85,
+    }]
+    with pytest.raises(ActionLimitError, match="1200 秒"):
+        ActionRunner(RecordingClient(), dry_run=True).run(actions)
 
 
 def test_runner_executes_actions_in_order_and_reports_summary():
@@ -87,13 +96,14 @@ def test_runner_accepts_configured_login_prayer_and_recruit_flow():
         dry_run=True,
     ).run(actions)
 
-    assert summary.action_count == 19
-    assert summary.wait_seconds == 803
+    assert summary.action_count == 24
+    assert summary.wait_seconds == 987
 
 
-def test_runner_rejects_more_than_nine_hundred_seconds():
-    with pytest.raises(ActionLimitError, match="900 秒"):
+def test_runner_rejects_more_than_twelve_hundred_seconds():
+    with pytest.raises(ActionLimitError, match="1200 秒"):
         ActionRunner(RecordingClient(), sleep=lambda _: None).run([
+            {"type": "wait", "seconds": 300},
             {"type": "wait", "seconds": 300},
             {"type": "wait", "seconds": 300},
             {"type": "wait", "seconds": 300},
@@ -104,7 +114,7 @@ def test_runner_rejects_more_than_nine_hundred_seconds():
 def test_optional_template_tap_clicks_only_when_match_is_found(caplog):
     client = RecordingClient()
     client.screenshot = lambda: b"screen"
-    matches = iter([((957, 906), 0.94), (None, 0.42)])
+    matches = iter([((957, 906), 0.94), (None, 0.42), (None, 0.42)])
 
     def matcher(png, template_path, roi, threshold):
         assert png == b"screen"
@@ -187,10 +197,11 @@ def test_required_template_tap_times_out_and_stops_following_actions():
     assert client.calls == []
 
 
-def test_old_required_action_uses_three_second_defaults():
+def test_required_daily_action_uses_one_second_defaults():
     client = RecordingClient()
     client.screenshot = lambda: b"screen"
     action = required_action()
+    action["name"] = "奖励入口"
     action.pop("pre_click_wait_seconds")
     action.pop("post_click_wait_seconds")
     waits = []
@@ -202,7 +213,7 @@ def test_old_required_action_uses_three_second_defaults():
     ).run([action])
 
     assert client.calls == [("tap", 961, 910)]
-    assert waits == [3.0, 3.0]
+    assert waits == [1.0, 1.0]
 
 
 def test_repeated_unstable_required_button_respects_timeout():
@@ -270,7 +281,7 @@ def test_action_runner_dispatches_card_navigation():
     }
     iter_results = iter([
         ((562, 394), 0.99), (None, 0.20),
-        ((548, 585), 0.98), ((549, 586), 0.99),
+        ((548, 585), 0.98), ((562, 394), 0.99), (None, 0.20), ((549, 586), 0.99),
     ])
 
     ActionRunner(
@@ -337,7 +348,7 @@ def test_action_runner_dispatches_organization_prayer():
         },
     }
     results = iter([
-        ((866, 875), 0.99), (None, 0.20),
+        ((866, 875), 0.99), (None, 0.20), (None, 0.20),
         ((866, 875), 0.99), ((867, 876), 0.98),
     ])
 

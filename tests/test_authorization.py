@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from naruto_daily.authorization import finish_login_authorization
-from naruto_daily.visual import VisualError
+from naruto_daily.login.authorization import finish_login_authorization
+from naruto_daily.common.visual import VisualError
 
 
 class AuthorizationClient:
@@ -70,7 +70,7 @@ def test_direct_start_game_branch_clicks_once(caplog):
 
 def test_second_authorization_branch_then_clicks_start_game(caplog):
     client = AuthorizationClient()
-    start_results = iter([(None, 0.20), ((956, 911), 0.98), ((956, 911), 0.99)])
+    start_results = iter([(None, 0.20), (None, 0.20), ((956, 911), 0.98), ((956, 911), 0.99)])
     second_checks = 0
 
     def matcher(png, path, roi, threshold):
@@ -120,7 +120,7 @@ def test_button_disappearing_during_pre_wait_is_not_clicked():
     )
 
     assert client.taps == [(956, 911)]
-    assert waits == [3.0, 1.0, 3.0, 3.0]
+    assert waits == [3.0, 1.0, 3.0]
     assert summary.used_second_authorization is False
 
 
@@ -153,7 +153,7 @@ def test_repeated_unstable_start_button_respects_timeout():
         if path.name != "start.png":
             return None, 0.10
         checks += 1
-        if checks % 2 == 1:
+        if checks % 3 == 1:
             return (956, 911), 0.99
         return None, 0.20
 

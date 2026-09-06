@@ -6,18 +6,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .adb_client import AdbClient
-from .visual import VisualError, find_template_in_png
-from .popup import cleanup_popups, return_to_main
-from .authorization import finish_login_authorization
-from .navigation import navigate_to_card
-from .prayer import handle_organization_prayer
+from naruto_daily.common.adb_client import AdbClient
+from naruto_daily.common.recognition import ImageRecognition, extra_retry_wait
+from naruto_daily.common.visual import VisualError, find_template_in_png
+from naruto_daily.login import cleanup_popups
+from naruto_daily.return_to_main import return_to_main
+from naruto_daily.login.authorization import finish_login_authorization, authorize_account
+from naruto_daily.common.navigation import navigate_to_card
+from naruto_daily.organization_prayer import handle_organization_prayer
 from .fortune import handle_coin_fortune
 from .recruit import handle_free_recruit
+from .abundance import handle_abundance, abundance_wait_budget
 
 
 LOGGER = logging.getLogger("naruto_daily")
 ACTION_NAMES = {
+    "authorize_account": "选择指定 QQ 账号并授权",
+    "handle_abundance": "挑战丰饶之间并执行通用战斗",
     "tap": "点击",
     "swipe": "滑动",
     "back": "返回",
@@ -67,19 +72,19 @@ class ActionRunner:
             if action.get("type") == "wait"
             else float(action.get("rounds", 0)) * len(action.get("targets", [])) * (
                 float(action.get("wait_seconds", 0))
-                + float(action.get("pre_click_wait_seconds", 3))
-                + float(action.get("post_click_wait_seconds", 3))
+                + float(action.get("pre_click_wait_seconds", 1))
+                + float(action.get("post_click_wait_seconds", 1))
             )
             if action.get("type") == "popup_cleanup"
             else float(action.get("max_rounds", 0)) * (
                 float(action.get("poll_seconds", 0))
-                + float(action.get("pre_click_wait_seconds", 3))
-                + float(action.get("post_click_wait_seconds", 3))
+                + float(action.get("pre_click_wait_seconds", 1))
+                + float(action.get("post_click_wait_seconds", 1))
             )
             if action.get("type") == "return_to_main"
             else float(action.get("timeout_seconds", 0))
-            + float(action.get("pre_click_wait_seconds", 3))
-            + float(action.get("post_click_wait_seconds", 3))
+            + float(action.get("pre_click_wait_seconds", 1))
+            + float(action.get("post_click_wait_seconds", 1))
             if action.get("type") == "required_template_tap"
             else float(action.get("timeout_seconds", 0))
             + 2 * (
@@ -88,34 +93,39 @@ class ActionRunner:
             )
             if action.get("type") == "finish_login_authorization"
             else float(action.get("max_swipes", 0)) * float(action.get("wait_seconds", 0))
-            + float(action.get("pre_click_wait_seconds", 3))
-            + float(action.get("post_click_wait_seconds", 3))
+            + float(action.get("pre_click_wait_seconds", 1))
+            + float(action.get("post_click_wait_seconds", 1))
             if action.get("type") == "find_card_and_click"
             else 3 * float(action.get("timeout_seconds", 0))
             + (float(action.get("max_claims", 0)) + 2) * (
                 float(action.get("wait_seconds", 0))
-                + float(action.get("pre_click_wait_seconds", 3))
-                + float(action.get("post_click_wait_seconds", 3))
+                + float(action.get("pre_click_wait_seconds", 1))
+                + float(action.get("post_click_wait_seconds", 1))
             )
             if action.get("type") == "handle_organization_prayer"
             else float(action.get("clicks", 0)) * (
                 float(action.get("timeout_seconds", 0))
-                + float(action.get("pre_click_wait_seconds", 3))
-                + float(action.get("post_click_wait_seconds", 3))
+                + float(action.get("pre_click_wait_seconds", 1))
+                + float(action.get("post_click_wait_seconds", 1))
             )
             if action.get("type") == "handle_coin_fortune"
             else 6 * (
                 float(action.get("timeout_seconds", 0))
-                + float(action.get("pre_click_wait_seconds", 3))
-                + float(action.get("post_click_wait_seconds", 3))
+                + float(action.get("pre_click_wait_seconds", 1))
+                + float(action.get("post_click_wait_seconds", 1))
             )
             if action.get("type") == "handle_free_recruit"
+            else float(action.get("timeout_seconds", 0))
+            if action.get("type") == "authorize_account"
             else 0.0
             for action in actions
         )
-        if wait_seconds > 900:
-            raise ActionLimitError("动作序列等待时间超过 900 秒")
+        wait_seconds += sum(extra_retry_wait(action) for action in actions)
+        wait_seconds += sum(abundance_wait_budget(action) for action in actions if action.get("type") == "handle_abundance")
+        if wait_seconds > 1200:
+            raise ActionLimitError("动作序列等待时间超过 1200 秒")
         LOGGER.info("开始执行，共 %d 个动作", len(actions))
+        images = ImageRecognition(self.client, self.template_matcher, self.asset_root, self.sleep)
         skip_action_type: str | None = None
         completed_card_name = ""
         for index, action in enumerate(actions, start=1):
@@ -145,11 +155,7 @@ class ActionRunner:
                 LOGGER.info("等待 %.2f 秒", float(action["seconds"]))
                 self.sleep(float(action["seconds"]))
             elif action_type == "optional_template_tap":
-                template_path = self.asset_root / action["template"]
-                roi = (action["left"], action["top"], action["right"], action["bottom"])
-                center, score = self.template_matcher(
-                    self.client.screenshot(), template_path, roi, float(action["threshold"])
-                )
+                center, score = images.find(action)
                 LOGGER.info("模板相似度：%.3f，阈值：%.3f", score, float(action["threshold"]))
                 if center is None:
                     LOGGER.info("未发现领取按钮，跳过")
@@ -173,27 +179,24 @@ class ActionRunner:
                     sleep=self.sleep,
                 )
             elif action_type == "required_template_tap":
-                template_path = self.asset_root / action["template"]
-                roi = (action["left"], action["top"], action["right"], action["bottom"])
                 timeout_seconds = float(action["timeout_seconds"])
                 poll_seconds = float(action["poll_seconds"])
-                pre_click_wait_seconds = float(action.get("pre_click_wait_seconds", 3))
-                post_click_wait_seconds = float(action.get("post_click_wait_seconds", 3))
-                elapsed = 0.0
+                pre_click_wait_seconds = float(action.get("pre_click_wait_seconds", 1))
+                post_click_wait_seconds = float(action.get("post_click_wait_seconds", 1))
+                deadline = images.elapsed + timeout_seconds
+                round_number = 0
                 while True:
-                    center, score = self.template_matcher(
-                        self.client.screenshot(), template_path, roi, float(action["threshold"])
-                    )
+                    round_number += 1
+                    LOGGER.info('[等待点击%s 第%d轮] 查找按钮→等待后复查→点击后结束；未确认则轮询，超时停止；剩余等待 %.2f 秒',
+                                action['name'], round_number, max(0, deadline - images.elapsed))
+                    center, score = images.find(action, deadline=deadline)
                     if center is not None:
                         LOGGER.info(
                             "发现%s，相似度 %.3f，点击前等待 %.2f 秒",
                             action["name"], score, pre_click_wait_seconds,
                         )
-                        self.sleep(pre_click_wait_seconds)
-                        elapsed += pre_click_wait_seconds
-                        confirmed_center, confirmed_score = self.template_matcher(
-                            self.client.screenshot(), template_path, roi, float(action["threshold"])
-                        )
+                        images.sleep(pre_click_wait_seconds)
+                        confirmed_center, confirmed_score = images.find(action, deadline=deadline)
                         if confirmed_center is None:
                             LOGGER.info(
                                 "等待后%s已消失，相似度 %.3f，继续识别",
@@ -209,17 +212,19 @@ class ActionRunner:
                                 "点击完成，等待 %.2f 秒让页面响应",
                                 post_click_wait_seconds,
                             )
-                            self.sleep(post_click_wait_seconds)
+                            images.sleep(post_click_wait_seconds)
                             break
-                    if elapsed >= timeout_seconds:
+                    if images.elapsed >= deadline:
                         raise VisualError(f"等待{action['name']}超时，最后相似度 {score:.3f}")
-                    delay = min(poll_seconds, timeout_seconds - elapsed)
+                    delay = min(poll_seconds, deadline - images.elapsed)
                     LOGGER.info(
                         "等待%s，当前相似度 %.3f，%.2f 秒后重试",
                         action["name"], score, delay,
                     )
-                    self.sleep(delay)
-                    elapsed += delay
+                    images.sleep(delay)
+            elif action_type == "authorize_account":
+                authorize_account(self.client, action, template_matcher=self.template_matcher,
+                                  asset_root=self.asset_root, sleep=self.sleep)
             elif action_type == "finish_login_authorization":
                 finish_login_authorization(
                     self.client,
@@ -254,6 +259,11 @@ class ActionRunner:
                     template_matcher=self.template_matcher,
                     asset_root=self.asset_root,
                     sleep=self.sleep,
+                )
+            elif action_type == "handle_abundance":
+                handle_abundance(
+                    self.client, action, template_matcher=self.template_matcher,
+                    asset_root=self.asset_root, sleep=self.sleep,
                 )
             elif action_type == "handle_free_recruit":
                 handle_free_recruit(

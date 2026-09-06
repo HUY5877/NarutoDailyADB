@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .visual import VisualError, find_template_in_png
+from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.visual import VisualError, find_template_in_png
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -31,18 +32,39 @@ def navigate_to_card(
     """横向查找指定任务卡片，并点击该卡片下方对应的前往按钮。"""
 
     name = action["name"]
-    template_path = Path(asset_root) / action["template"]
-    button_template_path = Path(asset_root) / action["button_template"]
-    completed_template_path = Path(asset_root) / action["completed_template"]
-    roi = (action["left"], action["top"], action["right"], action["bottom"])
-    threshold = float(action["threshold"])
+    images = ImageRecognition(client, template_matcher, asset_root, sleep)
     max_swipes = action["max_swipes"]
+
+    def scan_card(png):
+        center, score = images.match(png, action)
+        if center is None:
+            return center, score, None, 0.0, None, 0.0
+        region = dict(
+            left=max(0, center[0] + action["button_left_offset"]),
+            top=max(0, center[1] + action["button_top_offset"]),
+            right=min(action["right"], center[0] + action["button_right_offset"]),
+            bottom=center[1] + action["button_bottom_offset"],
+        )
+        completed, completed_score = images.match(png, dict(region,
+            template=action["completed_template"], threshold=action["completed_threshold"]))
+        if completed is not None:
+            return center, score, completed, completed_score, None, 0.0
+        button, button_score = images.match(png, dict(region,
+            template=action["button_template"], threshold=action["button_threshold"]))
+        return center, score, completed, completed_score, button, button_score
+
+    def check_card():
+        # 每次补查都重新定位文字、已完成标记及该卡片的按钮。
+        return images.check(scan_card, lambda r: r[2] is not None or r[4] is not None, name)
 
     swipe_count = 0
     alignment_swipe_used = False
+    round_number = 0
     while True:
-        screenshot = client.screenshot()
-        center, score = template_matcher(screenshot, template_path, roi, threshold)
+        round_number += 1
+        LOGGER.info('[查找%s 第%d轮] 定位卡片→检查已完成标记或前往按钮；未找到则滑动，达到上限后跳过或报错；已滑动 %d 次，常规上限 %d 次',
+                    name, round_number, swipe_count, max_swipes)
+        center, score, completed_center, completed_score, button_center, button_score = check_card()
         if center is not None:
             LOGGER.info(
                 "发现%s，相似度 %.3f，文字中心：(%d, %d)",
@@ -50,18 +72,6 @@ def navigate_to_card(
                 score,
                 center[0],
                 center[1],
-            )
-            button_roi = (
-                max(0, center[0] + action["button_left_offset"]),
-                max(0, center[1] + action["button_top_offset"]),
-                min(action["right"], center[0] + action["button_right_offset"]),
-                center[1] + action["button_bottom_offset"],
-            )
-            completed_center, completed_score = template_matcher(
-                screenshot,
-                completed_template_path,
-                button_roi,
-                float(action["completed_threshold"]),
             )
             if completed_center is not None:
                 LOGGER.info(
@@ -71,12 +81,6 @@ def navigate_to_card(
                 )
                 return NavigationSummary(swipes=swipe_count, completed=True)
 
-            button_center, button_score = template_matcher(
-                screenshot,
-                button_template_path,
-                button_roi,
-                float(action["button_threshold"]),
-            )
             if button_center is None:
                 if not alignment_swipe_used:
                     LOGGER.info(
@@ -106,18 +110,16 @@ def navigate_to_card(
             LOGGER.info(
                 "发现对应的立刻前往，相似度 %.3f，点击前等待 %.2f 秒",
                 button_score,
-                float(action.get("pre_click_wait_seconds", 3)),
+                float(action.get("pre_click_wait_seconds", 1)),
             )
-            sleep(float(action.get("pre_click_wait_seconds", 3)))
-            confirmed_center, confirmed_score = template_matcher(
-                client.screenshot(),
-                button_template_path,
-                button_roi,
-                float(action["button_threshold"]),
-            )
+            sleep(float(action.get("pre_click_wait_seconds", 1)))
+            _, _, completed_center, completed_score, confirmed_center, confirmed_score = check_card()
+            if completed_center is not None:
+                LOGGER.info("今日%s已完成，相似度 %.3f，取消点击并跳过执行", name, completed_score)
+                return NavigationSummary(swipes=swipe_count, completed=True)
             if confirmed_center is None:
                 raise VisualError(
-                    f"找到{name}的立刻前往，但点击前等待后已消失，"
+                    f"找到{name}的立刻前往，但点击前复查及补查均未确认，"
                     f"最后相似度 {confirmed_score:.3f}"
                 )
             LOGGER.info(
@@ -129,9 +131,9 @@ def navigate_to_card(
             client.tap(*confirmed_center)
             LOGGER.info(
                 "点击立刻前往后等待页面响应 %.2f 秒",
-                float(action.get("post_click_wait_seconds", 3)),
+                float(action.get("post_click_wait_seconds", 1)),
             )
-            sleep(float(action.get("post_click_wait_seconds", 3)))
+            sleep(float(action.get("post_click_wait_seconds", 1)))
             return NavigationSummary(swipes=swipe_count, completed=False)
 
         if alignment_swipe_used:

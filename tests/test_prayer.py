@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from naruto_daily.prayer import handle_organization_prayer
+from naruto_daily.organization_prayer import handle_organization_prayer
 
 
 class PrayerClient:
@@ -58,7 +58,7 @@ def prayer_action():
 def test_without_yesterday_reward_clicks_coin_prayer_directly(caplog):
     client = PrayerClient()
     results = iter([
-        ((866, 875), 0.99), (None, 0.20),
+        ((866, 875), 0.99), (None, 0.20), (None, 0.20),
         ((866, 875), 0.99), ((867, 876), 0.98),
     ])
 
@@ -88,7 +88,7 @@ def test_claims_every_available_yesterday_reward_then_dismisses_and_prays():
         ((1131, 361), 0.98),
         ((1130, 585), 0.98),
         ((1132, 586), 0.99),
-        (None, 0.30),
+        (None, 0.30), (None, 0.30),
         ((866, 875), 0.99),
         ((867, 876), 0.98),
     ])
@@ -108,7 +108,7 @@ def test_claims_every_available_yesterday_reward_then_dismisses_and_prays():
         (1500, 200),
         (867, 876),
     ]
-    assert waits == [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 1.0, 3.0, 3.0]
+    assert waits == [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 1.0, 1.0, 3.0, 3.0]
     assert summary.yesterday_opened is True
     assert summary.claims == 2
 
@@ -120,7 +120,7 @@ def test_yesterday_panel_with_no_available_reward_dismisses_without_false_click(
         ((670, 285), 0.98),
         ((671, 286), 0.99),
         ((950, 160), 0.99),
-        (None, 0.30),
+        (None, 0.30), (None, 0.30),
         ((866, 875), 0.99),
         ((867, 876), 0.98),
     ])

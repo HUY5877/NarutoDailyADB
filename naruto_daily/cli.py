@@ -7,11 +7,11 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .adb_client import AdbClient, AdbError
+from naruto_daily.common.adb_client import AdbClient, AdbError
 from .config import ConfigError, Settings, load_settings
 from .runner import ActionLimitError, ActionRunner
 from .tasks import TaskError, build_all, build_task
-from .visual import VisualError
+from naruto_daily.common.visual import VisualError
 
 
 def _parser() -> argparse.ArgumentParser:

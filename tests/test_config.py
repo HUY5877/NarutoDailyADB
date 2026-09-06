@@ -36,6 +36,16 @@ def test_load_settings_returns_validated_values(tmp_path):
     assert settings.tasks["sign_in"][0] == {"type": "tap", "x": 100, "y": 200}
 
 
+def test_optional_image_retry_cannot_exceed_task_wait_limit(tmp_path):
+    payload = valid_payload()
+    payload["tasks"]["sign_in"] = [{"type": "wait", "seconds": 300}, {
+        "type": "optional_template_tap", "template": "button.png",
+        "left": 0, "top": 0, "right": 100, "bottom": 100, "threshold": 0.85,
+    }]
+    with pytest.raises(ConfigError, match="超过 300 秒"):
+        load_settings(write_config(tmp_path, payload))
+
+
 def test_login_task_accepts_real_1920_by_1080_coordinates(tmp_path):
     payload = valid_payload()
     payload["screen"] = {"width": 1920, "height": 1080}
@@ -177,7 +187,8 @@ def test_old_click_actions_without_wait_fields_are_still_accepted(tmp_path):
 
     settings = load_settings(write_config(tmp_path, payload))
 
-    assert settings.tasks["login"][2].get("pre_click_wait_seconds") is None
+    assert settings.tasks["login"][2]["pre_click_wait_seconds"] == 3
+    assert settings.tasks["login"][2]["post_click_wait_seconds"] == 3
     second = settings.tasks["login"][4]["second_authorization"]
     assert second == {
         "name": "第二次授权同意按钮",
@@ -422,8 +433,8 @@ def test_free_recruit_accepts_red_dot_and_safe_button_targets(tmp_path):
         "type": "handle_free_recruit",
         "timeout_seconds": 40,
         "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
+        "pre_click_wait_seconds": 0.5,
+        "post_click_wait_seconds": 0.5,
         "advanced_tab": {
             "name": "高级招募标签", "template": "assets/advanced_recruit_tab.png",
             "left": 0, "top": 150, "right": 300, "bottom": 350, "threshold": 0.90,
@@ -485,8 +496,8 @@ def test_free_recruit_accepts_red_dot_and_safe_button_targets(tmp_path):
             "必须共用同一张红点模板",
         ),
         (
-            lambda action: action.update({"pre_click_wait_seconds": 2}),
-            "点击前后等待必须固定为 3 秒",
+            lambda action: action.update({"pre_click_wait_seconds": -1}),
+            "pre_click_wait_seconds 必须在 0 到 10 之间",
         ),
     ],
 )
