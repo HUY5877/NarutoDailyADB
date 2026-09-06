@@ -9,3 +9,7 @@ config.local.json
 .worktrees/
 .idea/
 build/
+
+.env
+.env.*
+!.env.example

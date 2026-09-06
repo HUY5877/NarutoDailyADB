@@ -9,6 +9,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from naruto_daily.common.visual import VisualError
+from naruto_daily.common.environment import (
+    EnvironmentConfigError, read_environment, require_environment, resolve_environment,
+)
 
 
 class MultimodalError(VisualError):
@@ -23,12 +26,13 @@ class _NoRedirect(HTTPRedirectHandler):
 
 class MultimodalClient:
     def __init__(self, config: dict, *, asset_root=Path('.'), open_request=None):
-        self.config = config
         self._open = open_request or build_opener(_NoRedirect).open
         try:
-            self._key = (Path(asset_root) / config['api_key_file']).read_text(encoding='utf-8').strip()
-        except (OSError, UnicodeError):
-            raise MultimodalError('无法读取多模态 API 密钥文件') from None
+            environment = read_environment(Path(asset_root))
+            self.config = resolve_environment(config, environment)
+            self._key = require_environment(environment, 'MULTIMODAL_API_KEY')
+        except EnvironmentConfigError as exc:
+            raise MultimodalError(f'多模态配置错误（API 密钥或环境变量）：{exc}') from None
         if not self._key or any(c.isspace() for c in self._key):
             raise MultimodalError('多模态 API 密钥为空或格式不正确')
 

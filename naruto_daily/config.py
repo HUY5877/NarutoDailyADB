@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-
+from naruto_daily.common.environment import EnvironmentConfigError, read_environment, resolve_environment
 
 LOGGER = logging.getLogger("naruto_daily")
 
@@ -333,15 +333,12 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         model = action['multimodal']
         if not isinstance(model, dict):
             raise ConfigError(f'{context}.multimodal 必须是对象')
-        _require_exact_keys(model, {'base_url', 'model', 'api_key_file', 'timeout_seconds', 'max_calls'}, f'{context}.multimodal')
+        _require_exact_keys(model, {'base_url', 'model', 'timeout_seconds', 'max_calls'}, f'{context}.multimodal')
         url = urlsplit(model['base_url']) if isinstance(model['base_url'], str) else None
         if not url or url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
             raise ConfigError(f'{context}.multimodal.base_url 必须是 HTTPS API 地址')
         if not isinstance(model['model'], str) or not model['model'].strip():
             raise ConfigError(f'{context}.multimodal.model 必须是非空模型名称')
-        key_file = model['api_key_file']
-        if not isinstance(key_file, str) or not key_file.strip() or Path(key_file).is_absolute() or '..' in Path(key_file).parts:
-            raise ConfigError(f'{context}.multimodal.api_key_file 必须是配置目录内的相对路径')
         request_timeout = model['timeout_seconds']
         if type(request_timeout) not in (float, int) or not 1 <= request_timeout <= 30:
             raise ConfigError(f'{context}.multimodal.timeout_seconds 必须在 1 到 30 之间')
@@ -610,6 +607,10 @@ def load_settings(path: Path) -> Settings:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigError(f"无法加载配置：{exc}") from exc
+    try:
+        payload = resolve_environment(payload, read_environment(Path(path).parent))
+    except EnvironmentConfigError as exc:
+        raise ConfigError(str(exc)) from None
     if not isinstance(payload, dict):
         raise ConfigError("配置根节点必须是对象")
     _require_exact_keys(payload, ROOT_KEYS, "configuration")

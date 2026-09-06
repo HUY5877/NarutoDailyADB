@@ -13,7 +13,7 @@ def action():
     result = dict(type='authorize_account', account_name='离落花开花败', timeout_seconds=40,
                   poll_seconds=1, pre_click_wait_seconds=3, post_click_wait_seconds=3,
                   multimodal=dict(base_url='https://api.stepfun.com/step_plan/v1', model='step-3.7-flash',
-                                  api_key_file='.secrets/stepfun_api_key', timeout_seconds=20, max_calls=6))
+                                  timeout_seconds=20, max_calls=6))
     for key in ('picker_marker', 'switch_account', 'agree_button'):
         result[key] = dict(name=key, template=key + '.png', left=0, top=0,
                            right=1920, bottom=1080, threshold=0.95)

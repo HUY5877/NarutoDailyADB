@@ -27,7 +27,7 @@ naruto_daily/
 └── recruit/                 # 免费招募
 ```
 
-各功能包的 `__init__.py` 导出任务入口，实现放在包内；跨功能共用能力集中在 `common/`。图片仍放在项目的 `assets/`，配置和密钥文件位置不变，原有命令行用法不变。
+各功能包的 `__init__.py` 导出任务入口，实现放在包内；跨功能共用能力集中在 `common/`。图片仍放在项目的 `assets/`，流程参数保留在 JSON，接口和账号配置集中在同目录的 `.env`，命令行用法不变。
 
 ## 安装
 
@@ -35,7 +35,19 @@ naruto_daily/
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
 Copy-Item config.example.json config.local.json
+Copy-Item .env.example .env
 ```
+
+编辑 `.env`，填写以下配置；已有 `.env` 时直接编辑，不要用示例覆盖：
+
+```dotenv
+MULTIMODAL_API_KEY=你的API密钥
+MULTIMODAL_BASE_URL=https://api.stepfun.com/step_plan/v1
+MULTIMODAL_MODEL=step-3.7-flash
+LOGIN_ACCOUNT_NAME="你要登录的完整昵称"
+```
+
+`MULTIMODAL_BASE_URL` 填基础地址，不包含 `/chat/completions`。`.env` 按 `--config` 指定的 JSON 所在目录读取，不依赖启动命令时的工作目录；系统环境变量优先。昵称中有空格或 `#` 时请加引号。修改后下次运行会重新读取；缺少必需变量时会报出变量名，不输出密钥。真实 `.env` 已加入 Git 忽略，只提交 `.env.example`。
 
 先打开雷电模拟器，再检查 ADB 和安卓分辨率：
 
@@ -55,11 +67,11 @@ Copy-Item config.example.json config.local.json
 
 登录阶段先勾选协议，再识别安卓 QQ 按钮进入授权页。按钮点击前重新截图确认；超时则停止流程并输出中文错误。
 
-第一次授权固定使用“离落花开花败”。`authorize_account` 将授权截图交给多模态模型提取当前昵称，在本地做完整字符串匹配。昵称不一致时打开“切换账号”，通过安卓控件文字精确找到目标账号并点击，等待 3 秒后再次用模型核对昵称。点击同意前重新截图读取昵称；未知昵称、接口异常、超过时间或调用上限时停止，不使用昵称图片兜底。按钮与弹层标题仍用图片识别。
+第一次授权使用 `.env` 中 `LOGIN_ACCOUNT_NAME` 指定的昵称。`authorize_account` 将授权截图交给多模态模型提取当前昵称，在本地做完整字符串匹配。昵称不一致时打开“切换账号”，通过安卓控件文字精确找到目标账号并点击，等待 3 秒后再次用模型核对昵称。点击同意前重新截图读取昵称；未知昵称、接口异常、超过时间或调用上限时停止，不使用昵称图片兜底。按钮与弹层标题仍用图片识别。
 
 `naruto_daily/multimodal/client.py` 是通用的图片 + 提示词 → JSON API 客户端，包含超时、响应校验和异常脱敏；`naruto_daily/multimodal/prompts.py` 单独保存场景提示词，后续多模态场景可复用客户端并添加模板。提示词不预填目标账号，模型只负责读取，是否匹配由本地代码决定。
 
-示例和本机配置的 `multimodal` 使用 `https://api.stepfun.com/step_plan/v1`、`step-3.7-flash`。该模型支持图片输入，接口方式见 [Step Plan 官方文档](https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api)。密钥由 `api_key_file` 指向配置目录下的 `.secrets/stepfun_api_key`；该目录已加入 Git 忽略，新机器需自行创建密钥文件。授权截图会发送至配置的模型服务。默认单次请求上限 20 秒，每次授权最多 6 次调用；网络耗时计入 40 秒阶段预算。昵称未能读取时仍使用统一的等待 1 秒重新截图补查逻辑。
+JSON 中的 `account_name`、`multimodal.base_url` 和 `multimodal.model` 分别使用 `${LOGIN_ACCOUNT_NAME}`、`${MULTIMODAL_BASE_URL}` 和 `${MULTIMODAL_MODEL}` 引用环境配置。`naruto_daily/common/environment.py` 统一读取和解析环境变量，多模态客户端调用前单独读取 `MULTIMODAL_API_KEY`，密钥不会放进任务动作列表。旧的 `api_key_file` 配置已移除。授权截图会发送至配置的模型服务。默认单次请求上限 20 秒，每次授权最多 6 次调用；网络耗时计入 40 秒阶段预算。昵称未能读取时仍使用统一的等待 1 秒重新截图补查逻辑。
 
 第一次授权完成后，脚本会同时等待“第二次授权页面”或“开始游戏按钮”。如果直接出现开始游戏，说明本次只需一次授权；如果出现第二次授权页面，则点击第二次同意后继续等待开始游戏。该分支最多等待 40 秒。
 

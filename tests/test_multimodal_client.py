@@ -10,9 +10,9 @@ from naruto_daily.multimodal import client as mm
 
 
 def config(tmp_path):
-    (tmp_path / 'key').write_text('test-secret', encoding='utf-8')
+    (tmp_path / '.env').write_text('MULTIMODAL_API_KEY=test-secret', encoding='utf-8')
     return dict(base_url='https://api.stepfun.com/step_plan/v1', model='step-3.7-flash',
-                api_key_file='key', timeout_seconds=20)
+                timeout_seconds=20)
 
 
 def response(content, finish='stop'):
@@ -54,6 +54,35 @@ def test_api_errors_do_not_expose_credentials(tmp_path, error):
 
 def test_missing_key_fails_before_network(tmp_path):
     settings = config(tmp_path)
-    (tmp_path / 'key').unlink()
+    (tmp_path / '.env').unlink()
+    with pytest.raises(mm.MultimodalError, match='密钥'):
+        mm.MultimodalClient(settings, asset_root=tmp_path)
+
+
+def test_client_resolves_model_url_and_key_from_environment(tmp_path, monkeypatch):
+    (tmp_path / '.env').write_text(
+        'MULTIMODAL_API_KEY=file-key\nMULTIMODAL_BASE_URL=https://file.test/v1\n'
+        'MULTIMODAL_MODEL=file-model\n', encoding='utf-8')
+    monkeypatch.setenv('MULTIMODAL_API_KEY', 'environment-key')
+    monkeypatch.setenv('MULTIMODAL_BASE_URL', 'https://environment.test/v1')
+    monkeypatch.setenv('MULTIMODAL_MODEL', 'environment-model')
+
+    def open_request(request, timeout):
+        assert request.full_url == 'https://environment.test/v1/chat/completions'
+        assert request.get_header('Authorization') == 'Bearer environment-key'
+        assert json.loads(request.data)['model'] == 'environment-model'
+        return response('{}')
+
+    client = mm.MultimodalClient(
+        dict(base_url='${MULTIMODAL_BASE_URL}', model='${MULTIMODAL_MODEL}', timeout_seconds=20),
+        asset_root=tmp_path, open_request=open_request,
+    )
+    assert client.complete_json(b'png', 'prompt') == {}
+
+
+@pytest.mark.parametrize('key', ['', 'invalid key'])
+def test_invalid_environment_key_does_not_fall_back_to_file(tmp_path, monkeypatch, key):
+    settings = config(tmp_path)
+    monkeypatch.setenv('MULTIMODAL_API_KEY', key)
     with pytest.raises(mm.MultimodalError, match='密钥'):
         mm.MultimodalClient(settings, asset_root=tmp_path)

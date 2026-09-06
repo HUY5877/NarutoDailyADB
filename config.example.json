@@ -32,7 +32,7 @@
       },
       {
         "type": "authorize_account",
-        "account_name": "离落花开花败",
+        "account_name": "${LOGIN_ACCOUNT_NAME}",
         "timeout_seconds": 40,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 3,
@@ -65,9 +65,8 @@
           "threshold": 0.95
         },
         "multimodal": {
-          "base_url": "https://api.stepfun.com/step_plan/v1",
-          "model": "step-3.7-flash",
-          "api_key_file": ".secrets/stepfun_api_key",
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 20,
           "max_calls": 6
         }
