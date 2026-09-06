@@ -29,7 +29,14 @@ class ImageRecognition:
     def match(self, screenshot: bytes, target: dict):
         """只匹配传入的同一帧；刷新和重试由 check 统一负责。"""
         roi = tuple(target[key] for key in ("left", "top", "right", "bottom"))
-        return self.matcher(screenshot, self.asset_root / target["template"], roi, float(target["threshold"]))
+        best = (None, -1.0)
+        for template in [target["template"], *target.get("alternate_templates", [])]:
+            result = self.matcher(screenshot, self.asset_root / template, roi, float(target["threshold"]))
+            if result[0] is not None:
+                return result
+            if result[1] > best[1]:
+                best = result
+        return best
 
     def check(self, probe: Callable[[bytes], T], found: Callable[[T], bool], name: str,
               *, deadline: float = float("inf")) -> T:

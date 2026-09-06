@@ -123,12 +123,18 @@ def _validate_template_target(target: Any, width: int, height: int, context: str
         keys.add("name")
     if not isinstance(target, dict):
         raise ConfigError(f"{context} 必须是模板目标对象")
-    _require_exact_keys(target, keys, context)
+    _require_exact_keys(target, keys | {"alternate_templates"}, context, optional={"alternate_templates"})
     if require_name and (not isinstance(target["name"], str) or not target["name"].strip()):
         raise ConfigError(f"{context} 的 name 必须是非空字符串")
     template = target["template"]
     if not isinstance(template, str) or not template.strip() or Path(template).is_absolute() or ".." in Path(template).parts:
         raise ConfigError(f"{context} 的模板必须是配置目录内的相对路径")
+    alternatives = target.get("alternate_templates", [])
+    if not isinstance(alternatives, list):
+        raise ConfigError(f"{context}.alternate_templates 必须是模板路径列表")
+    for template in alternatives:
+        if not isinstance(template, str) or not template.strip() or Path(template).is_absolute() or ".." in Path(template).parts:
+            raise ConfigError(f"{context} 的备用模板必须是配置目录内的相对路径")
     left, top, right, bottom = (target[key] for key in ("left", "top", "right", "bottom"))
     _coordinate(left, width, context)
     _coordinate(top, height, context)

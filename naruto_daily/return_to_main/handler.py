@@ -40,6 +40,9 @@ def return_to_main(
                     round_number, action['max_rounds'], action['idle_rounds'])
         page, matches = images.either([main_target, close_target])
         main_center, main_score = matches[0]
+        LOGGER.info('主界面标记核对：相似度 %.3f，阈值 %.3f，区域 (%d, %d)-(%d, %d)，模板 %d 种',
+                    main_score, main_target['threshold'], main_target['left'], main_target['top'],
+                    main_target['right'], main_target['bottom'], 1 + len(main_target.get('alternate_templates', [])))
         if main_center is not None:
             LOGGER.info(
                 "回主界面第 %d 轮：发现%s，相似度 %.3f，确认已处于主界面",
@@ -79,6 +82,8 @@ def return_to_main(
         sleep(pre_click_wait)
         page, matches = images.either([main_target, close_target])
         confirmed_main_center, confirmed_main_score = matches[0]
+        LOGGER.info('点击关闭前复查主界面标记：相似度 %.3f，阈值 %.3f',
+                    confirmed_main_score, main_target['threshold'])
         if confirmed_main_center is not None:
             LOGGER.info(
                 "点击前发现%s，相似度 %.3f，确认已处于主界面，取消点击",

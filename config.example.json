@@ -142,7 +142,10 @@
           "top": 400,
           "right": 1920,
           "bottom": 700,
-          "threshold": 0.9
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -259,7 +262,10 @@
           "top": 400,
           "right": 1920,
           "bottom": 700,
-          "threshold": 0.9
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -348,7 +354,10 @@
           "top": 400,
           "right": 1920,
           "bottom": 700,
-          "threshold": 0.9
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -485,7 +494,10 @@
           "top": 400,
           "right": 1920,
           "bottom": 700,
-          "threshold": 0.9
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -625,7 +637,10 @@
           "top": 400,
           "right": 1920,
           "bottom": 700,
-          "threshold": 0.9
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -653,7 +668,10 @@
           "top": 400,
           "right": 1920,
           "bottom": 700,
-          "threshold": 0.9
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -827,7 +845,10 @@
           "top": 400,
           "right": 1920,
           "bottom": 700,
-          "threshold": 0.9
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
         },
         "close_target": {
           "name": "通用关闭按钮",
