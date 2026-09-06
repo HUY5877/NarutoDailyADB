@@ -637,6 +637,181 @@
           "threshold": 0.95
         }
       }
+    ],
+    "secret_realm": [
+      {
+        "type": "return_to_main",
+        "max_rounds": 10,
+        "idle_rounds": 3,
+        "poll_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 5,
+        "main_page_marker": {
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      },
+      {
+        "type": "required_template_tap",
+        "name": "奖励入口",
+        "template": "assets/reward_entry.png",
+        "left": 1700,
+        "top": 400,
+        "right": 1920,
+        "bottom": 700,
+        "threshold": 0.85,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 3
+      },
+      {
+        "type": "find_card_and_click",
+        "name": "完成秘境探险",
+        "template": "assets/secret_realm_label.png",
+        "left": 0,
+        "top": 300,
+        "right": 1920,
+        "bottom": 560,
+        "threshold": 0.85,
+        "button_template": "assets/go_now_button.png",
+        "button_threshold": 0.85,
+        "completed_template": "assets/completed_stamp.png",
+        "completed_threshold": 0.9,
+        "button_left_offset": -150,
+        "button_top_offset": 90,
+        "button_right_offset": 150,
+        "button_bottom_offset": 280,
+        "max_swipes": 6,
+        "swipe_x1": 1650,
+        "swipe_y1": 550,
+        "swipe_x2": 350,
+        "swipe_y2": 550,
+        "swipe_duration_ms": 500,
+        "wait_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 5,
+        "completed_skip_type": "handle_secret_realm"
+      },
+      {
+        "type": "handle_secret_realm",
+        "timeout_seconds": 90,
+        "poll_seconds": 3,
+        "pre_click_wait_seconds": 3,
+        "post_click_wait_seconds": 5,
+        "load_wait_seconds": 15,
+        "create_room": {
+          "name": "创建房间",
+          "template": "assets/secret_create_room.png",
+          "left": 1280,
+          "top": 710,
+          "right": 1640,
+          "bottom": 870,
+          "threshold": 0.9
+        },
+        "deploy_button": {
+          "name": "秘境房间出战",
+          "template": "assets/secret_deploy.png",
+          "left": 1630,
+          "top": 760,
+          "right": 1920,
+          "bottom": 1080,
+          "threshold": 0.9
+        },
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 6
+        },
+        "battle": {
+          "start_timeout_seconds": 60,
+          "timeout_seconds": 300,
+          "tap_interval_seconds": 0.2,
+          "battle_marker": {
+            "name": "战斗暂停按钮",
+            "template": "assets/battle_pause.png",
+            "left": 1750,
+            "top": 0,
+            "right": 1880,
+            "bottom": 140,
+            "threshold": 0.85
+          },
+          "end_targets": [
+            {
+              "name": "秘境房间出战",
+              "template": "assets/secret_deploy.png",
+              "left": 1630,
+              "top": 760,
+              "right": 1920,
+              "bottom": 1080,
+              "threshold": 0.9
+            }
+          ],
+          "buttons": [
+            {
+              "name": "一技能",
+              "x": 1500,
+              "y": 960
+            },
+            {
+              "name": "二技能",
+              "x": 1535,
+              "y": 750
+            },
+            {
+              "name": "大招",
+              "x": 1725,
+              "y": 650
+            },
+            {
+              "name": "普攻",
+              "x": 1715,
+              "y": 885
+            }
+          ]
+        }
+      },
+      {
+        "type": "return_to_main",
+        "max_rounds": 10,
+        "idle_rounds": 3,
+        "poll_seconds": 3,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 5,
+        "main_page_marker": {
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      }
     ]
   }
 }

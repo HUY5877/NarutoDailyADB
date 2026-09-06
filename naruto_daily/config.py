@@ -32,8 +32,12 @@ class Settings:
 
 
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
-TASK_NAMES = {"login", "organization_pray", "sign_in", "stamina", "recruit", "abundance"}
+TASK_NAMES = {"login", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "secret_realm"}
 ACTION_KEYS = {
+    "handle_secret_realm": {
+        "type", "timeout_seconds", "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds",
+        "load_wait_seconds", "create_room", "deploy_button", "multimodal", "battle",
+    },
     "authorize_account": {
         "type", "account_name", "timeout_seconds", "poll_seconds",
         "pre_click_wait_seconds", "post_click_wait_seconds", "picker_marker",
@@ -153,6 +157,37 @@ def _validate_multimodal_config(model: Any, context: str) -> None:
         raise ConfigError(f'{context}.max_calls 必须在 2 到 10 之间')
 
 
+def _validate_battle(battle: Any, width: int, height: int, context: str, max_timeout=180) -> None:
+    if not isinstance(battle, dict):
+        raise ConfigError(f"{context}.battle 必须是对象")
+    _require_exact_keys(battle, {"start_timeout_seconds", "timeout_seconds", "tap_interval_seconds",
+                                "battle_marker", "end_targets", "buttons"}, f"{context}.battle")
+    for key, lower, upper in (("start_timeout_seconds", 1, 60), ("timeout_seconds", 1, max_timeout),
+                              ("tap_interval_seconds", 0.1, 2)):
+        value = battle[key]
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not lower <= value <= upper:
+            raise ConfigError(f"{context}.battle 的 {key} 必须在 {lower} 到 {upper} 之间")
+    _validate_template_target(battle["battle_marker"], width, height, f"{context}.battle.battle_marker", True)
+    ends = battle["end_targets"]
+    if not isinstance(ends, list) or not 1 <= len(ends) <= 3:
+        raise ConfigError(f"{context}.battle 必须配置 1 到 3 个战斗结束标记")
+    for index, target in enumerate(ends):
+        _validate_template_target(target, width, height, f"{context}.battle.end_targets[{index}]", True)
+    buttons = battle["buttons"]
+    if not isinstance(buttons, list) or len(buttons) != 4:
+        raise ConfigError(f"{context}.battle 必须按顺序配置四个战斗按钮")
+    for button, name in zip(buttons, ("一技能", "二技能", "大招", "普攻")):
+        if not isinstance(button, dict):
+            raise ConfigError(f"{context}.battle 战斗按钮必须是对象")
+        _require_exact_keys(button, {"name", "x", "y"}, f"{context}.battle.buttons")
+        if button["name"] != name:
+            raise ConfigError(f"{context}.battle 按钮顺序必须为一技能、二技能、大招、普攻")
+        _coordinate(button["x"], width, context)
+        _coordinate(button["y"], height, context)
+        if button["x"] < 1200 or button["y"] < 450:
+            raise ConfigError(f"{context}.battle 按钮必须位于右下战斗操作区域")
+
+
 def _validate_click_waits(action: dict, context: str) -> tuple[float, float]:
     default_wait = 3 if action.get("type") in {"finish_login_authorization", "authorize_account"} else 1
     pre_wait = action.get("pre_click_wait_seconds", default_wait)
@@ -233,7 +268,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
     if action_type in {
             "required_template_tap", "finish_login_authorization", "return_to_main",
             "handle_coin_fortune", "popup_cleanup", "handle_organization_prayer",
-            "handle_free_recruit", "handle_abundance", "authorize_account",
+            "handle_free_recruit", "handle_abundance", "authorize_account", "handle_secret_realm",
     }:
         optional_keys = CLICK_WAIT_KEYS
     elif action_type == "find_card_and_click":
@@ -420,9 +455,26 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         _validate_click_waits(action, context)
         completed_skip_type = action.get("completed_skip_type", "handle_organization_prayer")
         if completed_skip_type not in {
-            "handle_organization_prayer", "handle_coin_fortune", "handle_free_recruit", "handle_abundance",
+            "handle_organization_prayer", "handle_coin_fortune", "handle_free_recruit", "handle_abundance", "handle_secret_realm",
         }:
             raise ConfigError(f"{context} 的 completed_skip_type 不是允许的页面处理动作")
+        return
+    elif action_type == "handle_secret_realm":
+        if (width, height) != (1920, 1080):
+            raise ConfigError(f"{context} 的秘境探险只支持 1920×1080")
+        for key, lower, upper in (("timeout_seconds", 1, 120), ("poll_seconds", 1, 10), ("load_wait_seconds", 5, 60)):
+            value = action[key]
+            if type(value) not in (int, float) or not lower <= value <= upper:
+                raise ConfigError(f"{context}.{key} 必须在 {lower} 到 {upper} 之间")
+        _validate_click_waits(action, context)
+        for key in ("create_room", "deploy_button"):
+            _validate_template_target(action[key], width, height, f"{context}.{key}", True)
+        if action["create_room"]["left"] < 1250 or action["create_room"]["top"] < 650:
+            raise ConfigError(f"{context} 创建房间区域不能覆盖左边的系统匹配")
+        if action["deploy_button"]["left"] < 1600 or action["deploy_button"]["top"] < 700:
+            raise ConfigError(f"{context} 出战区域必须限制在右下角")
+        _validate_multimodal_config(action["multimodal"], f"{context}.multimodal")
+        _validate_battle(action["battle"], width, height, context, max_timeout=600)
         return
     elif action_type == "handle_abundance":
         if (width, height) != (1920, 1080):
@@ -440,35 +492,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             raise ConfigError(f"{context} 的挑战按钮必须限制在底部中间偏左，避开一键完成")
         if challenge["threshold"] < 0.85:
             raise ConfigError(f"{context} 的挑战识别阈值不能低于 0.85")
-        battle = action["battle"]
-        if not isinstance(battle, dict):
-            raise ConfigError(f"{context}.battle 必须是对象")
-        _require_exact_keys(battle, {"start_timeout_seconds", "timeout_seconds", "tap_interval_seconds",
-                                    "battle_marker", "end_targets", "buttons"}, f"{context}.battle")
-        for key, lower, upper in (("start_timeout_seconds", 1, 60), ("timeout_seconds", 1, 180),
-                                  ("tap_interval_seconds", 0.1, 2)):
-            value = battle[key]
-            if not isinstance(value, (int, float)) or isinstance(value, bool) or not lower <= value <= upper:
-                raise ConfigError(f"{context}.battle 的 {key} 必须在 {lower} 到 {upper} 之间")
-        _validate_template_target(battle["battle_marker"], width, height, f"{context}.battle.battle_marker", True)
-        ends = battle["end_targets"]
-        if not isinstance(ends, list) or not 1 <= len(ends) <= 3:
-            raise ConfigError(f"{context}.battle 必须配置 1 到 3 个战斗结束标记")
-        for index, target in enumerate(ends):
-            _validate_template_target(target, width, height, f"{context}.battle.end_targets[{index}]", True)
-        buttons = battle["buttons"]
-        if not isinstance(buttons, list) or len(buttons) != 4:
-            raise ConfigError(f"{context}.battle 必须按顺序配置四个战斗按钮")
-        for button, name in zip(buttons, ("一技能", "二技能", "大招", "普攻")):
-            if not isinstance(button, dict):
-                raise ConfigError(f"{context}.battle 战斗按钮必须是对象")
-            _require_exact_keys(button, {"name", "x", "y"}, f"{context}.battle.buttons")
-            if button["name"] != name:
-                raise ConfigError(f"{context}.battle 按钮顺序必须为一技能、二技能、大招、普攻")
-            _coordinate(button["x"], width, context)
-            _coordinate(button["y"], height, context)
-            if button["x"] < 1200 or button["y"] < 450:
-                raise ConfigError(f"{context}.battle 按钮必须位于右下战斗操作区域")
+        _validate_battle(action["battle"], width, height, context)
         return
     elif action_type == "handle_organization_prayer":
         timeout_seconds = action["timeout_seconds"]
@@ -643,7 +667,7 @@ def load_settings(path: Path) -> Settings:
     tasks = payload["tasks"]
     if not isinstance(tasks, dict):
         raise ConfigError("tasks 必须是对象")
-    _require_exact_keys(tasks, TASK_NAMES, "tasks")
+    _require_exact_keys(tasks, TASK_NAMES, "tasks", optional={"secret_realm"})
     validated: dict[str, list[dict[str, Any]]] = {}
     for task_name, actions in tasks.items():
         if not isinstance(actions, list):

@@ -17,10 +17,12 @@ from naruto_daily.organization_prayer import handle_organization_prayer
 from .fortune import handle_coin_fortune
 from .recruit import handle_free_recruit
 from .abundance import handle_abundance
+from .secret_realm import handle_secret_realm
 
 
 LOGGER = logging.getLogger("naruto_daily")
 ACTION_NAMES = {
+    "handle_secret_realm": "创建秘境房间并按挑战券循环出战",
     "authorize_account": "选择指定 QQ 账号并授权",
     "handle_abundance": "挑战丰饶之间并执行通用战斗",
     "tap": "点击",
@@ -196,6 +198,9 @@ class ActionRunner:
                     asset_root=self.asset_root,
                     sleep=self.sleep,
                 )
+            elif action_type == "handle_secret_realm":
+                handle_secret_realm(self.client, action, template_matcher=self.template_matcher,
+                                    asset_root=self.asset_root, sleep=self.sleep)
             elif action_type == "handle_abundance":
                 handle_abundance(
                     self.client, action, template_matcher=self.template_matcher,
