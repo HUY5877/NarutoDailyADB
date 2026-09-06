@@ -7,3 +7,5 @@ logs/
 config.local.json
 .secrets/
 .worktrees/
+.idea/
+build/
