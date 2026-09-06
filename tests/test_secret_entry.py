@@ -64,7 +64,7 @@ def test_ninja_entry_swipes_once_and_rechecks_model_coordinates(monkeypatch):
     matcher = lambda *a: ((1443, 791), 1)
     assert enter.enter_secret_realm(client, action, template_matcher=matcher, sleep=sleeps.append)
     assert taps == [(1055, 574), (22, 324)]
-    assert len(swipes) == 1 and swipes[0][0] < swipes[0][2]
+    assert len(swipes) == 1 and swipes[0][0] > swipes[0][2]
     assert 1 in sleeps and sleeps.count(5) >= 3
     assert len(calls) == 5
 
@@ -147,8 +147,8 @@ def test_invalid_entry_configuration_rejected_before_login(tmp_path):
     import json
     from naruto_daily.config import ConfigError
     payload = json.loads((ROOT / 'config.example.json').read_text(encoding='utf-8'))
-    payload['tasks']['secret_realm_farm'][0]['swipe']['x2'] = 100
+    payload['tasks']['secret_realm_farm'][0]['swipe'].update(x1=500, x2=1450)
     path = tmp_path / 'config.json'
     path.write_text(json.dumps(payload), encoding='utf-8')
-    with pytest.raises(ConfigError, match='向右'):
+    with pytest.raises(ConfigError, match='向左'):
         load_settings(path)

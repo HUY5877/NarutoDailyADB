@@ -298,8 +298,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
                 raise ConfigError(f"{context}.timeout_seconds 必须在 1 到 180 之间")
             if type(action["poll_seconds"]) not in (int, float) or not .2 <= action["poll_seconds"] <= 5:
                 raise ConfigError(f"{context}.poll_seconds 必须在 0.2 到 5 之间")
-            if action["swipe"]["x1"] >= action["swipe"]["x2"]:
-                raise ConfigError(f"{context} 的主界面滑动必须向右")
+            if action["swipe"]["x1"] <= action["swipe"]["x2"]:
+                raise ConfigError(f"{context} 的主界面滑动必须向左")
         return
     if action_type in {
             "required_template_tap", "finish_login_authorization", "return_to_main",

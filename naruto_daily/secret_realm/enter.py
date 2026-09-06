@@ -128,7 +128,7 @@ def enter_from_ninja_challenge(client, action, *, template_matcher=find_template
                    asset_root=asset_root, sleep=sleep)
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     swipe = action['swipe']
-    LOGGER.info('秘境独立入口：主界面向右滑动一次，等待 %g 秒', action['post_click_wait_seconds'])
+    LOGGER.info('秘境独立入口：主界面向左滑动一次，等待 %g 秒', action['post_click_wait_seconds'])
     client.swipe(*(swipe[k] for k in ('x1', 'y1', 'x2', 'y2', 'duration_ms')))
     images.sleep(action['post_click_wait_seconds'])
     model = MultimodalClient(action['multimodal'], asset_root=asset_root)

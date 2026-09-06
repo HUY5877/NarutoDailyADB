@@ -145,7 +145,7 @@ JSON 中的 `account_name`、`multimodal.base_url` 和 `multimodal.model` 分别
 .\.venv\Scripts\naruto-daily.exe run secret_realm_farm --config config.local.json
 ```
 
-`secret_realm_farm` 顺序为：登录并处理授权、弹窗 → 回主界面 → 向右滑一次 → 大模型定位并点击“忍者挑战” → 大模型定位并点击最左侧“秘境探险” → 创建房间 → 读券、战斗、结算返回循环 → 券为0后回主界面。它不会执行组织祈福、招募、丰饶等每日任务，也不会因为奖励卡片已完成而跳过秘境。追加 `--dry-run` 可查看动作队列，不点击、不调用模型。
+`secret_realm_farm` 顺序为：登录并处理授权、弹窗 → 回主界面 → 向左滑一次 → 大模型定位并点击“忍者挑战” → 大模型定位并点击最左侧“秘境探险” → 创建房间 → 读券、战斗、结算返回循环 → 券为0后回主界面。它不会执行组织祈福、招募、丰饶等每日任务，也不会因为奖励卡片已完成而跳过秘境。追加 `--dry-run` 可查看动作队列，不点击、不调用模型。
 
 两种入口在 `naruto_daily/secret_realm/enter.py`：`enter_from_rewards` 使用奖励卡片，`enter_from_ninja_challenge` 使用主界面。配置中 `tasks.secret_realm_farm` 只放新入口；`tasks.py` 将它与原始登录动作、`tasks.secret_realm` 从 `handle_secret_realm` 起的公共后续动作组合。建房、读券、战斗、结算和最后回主界面只维护一份。原 `login`、`all` 仍用奖励入口，不额外执行刷秘境线路。
 
