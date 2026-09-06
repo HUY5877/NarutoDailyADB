@@ -76,12 +76,13 @@ def handle_free_recruit(
     images.wait_for(action["advanced_tab"], timeout_seconds=timeout, poll_seconds=poll)
     clicks = {"advanced": 0, "ordinary": 0}
     for round_number, (key, name) in enumerate((("advanced", "高级招募"), ("ordinary", "普通招募")), 1):
-        LOGGER.info('[免费招募 第%d/2轮：%s] 检查红点；有红点则切换标签→确认免费按钮→招募→关闭结果，无红点则跳过本项',
+        LOGGER.info('[免费招募 第%d/2轮：%s] 检查红点；有红点则切换标签→确认免费按钮→招募→关闭结果，未确认红点则跳过本项',
                     round_number, name)
         guard = action[key + "_red_dot"]
         center, score = images.find(guard)
         if center is None:
-            LOGGER.info("%s没有红点，跳过；当前相似度 %.3f", name, score)
+            LOGGER.info("未识别到%s红点，跳过本项；相似度 %.3f，阈值 %.3f，搜索区域 (%d, %d)-(%d, %d)",
+                        name, score, guard["threshold"], guard["left"], guard["top"], guard["right"], guard["bottom"])
             continue
         LOGGER.info("%s存在红点，相似度 %.3f，继续操作前等待 %.2f 秒", name, score, pre_wait)
         images.sleep(pre_wait)

@@ -110,8 +110,9 @@ def test_recruit_skips_each_category_without_red_dot(caplog):
         ).run([recruit_action()])
 
     assert client.taps == []
-    assert "高级招募没有红点，跳过" in caplog.text
-    assert "普通招募没有红点，跳过" in caplog.text
+    assert "未识别到高级招募红点，跳过本项" in caplog.text
+    assert "未识别到普通招募红点，跳过本项" in caplog.text
+    assert "相似度 0.250，阈值 0.950，搜索区域 (170, 800)-(270, 980)" in caplog.text
 
 
 def test_recruit_skips_category_when_red_dot_disappears_during_wait(caplog):

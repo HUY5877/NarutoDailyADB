@@ -430,7 +430,7 @@
           "name": "普通招募标签",
           "template": "assets/ordinary_recruit_tab.png",
           "left": 0,
-          "top": 780,
+          "top": 700,
           "right": 300,
           "bottom": 1030,
           "threshold": 0.9
@@ -439,7 +439,7 @@
           "name": "普通招募红点",
           "template": "assets/recruit_red_dot.png",
           "left": 170,
-          "top": 800,
+          "top": 700,
           "right": 270,
           "bottom": 980,
           "threshold": 0.95

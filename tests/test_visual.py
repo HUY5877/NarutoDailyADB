@@ -269,3 +269,39 @@ def test_extended_fortune_close_area_still_rejects_main_page_activity_button():
 
     assert center is None
     assert score < 0.95
+
+
+def test_configured_ordinary_recruit_targets_cover_both_sidebar_layouts():
+    from naruto_daily.config import load_settings
+
+    root = Path(__file__).parents[1]
+    settings = load_settings(root / "config.example.json")
+    action = next(a for a in settings.tasks["recruit"] if a["type"] == "handle_free_recruit")
+    for filename, expected_dot, expected_tab in (
+        ("advanced_recruit_page.png", (219, 871), (128, 909)),
+        ("recruit_sidebar_shifted.png", (218, 742), (127, 780)),
+    ):
+        png = (root / "tests/fixtures" / filename).read_bytes()
+        for key, expected in (("ordinary_red_dot", expected_dot), ("ordinary_tab", expected_tab)):
+            target = action[key]
+            center, score = find_template_in_png(
+                png, root / target["template"],
+                tuple(target[k] for k in ("left", "top", "right", "bottom")), target["threshold"],
+            )
+            assert center == expected, (filename, key, center, score)
+
+
+def test_shifted_sidebar_still_rejects_advanced_dot_and_paid_recruit_button():
+    from naruto_daily.config import load_settings
+
+    root = Path(__file__).parents[1]
+    settings = load_settings(root / "config.example.json")
+    action = next(a for a in settings.tasks["recruit"] if a["type"] == "handle_free_recruit")
+    png = (root / "tests/fixtures/recruit_sidebar_shifted.png").read_bytes()
+    for key in ("advanced_red_dot", "free_button"):
+        target = action[key]
+        center, score = find_template_in_png(
+            png, root / target["template"],
+            tuple(target[k] for k in ("left", "top", "right", "bottom")), target["threshold"],
+        )
+        assert center is None, (key, center, score)
