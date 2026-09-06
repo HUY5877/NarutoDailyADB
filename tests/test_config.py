@@ -431,6 +431,8 @@ def test_free_recruit_accepts_red_dot_and_safe_button_targets(tmp_path):
     payload["screen"] = {"width": 1920, "height": 1080}
     payload["tasks"]["recruit"] = [{
         "type": "handle_free_recruit",
+        "multimodal": {"base_url": "${MULTIMODAL_BASE_URL}", "model": "${MULTIMODAL_MODEL}",
+                       "timeout_seconds": 20, "max_calls": 6},
         "timeout_seconds": 40,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 0.5,
@@ -452,8 +454,8 @@ def test_free_recruit_accepts_red_dot_and_safe_button_targets(tmp_path):
             "left": 170, "top": 800, "right": 270, "bottom": 980, "threshold": 0.95,
         },
         "free_button": {
-            "name": "免费招募按钮", "template": "assets/free_recruit.png",
-            "left": 900, "top": 700, "right": 1500, "bottom": 1020, "threshold": 0.85,
+            "name": "免费招募按钮",
+            "left": 900, "top": 800, "right": 1500, "bottom": 910, "click_x": 1330, "click_y": 865,
         },
         "result_confirm": {
             "name": "招募结果确定按钮", "template": "assets/recruit_confirm.png",
@@ -510,6 +512,8 @@ def test_free_recruit_rejects_paid_button_and_unrelated_red_dot_risk(
     payload["screen"] = {"width": 1920, "height": 1080}
     action = {
         "type": "handle_free_recruit",
+        "multimodal": {"base_url": "${MULTIMODAL_BASE_URL}", "model": "${MULTIMODAL_MODEL}",
+                       "timeout_seconds": 20, "max_calls": 6},
         "timeout_seconds": 40,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 3,
@@ -531,8 +535,8 @@ def test_free_recruit_rejects_paid_button_and_unrelated_red_dot_risk(
             "left": 170, "top": 800, "right": 270, "bottom": 980, "threshold": 0.95,
         },
         "free_button": {
-            "name": "免费招募按钮", "template": "assets/free_recruit.png",
-            "left": 900, "top": 700, "right": 1500, "bottom": 1020, "threshold": 0.85,
+            "name": "免费招募按钮",
+            "left": 900, "top": 800, "right": 1500, "bottom": 910, "click_x": 1330, "click_y": 865,
         },
         "result_confirm": {
             "name": "招募结果确定按钮", "template": "assets/recruit_confirm.png",

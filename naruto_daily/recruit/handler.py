@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.multimodal.client import MultimodalClient
+from .free_button import click_free_recruit
 from naruto_daily.common.visual import VisualError, find_template_in_png
 
 
@@ -75,8 +77,9 @@ def handle_free_recruit(
     post_wait = float(action.get("post_click_wait_seconds", 1))
     images.wait_for(action["advanced_tab"], timeout_seconds=timeout, poll_seconds=poll)
     clicks = {"advanced": 0, "ordinary": 0}
+    model = None
     for round_number, (key, name) in enumerate((("advanced", "高级招募"), ("ordinary", "普通招募")), 1):
-        LOGGER.info('[免费招募 第%d/2轮：%s] 检查红点；有红点则切换标签→确认免费按钮→招募→关闭结果，未确认红点则跳过本项',
+        LOGGER.info('[免费招募 第%d/2轮：%s] 检查红点；有红点则切换标签→模型确认免费按钮→招募→关闭结果，未确认红点则跳过本项',
                     round_number, name)
         guard = action[key + "_red_dot"]
         center, score = images.find(guard)
@@ -99,7 +102,10 @@ def handle_free_recruit(
         if center is None:
             LOGGER.info("点击%s标签后红点已消失，不点击免费按钮；当前相似度 %.3f", name, score)
             continue
-        if not _click_confirmed_target(client, action["free_button"], guard_target=guard, guard_name=name, **options):
+        if model is None:
+            model = MultimodalClient(action["multimodal"], asset_root=asset_root)
+        if not click_free_recruit(client, action["free_button"], category=name, guard=guard,
+                                  model=model, max_calls=action["multimodal"]["max_calls"], **options):
             continue
         _click_confirmed_target(client, action["result_confirm"], **options)
         clicks[key] = 1

@@ -1,5 +1,8 @@
 import logging
 from pathlib import Path
+from types import SimpleNamespace
+
+from naruto_daily.recruit import handler
 
 from naruto_daily.runner import ActionRunner
 
@@ -20,6 +23,8 @@ class RecordingClient:
 def recruit_action():
     return {
         "type": "handle_free_recruit",
+        "multimodal": {"base_url": "${MULTIMODAL_BASE_URL}", "model": "${MULTIMODAL_MODEL}",
+                       "timeout_seconds": 20, "max_calls": 6},
         "timeout_seconds": 40,
         "poll_seconds": 1,
         "advanced_tab": {
@@ -39,8 +44,8 @@ def recruit_action():
             "left": 170, "top": 800, "right": 270, "bottom": 980, "threshold": 0.95,
         },
         "free_button": {
-            "name": "免费招募按钮", "template": "free_recruit.png",
-            "left": 900, "top": 700, "right": 1500, "bottom": 1020, "threshold": 0.85,
+            "name": "免费招募按钮",
+            "left": 900, "top": 800, "right": 1500, "bottom": 910, "click_x": 1330, "click_y": 865,
         },
         "result_confirm": {
             "name": "招募结果确定按钮", "template": "recruit_confirm.png",
@@ -49,7 +54,14 @@ def recruit_action():
     }
 
 
-def test_recruit_processes_advanced_then_ordinary_free_draw(caplog):
+def test_recruit_processes_advanced_then_ordinary_free_draw(caplog, monkeypatch):
+    replies = iter([
+        dict(category=category, free_count=1, button_text="免费1抽", center=list(center))
+        for category, center in [("高级招募", (1280, 880)), ("高级招募", (1281, 881)),
+                                 ("普通招募", (1200, 850)), ("普通招募", (1201, 851))]
+    ])
+    monkeypatch.setattr(handler, "MultimodalClient", lambda *a, **kw:
+        SimpleNamespace(complete_json=lambda *a, **kw: next(replies)))
     client = RecordingClient()
     results = iter([
         ((120, 250), 0.99),
@@ -58,7 +70,7 @@ def test_recruit_processes_advanced_then_ordinary_free_draw(caplog):
         ((120, 250), 0.99), ((121, 251), 0.99),
         ((218, 230), 0.99),
         ((218, 230), 0.99),
-        ((1280, 880), 0.99), ((1281, 881), 0.99),
+        ((218, 230), 0.99),
         ((218, 230), 0.99),
         ((600, 870), 0.99), ((601, 871), 0.99),
         ((218, 880), 0.99),
@@ -66,7 +78,7 @@ def test_recruit_processes_advanced_then_ordinary_free_draw(caplog):
         ((120, 900), 0.99), ((121, 901), 0.99),
         ((218, 880), 0.99),
         ((218, 880), 0.99),
-        ((1200, 850), 0.99), ((1201, 851), 0.99),
+        ((218, 880), 0.99),
         ((218, 880), 0.99),
         ((600, 870), 0.99), ((601, 871), 0.99),
     ])
@@ -82,10 +94,10 @@ def test_recruit_processes_advanced_then_ordinary_free_draw(caplog):
 
     assert client.taps == [
         (121, 251),
-        (1281, 881),
+        (1330, 865),
         (601, 871),
         (121, 901),
-        (1201, 851),
+        (1330, 865),
         (601, 871),
     ]
     assert waits == [1.0] * 14
@@ -190,7 +202,10 @@ def test_recruit_does_not_click_tab_when_red_dot_disappears_during_tab_wait(capl
     assert "点击高级招募标签前红点已消失，取消点击" in caplog.text
 
 
-def test_recruit_does_not_click_free_button_when_red_dot_disappears_during_button_wait(caplog):
+def test_recruit_does_not_click_free_button_when_red_dot_disappears_during_button_wait(caplog, monkeypatch):
+    monkeypatch.setattr(handler, "MultimodalClient", lambda *a, **kw:
+        SimpleNamespace(complete_json=lambda *a, **kw:
+            dict(category="高级招募", free_count=1, button_text="免费1抽", center=[1280, 880])))
     client = RecordingClient()
     results = iter([
         ((120, 250), 0.99),
@@ -200,9 +215,8 @@ def test_recruit_does_not_click_free_button_when_red_dot_disappears_during_butto
         ((121, 251), 0.99),
         ((218, 230), 0.99),
         ((218, 230), 0.99),
-        ((1280, 880), 0.99),
-        ((1281, 881), 0.99),
-        (None, 0.40), ((1281, 881), 0.99), (None, 0.40),
+        ((218, 230), 0.99),
+        (None, 0.40),
         (None, 0.25), (None, 0.25),
     ])
     waits = []
@@ -216,5 +230,5 @@ def test_recruit_does_not_click_free_button_when_red_dot_disappears_during_butto
         ).run([recruit_action()])
 
     assert client.taps == [(121, 251)]
-    assert waits == [1.0] * 6
-    assert "点击免费招募按钮前高级招募红点已消失，取消点击" in caplog.text
+    assert waits == [1.0] * 5
+    assert "点击免费招募按钮前高级招募红点未确认，取消点击" in caplog.text

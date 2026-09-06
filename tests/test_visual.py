@@ -184,30 +184,6 @@ def test_recruit_sidebar_templates_match_labels_and_dedicated_red_dots():
     assert ordinary_dot_score >= 0.95
 
 
-def test_free_recruit_template_matches_free_button_but_rejects_paid_button():
-    project_root = Path(__file__).parents[1]
-    screenshot = (project_root / "tests" / "fixtures" / "advanced_recruit_page.png").read_bytes()
-    template = project_root / "assets" / "free_recruit.png"
-
-    free_center, free_score = find_template_in_png(
-        screenshot,
-        template,
-        (900, 700, 1500, 1020),
-        0.85,
-    )
-    paid_center, paid_score = find_template_in_png(
-        screenshot,
-        template,
-        (1500, 700, 1920, 1020),
-        0.85,
-    )
-
-    assert free_center == (1282, 850)
-    assert free_score >= 0.99
-    assert paid_center is None
-    assert paid_score < 0.85
-
-
 def test_recruit_confirm_template_matches_left_confirm_and_rejects_paid_choices():
     project_root = Path(__file__).parents[1]
     screenshot = (project_root / "tests" / "fixtures" / "recruit_result.png").read_bytes()
@@ -291,14 +267,14 @@ def test_configured_ordinary_recruit_targets_cover_both_sidebar_layouts():
             assert center == expected, (filename, key, center, score)
 
 
-def test_shifted_sidebar_still_rejects_advanced_dot_and_paid_recruit_button():
+def test_shifted_sidebar_still_rejects_missing_advanced_dot():
     from naruto_daily.config import load_settings
 
     root = Path(__file__).parents[1]
     settings = load_settings(root / "config.example.json")
     action = next(a for a in settings.tasks["recruit"] if a["type"] == "handle_free_recruit")
     png = (root / "tests/fixtures/recruit_sidebar_shifted.png").read_bytes()
-    for key in ("advanced_red_dot", "free_button"):
+    for key in ("advanced_red_dot",):
         target = action[key]
         center, score = find_template_in_png(
             png, root / target["template"],

@@ -87,7 +87,7 @@ ACTION_KEYS = {
         "type", "timeout_seconds", "poll_seconds",
         "pre_click_wait_seconds", "post_click_wait_seconds",
         "advanced_tab", "advanced_red_dot", "ordinary_tab", "ordinary_red_dot",
-        "free_button", "result_confirm",
+        "free_button", "result_confirm", "multimodal",
     },
 }
 CLICK_WAIT_KEYS = {"pre_click_wait_seconds", "post_click_wait_seconds"}
@@ -135,6 +135,22 @@ def _validate_template_target(target: Any, width: int, height: int, context: str
     threshold = target["threshold"]
     if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not 0 < threshold <= 1:
         raise ConfigError(f"{context} 的 threshold 必须大于 0 且不超过 1")
+
+
+def _validate_multimodal_config(model: Any, context: str) -> None:
+    if not isinstance(model, dict):
+        raise ConfigError(f'{context} 必须是对象')
+    _require_exact_keys(model, {'base_url', 'model', 'timeout_seconds', 'max_calls'}, f'{context}')
+    url = urlsplit(model['base_url']) if isinstance(model['base_url'], str) else None
+    if not url or url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+        raise ConfigError(f'{context}.base_url 必须是 HTTPS API 地址')
+    if not isinstance(model['model'], str) or not model['model'].strip():
+        raise ConfigError(f'{context}.model 必须是非空模型名称')
+    request_timeout = model['timeout_seconds']
+    if type(request_timeout) not in (float, int) or not 1 <= request_timeout <= 30:
+        raise ConfigError(f'{context}.timeout_seconds 必须在 1 到 30 之间')
+    if type(model['max_calls']) is not int or not 2 <= model['max_calls'] <= 10:
+        raise ConfigError(f'{context}.max_calls 必须在 2 到 10 之间')
 
 
 def _validate_click_waits(action: dict, context: str) -> tuple[float, float]:
@@ -330,20 +346,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             _validate_template_target(action[key], width, height, f'{context}.{key}', require_name=True)
             if action[key]['threshold'] < 0.9:
                 raise ConfigError(f'{context}.{key} 的账号识别阈值不能低于 0.90')
-        model = action['multimodal']
-        if not isinstance(model, dict):
-            raise ConfigError(f'{context}.multimodal 必须是对象')
-        _require_exact_keys(model, {'base_url', 'model', 'timeout_seconds', 'max_calls'}, f'{context}.multimodal')
-        url = urlsplit(model['base_url']) if isinstance(model['base_url'], str) else None
-        if not url or url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
-            raise ConfigError(f'{context}.multimodal.base_url 必须是 HTTPS API 地址')
-        if not isinstance(model['model'], str) or not model['model'].strip():
-            raise ConfigError(f'{context}.multimodal.model 必须是非空模型名称')
-        request_timeout = model['timeout_seconds']
-        if type(request_timeout) not in (float, int) or not 1 <= request_timeout <= 30:
-            raise ConfigError(f'{context}.multimodal.timeout_seconds 必须在 1 到 30 之间')
-        if type(model['max_calls']) is not int or not 2 <= model['max_calls'] <= 10:
-            raise ConfigError(f'{context}.multimodal.max_calls 必须在 2 到 10 之间')
+        _validate_multimodal_config(action["multimodal"], f"{context}.multimodal")
         return
     elif action_type == "finish_login_authorization":
         timeout_seconds = action["timeout_seconds"]
@@ -539,7 +542,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         _validate_click_waits(action, context)
         for key in (
             "advanced_tab", "advanced_red_dot", "ordinary_tab", "ordinary_red_dot",
-            "free_button", "result_confirm",
+            "result_confirm",
         ):
             _validate_template_target(action[key], width, height, f"{context}.{key}", require_name=True)
         advanced_tab = action["advanced_tab"]
@@ -578,7 +581,23 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             raise ConfigError(f"{context} 的招募红点阈值不能低于 0.95")
         if advanced_red_dot["template"] != ordinary_red_dot["template"]:
             raise ConfigError(f"{context} 的高级和普通招募必须共用同一张红点模板")
+        _validate_multimodal_config(action["multimodal"], f"{context}.multimodal")
         free_button = action["free_button"]
+        if not isinstance(free_button, dict):
+            raise ConfigError(f"{context}.free_button 必须是按钮区域对象")
+        _require_exact_keys(free_button, {"name", "left", "top", "right", "bottom", "click_x", "click_y"}, f"{context}.free_button")
+        if not isinstance(free_button["name"], str) or not free_button["name"].strip():
+            raise ConfigError(f"{context}.free_button.name 必须是非空字符串")
+        _coordinate(free_button["left"], width, context)
+        _coordinate(free_button["top"], height, context)
+        for edge, start, limit in (("right", "left", width), ("bottom", "top", height)):
+            if type(free_button[edge]) is not int or not free_button[start] < free_button[edge] <= limit:
+                raise ConfigError(f"{context}.free_button.{edge} 超出有效按钮区域")
+        _coordinate(free_button["click_x"], width, context)
+        _coordinate(free_button["click_y"], height, context)
+        if not (free_button["left"] <= free_button["click_x"] < free_button["right"]
+                and free_button["top"] <= free_button["click_y"] < free_button["bottom"]):
+            raise ConfigError(f"{context} 的免费招募点击坐标必须位于按钮区域内")
         if not (
             free_button["left"] >= 800
             and free_button["top"] >= 650
@@ -586,8 +605,6 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             and free_button["bottom"] <= height
         ):
             raise ConfigError(f"{context} 的免费招募搜索区域必须限制在底部中间安全区域")
-        if free_button["threshold"] < 0.80:
-            raise ConfigError(f"{context} 的免费招募阈值不能低于 0.80")
         result_confirm = action["result_confirm"]
         if not (
             result_confirm["left"] >= 300

@@ -404,7 +404,7 @@
       },
       {
         "type": "handle_free_recruit",
-        "timeout_seconds": 20,
+        "timeout_seconds": 60,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
@@ -446,12 +446,12 @@
         },
         "free_button": {
           "name": "免费招募按钮",
-          "template": "assets/free_recruit.png",
           "left": 900,
-          "top": 700,
+          "top": 800,
           "right": 1500,
-          "bottom": 1020,
-          "threshold": 0.85
+          "bottom": 910,
+          "click_x": 1330,
+          "click_y": 865
         },
         "result_confirm": {
           "name": "招募结果确定按钮",
@@ -461,6 +461,12 @@
           "right": 800,
           "bottom": 1000,
           "threshold": 0.9
+        },
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 6
         }
       }
     ],

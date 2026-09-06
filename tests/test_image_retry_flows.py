@@ -85,25 +85,28 @@ def test_main_page_appears_during_close_retry_cancels_click():
     assert waits == [1, 1]
 
 
-def test_recruit_retry_never_combines_button_and_guard_from_different_frames():
-    client, waits = ScreenClient(), []
+def test_recruit_retry_never_combines_button_and_guard_from_different_frames(monkeypatch):
+    from types import SimpleNamespace
+    from naruto_daily.recruit import handler
+    client, waits, model_frames = ScreenClient(), [], []
+
     def matcher(png, path, roi, threshold):
-        frame = int(png)
         if path.name == "advanced_recruit_tab.png":
-            return (120, 250), 0.99
+            return (120, 250), .99
         if path.name == "recruit_red_dot.png":
-            return ((218, 230), 0.99) if roi[1] < 400 and frame < 9 else (None, 0.4)
-        if path.name == "free_recruit.png":
-            return (1200, 850), 0.99
-        return None, 0.4
-    # 模拟免费按钮在首次复查帧未达标，下一帧恢复，但红点此时已消失。
-    original = matcher
-    def frames(png, path, roi, threshold):
-        if path.name == "free_recruit.png" and int(png) == 8:
-            return None, 0.816
-        return original(png, path, roi, threshold)
-    handle_free_recruit(client, configured("handle_free_recruit"), template_matcher=frames, sleep=waits.append)
+            return ((218, 230), .99) if roi[1] < 400 and int(png) < 9 else (None, .4)
+        raise AssertionError("免费按钮不应调用 OpenCV")
+
+    def extract(png, *args, **kwargs):
+        model_frames.append(int(png))
+        if int(png) == 8:
+            return dict(category="高级招募", free_count=0, button_text=None, center=None)
+        return dict(category="高级招募", free_count=1, button_text="免费1抽", center=[1200, 850])
+
+    monkeypatch.setattr(handler, "MultimodalClient", lambda *a, **k: SimpleNamespace(complete_json=extract))
+    handle_free_recruit(client, configured("handle_free_recruit"), template_matcher=matcher, sleep=waits.append)
     assert client.taps == [(120, 250)]
+    assert model_frames == [7, 8]  # 第9帧红点消失，不复用第7帧的免费按钮。
 
 
 def test_guard_recovery_does_not_reuse_disappeared_button():
@@ -111,12 +114,12 @@ def test_guard_recovery_does_not_reuse_disappeared_button():
     action = configured("handle_free_recruit")
     def matcher(png, path, roi, threshold):
         frame = int(png)
-        if path.name == "free_recruit.png":
+        if path.name == "advanced_recruit_tab.png":
             return ((1200, 850), 0.99) if frame <= 2 else (None, 0.4)
         return (None, 0.4) if frame == 2 else ((218, 230), 0.99)
     images = ImageRecognition(client, matcher, sleep=waits.append)
     with pytest.raises(VisualError, match="超时"):
-        _click_confirmed_target(client, action["free_button"], images=images,
+        _click_confirmed_target(client, action["advanced_tab"], images=images,
             timeout_seconds=3, poll_seconds=1, pre_click_wait=1, post_click_wait=1,
             guard_target=action["advanced_red_dot"], guard_name="高级招募")
     assert client.taps == [] and sum(waits) == 3
