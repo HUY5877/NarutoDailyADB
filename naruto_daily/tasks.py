@@ -10,7 +10,7 @@ TASK_ORDER: tuple[TaskName, ...] = ("login", "organization_pray", "recruit", "si
 
 
 class TaskError(ValueError):
-    """请求的任务不存在或超过安全限制。"""
+    """请求的任务不存在。"""
 
 
 def build_task(settings: Settings, name: TaskName) -> list[dict]:
@@ -21,10 +21,4 @@ def build_task(settings: Settings, name: TaskName) -> list[dict]:
 
 
 def build_all(settings: Settings) -> list[dict]:
-    actions = [dict(action) for name in TASK_ORDER for action in settings.tasks[name]]
-    if len(actions) > 100:
-        raise TaskError("组合流程超过 100 个动作")
-    wait_seconds = sum(float(action.get("seconds", 0)) for action in actions if action.get("type") == "wait")
-    if wait_seconds > 300:
-        raise TaskError("组合流程超过 300 秒")
-    return actions
+    return [dict(action) for name in TASK_ORDER for action in settings.tasks[name]]

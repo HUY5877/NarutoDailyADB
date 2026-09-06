@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from naruto_daily.common.adb_client import AdbClient
-from naruto_daily.common.recognition import ImageRecognition, extra_retry_wait
+from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.login import cleanup_popups
 from naruto_daily.return_to_main import return_to_main
@@ -16,7 +16,7 @@ from naruto_daily.common.navigation import navigate_to_card
 from naruto_daily.organization_prayer import handle_organization_prayer
 from .fortune import handle_coin_fortune
 from .recruit import handle_free_recruit
-from .abundance import handle_abundance, abundance_wait_budget
+from .abundance import handle_abundance
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -39,14 +39,9 @@ ACTION_NAMES = {
 }
 
 
-class ActionLimitError(ValueError):
-    """动作序列超过安全限制。"""
-
-
 @dataclass(frozen=True)
 class RunSummary:
     action_count: int
-    wait_seconds: float
 
 
 class ActionRunner:
@@ -65,65 +60,6 @@ class ActionRunner:
         self.asset_root = Path(asset_root)
 
     def run(self, actions: Sequence[dict]) -> RunSummary:
-        if len(actions) > 100:
-            raise ActionLimitError("动作序列超过 100 个动作")
-        wait_seconds = sum(
-            float(action.get("seconds", 0))
-            if action.get("type") == "wait"
-            else float(action.get("rounds", 0)) * len(action.get("targets", [])) * (
-                float(action.get("wait_seconds", 0))
-                + float(action.get("pre_click_wait_seconds", 1))
-                + float(action.get("post_click_wait_seconds", 1))
-            )
-            if action.get("type") == "popup_cleanup"
-            else float(action.get("max_rounds", 0)) * (
-                float(action.get("poll_seconds", 0))
-                + float(action.get("pre_click_wait_seconds", 1))
-                + float(action.get("post_click_wait_seconds", 1))
-            )
-            if action.get("type") == "return_to_main"
-            else float(action.get("timeout_seconds", 0))
-            + float(action.get("pre_click_wait_seconds", 1))
-            + float(action.get("post_click_wait_seconds", 1))
-            if action.get("type") == "required_template_tap"
-            else float(action.get("timeout_seconds", 0))
-            + 2 * (
-                float(action.get("pre_click_wait_seconds", 3))
-                + float(action.get("post_click_wait_seconds", 3))
-            )
-            if action.get("type") == "finish_login_authorization"
-            else float(action.get("max_swipes", 0)) * float(action.get("wait_seconds", 0))
-            + float(action.get("pre_click_wait_seconds", 1))
-            + float(action.get("post_click_wait_seconds", 1))
-            if action.get("type") == "find_card_and_click"
-            else 3 * float(action.get("timeout_seconds", 0))
-            + (float(action.get("max_claims", 0)) + 2) * (
-                float(action.get("wait_seconds", 0))
-                + float(action.get("pre_click_wait_seconds", 1))
-                + float(action.get("post_click_wait_seconds", 1))
-            )
-            if action.get("type") == "handle_organization_prayer"
-            else float(action.get("clicks", 0)) * (
-                float(action.get("timeout_seconds", 0))
-                + float(action.get("pre_click_wait_seconds", 1))
-                + float(action.get("post_click_wait_seconds", 1))
-            )
-            if action.get("type") == "handle_coin_fortune"
-            else 6 * (
-                float(action.get("timeout_seconds", 0))
-                + float(action.get("pre_click_wait_seconds", 1))
-                + float(action.get("post_click_wait_seconds", 1))
-            )
-            if action.get("type") == "handle_free_recruit"
-            else float(action.get("timeout_seconds", 0))
-            if action.get("type") == "authorize_account"
-            else 0.0
-            for action in actions
-        )
-        wait_seconds += sum(extra_retry_wait(action) for action in actions)
-        wait_seconds += sum(abundance_wait_budget(action) for action in actions if action.get("type") == "handle_abundance")
-        if wait_seconds > 1200:
-            raise ActionLimitError("动作序列等待时间超过 1200 秒")
         LOGGER.info("开始执行，共 %d 个动作", len(actions))
         images = ImageRecognition(self.client, self.template_matcher, self.asset_root, self.sleep)
         skip_action_type: str | None = None
@@ -275,5 +211,5 @@ class ActionRunner:
                 )
             else:
                 raise ValueError(f"不支持的动作类型：{action_type!r}")
-        LOGGER.info("执行结束：%d 个动作，配置等待 %.2f 秒", len(actions), wait_seconds)
-        return RunSummary(len(actions), wait_seconds)
+        LOGGER.info("执行结束：%d 个动作", len(actions))
+        return RunSummary(len(actions))

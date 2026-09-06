@@ -14,29 +14,6 @@ T = TypeVar("T")
 RETRY_SECONDS = 1.0
 
 
-def extra_retry_wait(action: dict) -> float:
-    """没有阶段超时约束的图片检查，需额外计入配置等待预算。"""
-    kind = action.get("type")
-    if kind == "optional_template_tap":
-        checks = 1
-    elif kind == "popup_cleanup":
-        checks = 2 * action.get("rounds", 0) * len(action.get("targets", []))
-    elif kind == "return_to_main":
-        checks = 2 * action.get("max_rounds", 0)
-    elif kind == "find_card_and_click":
-        # 首屏、普通滑动、额外对齐及点击前复查。
-        checks = action.get("max_swipes", 0) + 3
-    elif kind == "handle_organization_prayer":
-        checks = 2 * action.get("max_claims", 0) + 3
-    elif kind == "handle_free_recruit":
-        # 两种招募各有首次红点、等待后红点及点击标签后红点检查。
-        checks = 6
-    else:
-        # 登录、必需点击、招财及 wait_for 中的补查已包含在阶段超时内。
-        checks = 0
-    return checks * RETRY_SECONDS
-
-
 class ImageRecognition:
     def __init__(self, client, matcher=find_template_in_png, asset_root=Path("."), sleep=time.sleep):
         self.client = client

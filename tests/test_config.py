@@ -36,14 +36,14 @@ def test_load_settings_returns_validated_values(tmp_path):
     assert settings.tasks["sign_in"][0] == {"type": "tap", "x": 100, "y": 200}
 
 
-def test_optional_image_retry_cannot_exceed_task_wait_limit(tmp_path):
+def test_optional_image_retry_has_no_task_wait_budget(tmp_path):
     payload = valid_payload()
     payload["tasks"]["sign_in"] = [{"type": "wait", "seconds": 300}, {
         "type": "optional_template_tap", "template": "button.png",
         "left": 0, "top": 0, "right": 100, "bottom": 100, "threshold": 0.85,
     }]
-    with pytest.raises(ConfigError, match="超过 300 秒"):
-        load_settings(write_config(tmp_path, payload))
+    settings = load_settings(write_config(tmp_path, payload))
+    assert len(settings.tasks["sign_in"]) == 2
 
 
 def test_login_task_accepts_real_1920_by_1080_coordinates(tmp_path):
@@ -631,15 +631,15 @@ def test_invalid_configuration_is_rejected(tmp_path, mutate, message):
         load_settings(write_config(tmp_path, payload))
 
 
-def test_more_than_one_hundred_actions_is_rejected(tmp_path):
+def test_many_actions_with_large_total_wait_are_accepted(tmp_path):
     payload = valid_payload()
-    payload["tasks"]["sign_in"] = [{"type": "back"}] * 101
+    payload["tasks"]["sign_in"] = [{"type": "wait", "seconds": 300}] * 101
 
-    with pytest.raises(ConfigError, match="100 个动作"):
-        load_settings(write_config(tmp_path, payload))
+    settings = load_settings(write_config(tmp_path, payload))
+    assert settings.tasks["sign_in"] == payload["tasks"]["sign_in"]
 
 
-def test_more_than_three_hundred_wait_seconds_is_rejected(tmp_path):
+def test_single_wait_above_supported_range_is_rejected(tmp_path):
     payload = valid_payload()
     payload["tasks"]["sign_in"] = [{"type": "wait", "seconds": 301}]
 

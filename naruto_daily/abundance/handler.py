@@ -14,15 +14,6 @@ from naruto_daily.common.visual import VisualError, find_template_in_png
 LOGGER = logging.getLogger('naruto_daily')
 
 
-def abundance_wait_budget(action: dict) -> float:
-    battle = action.get('battle', {})
-    return (2 * float(action.get('timeout_seconds', 0))
-            + float(action.get('load_wait_seconds', 0))
-            + float(battle.get('start_timeout_seconds', 0))
-            + float(battle.get('timeout_seconds', 0))
-            + float(action.get('post_click_wait_seconds', 1)))
-
-
 def _click_confirmed(client, images: ImageRecognition, target: dict, timeout: float, pre_wait: float):
     deadline = images.elapsed + timeout
     round_number = 0

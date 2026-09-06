@@ -9,7 +9,7 @@ from typing import Callable, Sequence
 
 from naruto_daily.common.adb_client import AdbClient, AdbError
 from .config import ConfigError, Settings, load_settings
-from .runner import ActionLimitError, ActionRunner
+from .runner import ActionRunner
 from .tasks import TaskError, build_all, build_task
 from naruto_daily.common.visual import VisualError
 
@@ -73,9 +73,9 @@ def main(
             asset_root=args.config.parent,
         ).run(actions)
         mode = "模拟运行" if args.dry_run else "执行完成"
-        print(f"{mode}：{summary.action_count} 个动作，配置等待 {summary.wait_seconds:g} 秒")
+        print(f"{mode}：{summary.action_count} 个动作")
         return 0
-    except (ConfigError, AdbError, ActionLimitError, TaskError, VisualError, KeyboardInterrupt) as exc:
+    except (ConfigError, AdbError, TaskError, VisualError, KeyboardInterrupt) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 130 if isinstance(exc, KeyboardInterrupt) else 2
 

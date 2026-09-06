@@ -5,7 +5,7 @@ import pytest
 
 from naruto_daily.common.adb_client import AdbError
 from naruto_daily.config import load_settings
-from naruto_daily.runner import ActionLimitError, ActionRunner
+from naruto_daily.runner import ActionRunner
 from naruto_daily.tasks import build_task
 from naruto_daily.common.visual import VisualError
 
@@ -25,13 +25,13 @@ class RecordingClient:
     def back(self): self._record("back")
 
 
-def test_optional_image_retry_cannot_exceed_runner_wait_limit():
+def test_optional_image_retry_has_no_aggregate_wait_limit():
     actions = [{"type": "wait", "seconds": 300}] * 4 + [{
         "type": "optional_template_tap", "template": "button.png",
         "left": 0, "top": 0, "right": 100, "bottom": 100, "threshold": 0.85,
     }]
-    with pytest.raises(ActionLimitError, match="1200 秒"):
-        ActionRunner(RecordingClient(), dry_run=True).run(actions)
+    summary = ActionRunner(RecordingClient(), dry_run=True).run(actions)
+    assert summary.action_count == 5
 
 
 def test_runner_executes_actions_in_order_and_reports_summary():
@@ -49,7 +49,7 @@ def test_runner_executes_actions_in_order_and_reports_summary():
 
     assert client.calls == [("tap", 10, 20), ("swipe", 1, 2, 3, 4, 500), ("back",)]
     assert sleeps == [1.25]
-    assert (summary.action_count, summary.wait_seconds) == (4, 1.25)
+    assert summary.action_count == 4
 
 
 def test_dry_run_suppresses_input_and_sleep():
@@ -63,7 +63,7 @@ def test_dry_run_suppresses_input_and_sleep():
 
     assert client.calls == []
     assert sleeps == []
-    assert (summary.action_count, summary.wait_seconds) == (3, 2.0)
+    assert summary.action_count == 3
 
 
 def test_adb_failure_aborts_remaining_actions():
@@ -76,13 +76,13 @@ def test_adb_failure_aborts_remaining_actions():
     assert client.calls == []
 
 
-def test_runner_accepts_combined_daily_flow_under_six_hundred_seconds():
+def test_runner_dry_run_accepts_combined_wait_actions():
     summary = ActionRunner(RecordingClient(), sleep=lambda _: None, dry_run=True).run([
         {"type": "wait", "seconds": 250},
         {"type": "wait", "seconds": 251},
     ])
 
-    assert summary.wait_seconds == 501
+    assert summary.action_count == 2
 
 
 def test_runner_accepts_configured_login_prayer_and_recruit_flow():
@@ -97,18 +97,16 @@ def test_runner_accepts_configured_login_prayer_and_recruit_flow():
     ).run(actions)
 
     assert summary.action_count == 24
-    assert summary.wait_seconds == 987
 
 
-def test_runner_rejects_more_than_twelve_hundred_seconds():
-    with pytest.raises(ActionLimitError, match="1200 秒"):
-        ActionRunner(RecordingClient(), sleep=lambda _: None).run([
-            {"type": "wait", "seconds": 300},
-            {"type": "wait", "seconds": 300},
-            {"type": "wait", "seconds": 300},
-            {"type": "wait", "seconds": 300},
-            {"type": "wait", "seconds": 1},
-        ])
+def test_runner_executes_more_than_one_hundred_actions_without_wait_budget():
+    client = RecordingClient()
+    sleeps = []
+    actions = [{"type": "wait", "seconds": 300}, {"type": "back"}] * 101
+    summary = ActionRunner(client, sleep=sleeps.append).run(actions)
+    assert summary.action_count == 202
+    assert sleeps == [300] * 101
+    assert client.calls == [("back",)] * 101
 
 
 def test_optional_template_tap_clicks_only_when_match_is_found(caplog):

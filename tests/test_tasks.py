@@ -49,18 +49,17 @@ def test_build_all_preserves_approved_order():
     assert [action["x"] for action in build_all(settings_with_tasks(tasks))] == [1, 2, 5, 3, 4, 6]
 
 
-def test_build_all_rejects_combined_sequence_over_limits():
+def test_build_all_accepts_many_actions_and_large_total_wait():
     tasks = {
         "login": [],
         "organization_pray": [],
-        "sign_in": [{"type": "back"}] * 30,
-        "stamina": [{"type": "back"}] * 30,
-        "recruit": [{"type": "back"}] * 30,
-        "abundance": [{"type": "back"}] * 30,
+        "sign_in": [{"type": "wait", "seconds": 300}] * 30,
+        "stamina": [{"type": "wait", "seconds": 300}] * 30,
+        "recruit": [{"type": "wait", "seconds": 300}] * 30,
+        "abundance": [{"type": "wait", "seconds": 300}] * 30,
     }
 
-    with pytest.raises(TaskError, match="100 个动作"):
-        build_all(settings_with_tasks(tasks))
+    assert build_all(settings_with_tasks(tasks)) == [{"type": "wait", "seconds": 300}] * 120
 
 
 def test_unknown_task_is_rejected():
