@@ -753,6 +753,15 @@
           },
           "end_targets": [
             {
+              "name": "秘境结算翻牌说明",
+              "template": "assets/secret_result_marker.png",
+              "left": 280,
+              "top": 790,
+              "right": 1120,
+              "bottom": 885,
+              "threshold": 0.9
+            },
+            {
               "name": "秘境房间出战",
               "template": "assets/secret_deploy.png",
               "left": 1630,
@@ -784,6 +793,24 @@
               "y": 885
             }
           ]
+        },
+        "result_marker": {
+          "name": "秘境结算翻牌说明",
+          "template": "assets/secret_result_marker.png",
+          "left": 280,
+          "top": 790,
+          "right": 1120,
+          "bottom": 885,
+          "threshold": 0.9
+        },
+        "result_return": {
+          "name": "秘境结算返回",
+          "template": "assets/secret_result_return.png",
+          "left": 40,
+          "top": 950,
+          "right": 300,
+          "bottom": 1080,
+          "threshold": 0.9
         }
       },
       {

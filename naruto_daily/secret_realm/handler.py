@@ -39,6 +39,55 @@ def _enter_room(client, images, action):
     raise VisualError('秘境创建房间超时')
 
 
+def finish_secret_result(client, images, action):
+    """同一帧确认结算内容和返回按钮；点击一次后等待回房间。"""
+    deadline = images.elapsed + action['timeout_seconds']
+    clicked = False
+
+    def probe(png):
+        if images.match(png, action['deploy_button'])[0] is not None:
+            return 'room', None
+        if images.match(png, action['create_room'])[0] is not None:
+            return 'lobby', None
+        if images.match(png, action['result_marker'])[0] is not None:
+            center, _ = images.match(png, action['result_return'])
+            if center is not None:
+                return 'result', center
+        return None
+
+    def check():
+        return images.check(probe, lambda state: state is not None,
+                            '秘境结算返回或房间', deadline=deadline)
+
+    round_number = 0
+    while images.elapsed < deadline:
+        round_number += 1
+        LOGGER.info('[秘境结算 第%d轮] %s；回到房间后结束，剩余 %.2f 秒', round_number,
+                    '已点击返回，等待页面刷新，不重复点击' if clicked else '先确认房间，否则识别结算页和左下角返回',
+                    deadline-images.elapsed)
+        state = check()
+        if state and state[0] == 'result' and not clicked:
+            if images.elapsed + action['pre_click_wait_seconds'] >= deadline:
+                break
+            images.sleep(action['pre_click_wait_seconds'])
+            state = check()
+            if state and state[0] == 'result' and images.elapsed < deadline:
+                LOGGER.info('再次确认秘境结算页，点击左下角返回 (%d, %d)', *state[1])
+                client.tap(*state[1])
+                clicked = True
+                images.sleep(action['post_click_wait_seconds'])
+                continue
+        if state and state[0] == 'room':
+            LOGGER.info('已确认返回秘境房间，继续核对剩余挑战券')
+            return
+        if state and state[0] == 'lobby':
+            LOGGER.info('返回到秘境大厅，重新创建房间后继续核对挑战券')
+            _enter_room(client, images, action)
+            return
+        images.sleep(min(action['poll_seconds'], max(0, deadline-images.elapsed)))
+    raise VisualError('秘境结算返回房间超时，未继续出战')
+
+
 def handle_secret_realm(client, action, *, template_matcher=find_template_in_png,
                         asset_root=Path('.'), sleep=time.sleep):
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
@@ -62,6 +111,7 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
         LOGGER.info('已点击出战，等待 %g 秒加载；加载完成前不再点击出战', action['load_wait_seconds'])
         images.sleep(action['load_wait_seconds'])
         run_battle(client, action['battle'], template_matcher=template_matcher, asset_root=asset_root, sleep=sleep)
+        finish_secret_result(client, images, action)
         completed += 1
         previous_count = confirmed.tickets
         LOGGER.info('秘境第%d场已结束，等待 %g 秒刷新房间券数', completed, action['post_click_wait_seconds'])

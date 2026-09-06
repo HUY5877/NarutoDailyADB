@@ -36,7 +36,7 @@ TASK_NAMES = {"login", "organization_pray", "sign_in", "stamina", "recruit", "ab
 ACTION_KEYS = {
     "handle_secret_realm": {
         "type", "timeout_seconds", "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds",
-        "load_wait_seconds", "create_room", "deploy_button", "multimodal", "battle",
+        "load_wait_seconds", "create_room", "deploy_button", "result_marker", "result_return", "multimodal", "battle",
     },
     "authorize_account": {
         "type", "account_name", "timeout_seconds", "poll_seconds",
@@ -467,14 +467,19 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             if type(value) not in (int, float) or not lower <= value <= upper:
                 raise ConfigError(f"{context}.{key} 必须在 {lower} 到 {upper} 之间")
         _validate_click_waits(action, context)
-        for key in ("create_room", "deploy_button"):
+        for key in ("create_room", "deploy_button", "result_marker", "result_return"):
             _validate_template_target(action[key], width, height, f"{context}.{key}", True)
         if action["create_room"]["left"] < 1250 or action["create_room"]["top"] < 650:
             raise ConfigError(f"{context} 创建房间区域不能覆盖左边的系统匹配")
         if action["deploy_button"]["left"] < 1600 or action["deploy_button"]["top"] < 700:
             raise ConfigError(f"{context} 出战区域必须限制在右下角")
         _validate_multimodal_config(action["multimodal"], f"{context}.multimodal")
+        result_return = action["result_return"]
+        if result_return["left"] < 0 or result_return["right"] > 350 or result_return["top"] < 900:
+            raise ConfigError(f"{context} 的秘境结算返回按钮必须位于左下角")
         _validate_battle(action["battle"], width, height, context, max_timeout=600)
+        if action["result_marker"] not in action["battle"]["end_targets"]:
+            raise ConfigError(f"{context} 的战斗结束标记必须包含秘境结算页")
         return
     elif action_type == "handle_abundance":
         if (width, height) != (1920, 1080):

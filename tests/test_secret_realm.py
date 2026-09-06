@@ -140,3 +140,27 @@ def test_tickets_become_zero_before_deploy_cancels_battle(monkeypatch):
     fake_model(monkeypatch, [1, 0])
     assert handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher, sleep=lambda _: None) == 0
     assert client.taps == [(1443, 791)]
+
+
+def test_each_battle_result_returns_before_next_ticket_read(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    class ResultClient(SecretClient):
+        result = False
+        def screenshot(self):
+            return b'result' if self.result else super().screenshot()
+        def tap(self, x, y):
+            super().tap(x, y)
+            if (x, y) == (209, 1010):
+                self.result = False
+    client = ResultClient()
+    def battle(*a, **kw):
+        client.result = True
+    def detect(png, path, roi, threshold):
+        if png == b'result':
+            points = {'secret_result_marker': (537, 837), 'secret_result_return': (209, 1010)}
+            return (points[path.stem], 1) if path.stem in points else (None, .1)
+        return secret_matcher(png, path, roi, threshold)
+    fake_model(monkeypatch, [2, 2, 1, 1, 0])
+    monkeypatch.setattr(handler, 'run_battle', battle)
+    assert handler.handle_secret_realm(client, secret_action(), template_matcher=detect, sleep=lambda _: None) == 2
+    assert client.taps == [(1443, 791), (1787, 920), (209, 1010), (1787, 920), (209, 1010)]
