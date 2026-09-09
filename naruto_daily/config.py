@@ -39,7 +39,7 @@ ACTION_KEYS = {
                            "post_click_wait_seconds", "multimodal"},
     "handle_secret_realm": {
         "type", "timeout_seconds", "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds",
-        "load_wait_seconds", "create_room", "deploy_button", "result_marker", "result_return", "multimodal", "battle",
+        "load_wait_seconds", "create_room", "deploy_button", "result_marker", "result_return", "reward_overlay", "multimodal", "battle",
     },
     "authorize_account": {
         "type", "account_name", "timeout_seconds", "poll_seconds",
@@ -172,7 +172,7 @@ def _validate_battle(battle: Any, width: int, height: int, context: str, max_tim
     _require_exact_keys(battle, {"start_timeout_seconds", "timeout_seconds", "tap_interval_seconds",
                                 "battle_marker", "end_targets", "buttons"}, f"{context}.battle")
     for key, lower, upper in (("start_timeout_seconds", 1, 60), ("timeout_seconds", 1, max_timeout),
-                              ("tap_interval_seconds", 0.1, 2)):
+                              ("tap_interval_seconds", 0.01, 2)):
         value = battle[key]
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not lower <= value <= upper:
             raise ConfigError(f"{context}.battle 的 {key} 必须在 {lower} 到 {upper} 之间")
@@ -503,7 +503,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             if type(value) not in (int, float) or not lower <= value <= upper:
                 raise ConfigError(f"{context}.{key} 必须在 {lower} 到 {upper} 之间")
         _validate_click_waits(action, context)
-        for key in ("create_room", "deploy_button", "result_marker", "result_return"):
+        for key in ("create_room", "deploy_button", "result_marker", "result_return", "reward_overlay"):
             _validate_template_target(action[key], width, height, f"{context}.{key}", True)
         if action["create_room"]["left"] < 1250 or action["create_room"]["top"] < 650:
             raise ConfigError(f"{context} 创建房间区域不能覆盖左边的系统匹配")
@@ -516,6 +516,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         _validate_battle(action["battle"], width, height, context, max_timeout=600)
         if action["result_marker"] not in action["battle"]["end_targets"]:
             raise ConfigError(f"{context} 的战斗结束标记必须包含秘境结算页")
+        if action["reward_overlay"] not in action["battle"]["end_targets"]:
+            raise ConfigError(f"{context} 的战斗结束标记必须包含秘境奖励弹层")
         return
     elif action_type == "handle_abundance":
         if (width, height) != (1920, 1080):

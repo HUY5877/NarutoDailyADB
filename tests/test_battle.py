@@ -29,34 +29,39 @@ class Client:
         self.taps.append((x, y))
 
 
-def test_battle_repeats_four_buttons_and_stops_before_any_result_page_click():
+def test_battle_clicks_twelve_buttons_per_screenshot_and_stops_on_result():
     client, waits = Client(), []
     def matcher(png, path, roi, threshold):
-        visible = 'result' if len(client.taps) == 9 else 'battle'
+        visible = 'result' if len(client.taps) >= 12 else 'battle'
         return ((50, 50), 0.99) if path.stem == visible else (None, 0.2)
     summary = run_battle(client, battle_config(), template_matcher=matcher, sleep=waits.append)
-    assert client.taps == [(1, 1), (2, 2), (3, 3), (4, 4)] * 2 + [(1, 1)]
-    assert summary.taps == 9 and summary.end_target == 'result'
-    assert waits == [0.2] * 9
+    assert client.taps == [(1, 1), (2, 2), (3, 3), (4, 4)] * 3
+    assert summary.taps == 12 and summary.end_target == 'result'
+    assert waits == [0.2] * 12
+    assert client.frames == 2
 
 
-def test_unknown_loading_screen_does_not_receive_attack_input():
+def test_missing_pause_button_does_not_delay_attacks_or_retry_each_frame():
     client, waits = Client(), []
     def matcher(png, path, roi, threshold):
         frame = int(png)
-        visible = 'battle' if frame in (1, 4) else ('result' if frame >= 5 else None)
+        visible = 'result' if frame >= 5 else None
         return ((50, 50), 0.99) if path.stem == visible else (None, 0.2)
     result = run_battle(client, battle_config(), template_matcher=matcher, sleep=waits.append)
-    assert client.taps == [(1, 1)]
+    assert client.taps == [(1, 1), (2, 2), (3, 3), (4, 4)] * 12
     assert result.end_target == 'result'
-    assert waits[:2] == [1, 1]
+    assert waits == [0.2] * 48
+    assert client.frames == 5
 
 
-def test_battle_must_be_seen_before_accepting_result():
-    client = Client()
-    with pytest.raises(VisualError, match='战斗.*超时'):
-        run_battle(client, battle_config(), template_matcher=lambda *args: (None, 0.2), sleep=lambda _: None)
+def test_result_visible_on_entry_stops_without_waiting_for_pause_button():
+    client, waits = Client(), []
+    def matcher(png, path, roi, threshold):
+        return ((50, 50), 0.99) if path.stem == 'result' else (None, 0.2)
+    result = run_battle(client, battle_config(), template_matcher=matcher, sleep=waits.append)
+    assert result.end_target == 'result'
     assert client.taps == []
+    assert waits == []
 
 
 def test_battle_timeout_stops_inputs_without_claiming_completion():
@@ -74,7 +79,12 @@ def test_deadline_crossing_during_sleep_calculation_uses_normal_timeout():
     client, waits = Client(), []
     action = battle_config()
     action['timeout_seconds'] = 1
-    ticks = iter([0, 0, 0, 0, 0.9, 1.1])
+    now = [0.0]
+    original_tap = client.tap
+    def slow_tap(x, y):
+        original_tap(x, y)
+        now[0] = 1.1
+    client.tap = slow_tap
 
     def sleep(seconds):
         if seconds < 0:
@@ -86,6 +96,18 @@ def test_deadline_crossing_during_sleep_calculation_uses_normal_timeout():
 
     with pytest.raises(VisualError, match='战斗.*超时'):
         run_battle(client, action, template_matcher=matcher, sleep=sleep,
-                   clock=lambda: next(ticks, 1.1))
+                   clock=lambda: now[0])
     assert client.taps == [(1, 1)]
     assert all(seconds >= 0 for seconds in waits)
+
+
+def test_screenshot_exceeding_battle_timeout_does_not_receive_attack():
+    client = Client()
+    now = [0.0]
+    def matcher(*args):
+        now[0] = 11.0
+        return None, 0.2
+    with pytest.raises(VisualError, match='战斗.*超时'):
+        run_battle(client, battle_config(), template_matcher=matcher,
+                   sleep=lambda _: None, clock=lambda: now[0])
+    assert client.taps == []

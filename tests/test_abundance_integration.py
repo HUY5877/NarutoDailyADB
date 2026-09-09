@@ -24,6 +24,7 @@ def test_real_screens_follow_abundance_from_main_page_through_result_and_back():
         state = 'home'
         battle_taps = []
         challenge_clicks = 0
+        result_extra_taps = 0
         def screenshot(self): return frames[self.state]
         def tap(self, x, y):
             if self.state == 'home':
@@ -40,6 +41,10 @@ def test_real_screens_follow_abundance_from_main_page_through_result_and_back():
                 if len(self.battle_taps) == 4:
                     self.state = 'result'
             else:
+                if x > 1300:
+                    # 结算在连点中途出现时，当前轮剩余点击仍会发出。
+                    self.result_extra_taps += 1
+                    return
                 assert 650 < x < 1300 and y > 950
                 self.state = 'home'
         def swipe(self, *args): raise AssertionError('卡片已在当前页面，不应滑动')
@@ -48,6 +53,7 @@ def test_real_screens_follow_abundance_from_main_page_through_result_and_back():
     result = ActionRunner(client, asset_root=ROOT, sleep=waits.append).run(build_task(settings, 'abundance'))
     assert result.action_count == 5 and client.state == 'home'
     assert client.challenge_clicks == 1
+    assert client.result_extra_taps == 8
     assert client.battle_taps == [(1500, 960), (1535, 750), (1725, 650), (1715, 885)]
     assert waits.count(10) == 1
 

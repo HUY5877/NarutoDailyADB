@@ -42,9 +42,9 @@ def test_challenge_waits_ten_seconds_before_battle_and_dismisses_result():
             visible=path.stem if path.stem in ('result','dismiss') else None
         return ((50,50),.99) if path.stem==visible else (None,.2)
     summary=handle_abundance(client,action(),template_matcher=matcher,sleep=lambda s:events.append(('sleep',s)))
-    assert client.taps==[(50,50),(1,1),(2,2),(50,50)]
+    assert client.taps==[(50,50)] + [(1,1),(2,2),(3,3),(4,4)] * 3 + [(50,50)]
     assert events[:3]==[('sleep',1),('tap',50,50),('sleep',10)]
-    assert summary.taps==2
+    assert summary.taps==12
 
 
 def test_missing_challenge_aborts_before_loading_or_attack():
@@ -66,4 +66,4 @@ def test_disappearing_result_prompt_is_not_clicked():
         return ((50,50),.99) if path.stem==visible else (None,.2)
     with pytest.raises(VisualError):
         handle_abundance(client,action(),template_matcher=matcher,sleep=waits.append)
-    assert client.taps==[(50,50),(1,1)]
+    assert client.taps==[(50,50)] + [(1,1),(2,2),(3,3),(4,4)] * 3

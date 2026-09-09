@@ -1,6 +1,14 @@
 import pytest
 
 
+@pytest.fixture
+def agent_server():
+    from agent_fakes import AgentServer
+    server = AgentServer()
+    yield server
+    server.close()
+
+
 @pytest.fixture(autouse=True)
 def configured_environment(monkeypatch):
     """测试使用自己的环境值，避免依赖本机 .env 和真实密钥。"""

@@ -36,6 +36,11 @@ class MultimodalClient:
         if not self._key or any(c.isspace() for c in self._key):
             raise MultimodalError('多模态 API 密钥为空或格式不正确')
 
+    def agent_connection(self) -> dict:
+        """供 Python agent 复用连接配置；包含密钥，禁止写入日志。"""
+        return dict(base_url=self.config['base_url'], model=self.config['model'],
+                    timeout_seconds=float(self.config['timeout_seconds']), api_key=self._key)
+
     def complete_json(self, png: bytes, prompt: str, *, timeout_seconds=None) -> dict:
         timeout = float(self.config['timeout_seconds'])
         if timeout_seconds is not None:

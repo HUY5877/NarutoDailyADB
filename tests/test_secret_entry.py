@@ -118,7 +118,7 @@ def test_missing_or_late_entry_never_clicks(late):
         'page': 'main' if late else 'unknown', 'name': '忍者挑战', 'candidate_id': 4})
     action = load_settings(ROOT / 'config.example.json').tasks['secret_realm_farm'][0]
     images = ImageRecognition(client, sleep=sleeps.append)
-    ticks = iter([0, 121] if late else [0] * 20)
+    ticks = iter([0, action['timeout_seconds'] + 1] if late else [0] * (2 * action['multimodal']['max_calls']))
     with pytest.raises(MultimodalError, match='迟到|调用上限'):
         _locate_and_tap(images, model, action, 'main', '忍者挑战', clock=lambda: next(ticks))
     assert taps == []
@@ -135,7 +135,7 @@ def test_disappeared_target_is_not_clicked_after_wait():
     answers = iter([{'page': 'main', 'name': '忍者挑战', 'candidate_id': 4}] +
                    [{'page': 'unknown', 'name': None, 'candidate_id': None}] * 5)
     client = SimpleNamespace(screenshot=lambda: png, tap=lambda *xy: taps.append(xy))
-    model = SimpleNamespace(complete_json=lambda *a, **kw: next(answers))
+    model = SimpleNamespace(complete_json=lambda *a, **kw: next(answers, {'page': 'unknown', 'name': None, 'candidate_id': None}))
     action = load_settings(ROOT / 'config.example.json').tasks['secret_realm_farm'][0]
     with pytest.raises(MultimodalError, match='调用上限'):
         _locate_and_tap(ImageRecognition(client, sleep=lambda _: None), model, action,

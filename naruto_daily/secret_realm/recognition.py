@@ -29,7 +29,7 @@ def parse_tickets(result: dict) -> int | None:
     return count
 
 
-def wait_for_tickets(images, model, action, *, previous_count=None, clock=time.monotonic):
+def wait_for_tickets(images, model, action, *, clock=time.monotonic):
     deadline = images.elapsed + action['timeout_seconds']
     calls = 0
 
@@ -53,9 +53,6 @@ def wait_for_tickets(images, model, action, *, previous_count=None, clock=time.m
         count = parse_tickets(result)
         LOGGER.info('模型读取秘境剩余挑战券：%s；调用 %d/%d 次',
                     count if count is not None else '未确认', calls, action['multimodal']['max_calls'])
-        if count is not None and previous_count is not None and count >= previous_count:
-            LOGGER.info('战前 %d 张、当前 %d 张，尚未确认扣券，等待房间数据刷新', previous_count, count)
-            return None
         return RoomState(count, center) if count is not None else None
 
     round_number = 0

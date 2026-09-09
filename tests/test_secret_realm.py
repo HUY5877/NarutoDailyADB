@@ -78,7 +78,8 @@ def test_secret_realm_runs_two_battles_then_zero_returns_to_main(monkeypatch):
         secret_action(), {"type": "return_to_main"}])
     assert client.taps == [(1443, 791), (1787, 920), (1787, 920)]
     assert len(battles) == 2 and returned == [True] and len(calls) == 5
-    assert sleeps == [3, 5, 3, 15, 5, 3, 15, 5]
+    # 两次15秒加载现在分段等待，期间检查出战提示。
+    assert sum(sleeps) == pytest.approx(54, abs=.1)
 
 
 def test_zero_tickets_never_deploys_or_starts_battle(monkeypatch):
@@ -105,13 +106,21 @@ def test_failed_battle_does_not_repeat_deploy(monkeypatch):
     assert client.taps == [(1443, 791), (1787, 920)]
 
 
-def test_stale_ticket_count_waits_for_refresh_instead_of_redeploying(monkeypatch):
+@pytest.mark.parametrize('counts, expected_battles', [
+    ([31, 31, 31, 31, 0], 2),
+    ([31, 31, 32, 32, 0], 2),
+    ([31] * 8 + [0], 4),
+], ids=['unchanged', 'increased', 'repeated-unchanged'])
+def test_positive_tickets_continue_without_requiring_a_decrease(monkeypatch, counts, expected_battles):
     from naruto_daily.secret_realm import handler
     client, battles = SecretClient(), []
-    fake_model(monkeypatch, [1, 1, 1, 1, 0])
+    calls = fake_model(monkeypatch, counts)
     monkeypatch.setattr(handler, "run_battle", lambda *a, **kw: battles.append(True))
-    assert handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher, sleep=lambda _: None) == 1
-    assert len(battles) == 1 and client.taps.count((1787, 920)) == 1
+    assert handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher,
+                                       sleep=lambda _: None) == expected_battles
+    assert len(battles) == expected_battles
+    assert client.taps.count((1787, 920)) == expected_battles
+    assert len(calls) == expected_battles * 2 + 1
 
 
 def test_unreadable_count_never_becomes_zero_or_deploys(monkeypatch):
@@ -164,3 +173,58 @@ def test_each_battle_result_returns_before_next_ticket_read(monkeypatch):
     monkeypatch.setattr(handler, 'run_battle', battle)
     assert handler.handle_secret_realm(client, secret_action(), template_matcher=detect, sleep=lambda _: None) == 2
     assert client.taps == [(1443, 791), (1787, 920), (209, 1010), (1787, 920), (209, 1010)]
+
+
+def test_skipped_yinyang_does_not_require_ticket_decrease_or_count_as_completed(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    client, battles = SecretClient(), []
+    fake_model(monkeypatch, [1, 1, 1, 1, 0])
+    skipped = iter([True, False])
+    monkeypatch.setattr(handler, 'prepare_secret_battle', lambda *a, **kw: next(skipped), raising=False)
+    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw: battles.append(True))
+    assert handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher,
+                                       sleep=lambda _: None) == 1
+    assert client.taps == [(1443, 791), (1787, 920), (1787, 920)]
+    assert len(battles) == 1
+
+
+def test_failed_yinyang_detection_or_exit_never_starts_attacking(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    client, battles = SecretClient(), []
+    fake_model(monkeypatch, [1, 1])
+    def fail(*a, **kw):
+        raise MultimodalError('退出未确认')
+    monkeypatch.setattr(handler, 'prepare_secret_battle', fail, raising=False)
+    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw: battles.append(True))
+    with pytest.raises(MultimodalError, match='退出未确认'):
+        handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher, sleep=lambda _: None)
+    assert client.taps == [(1443, 791), (1787, 920)] and battles == []
+
+
+def test_deploy_warning_is_confirmed_before_realm_detection_and_battle(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    class WarningClient(SecretClient):
+        warning = False
+        def screenshot(self):
+            return b'warning' if self.warning else super().screenshot()
+        def tap(self, x, y):
+            super().tap(x, y)
+            if (x, y) == (1787, 920):
+                self.warning = True
+            elif (x, y) == (950, 700):
+                self.warning = False
+    client, battles = WarningClient(), []
+    def detect(png, path, roi, threshold):
+        if png == b'warning':
+            points = {'secret_deploy_warning_text': (950, 480), 'secret_deploy_warning_confirm': (950, 700)}
+            return (points[path.stem], 1) if path.stem in points else (None, .1)
+        return secret_matcher(png, path, roi, threshold)
+    fake_model(monkeypatch, [1, 1, 0])
+    def classify(*a, **kw):
+        assert not client.warning, '应先确认提示再进行副本名称识别'
+        return False
+    monkeypatch.setattr(handler, 'prepare_secret_battle', classify)
+    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw: battles.append(True))
+    assert handler.handle_secret_realm(client, secret_action(), template_matcher=detect,
+                                       sleep=lambda _: None) == 1
+    assert client.taps == [(1443, 791), (1787, 920), (950, 700)] and len(battles) == 1
