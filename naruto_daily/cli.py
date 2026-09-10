@@ -75,9 +75,12 @@ def main(
         mode = "模拟运行" if args.dry_run else "执行完成"
         print(f"{mode}：{summary.action_count} 个动作")
         return 0
-    except (ConfigError, AdbError, TaskError, VisualError, KeyboardInterrupt) as exc:
+    except KeyboardInterrupt:
+        print("已停止。")
+        return 130
+    except (ConfigError, AdbError, TaskError, VisualError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
-        return 130 if isinstance(exc, KeyboardInterrupt) else 2
+        return 2
 
 
 if __name__ == "__main__":

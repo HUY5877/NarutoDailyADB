@@ -1,33 +1,28 @@
 @echo off
-chcp 65001 >nul
 setlocal
-title 火影忍者 - 启动秘境
 pushd "%~dp0" || exit /b 1
 set "PYTHONUTF8=1"
-set "LAUNCH_EXIT_CODE=2"
+set "PYTHONDONTWRITEBYTECODE=1"
 
 if not exist ".venv\Scripts\python.exe" (
-    echo 未找到项目虚拟环境，请先按 README 的安装步骤创建 .venv 并安装依赖。
-    goto finish
+    echo Missing .venv. Follow the installation steps in README.md.
+    pause
+    popd
+    exit /b 2
 )
 if not exist "config.local.json" (
-    echo 未找到 config.local.json，请按 README 的安装步骤准备配置文件和 .env。
-    goto finish
+    echo Missing config.local.json. Follow README.md to configure the project.
+    pause
+    popd
+    exit /b 2
 )
 
-echo 正在启动独立秘境流程，请先打开模拟器并停留在第一张登录页面。
-echo 登录后从忍者挑战进入秘境探险。按 Ctrl+C 可停止。
-echo.
-".venv\Scripts\python.exe" -u -m naruto_daily.cli run secret_realm_farm --config "config.local.json" %*
+rem Python owns its console so Ctrl+C does not prompt to terminate a batch job.
+start "NarutoDailySecret" ".venv\Scripts\python.exe" -u -m naruto_daily.launcher run secret_realm_farm --config "config.local.json" %*
 set "LAUNCH_EXIT_CODE=%errorlevel%"
-
-:finish
-echo.
-if "%LAUNCH_EXIT_CODE%"=="0" (
-    echo 秘境流程已结束。
-) else (
-    echo 秘境流程已停止，退出码：%LAUNCH_EXIT_CODE%。请查看上方错误信息。
+if not "%LAUNCH_EXIT_CODE%"=="0" (
+    echo Unable to start Python. Exit code: %LAUNCH_EXIT_CODE%.
+    pause
 )
-pause
 popd
 exit /b %LAUNCH_EXIT_CODE%

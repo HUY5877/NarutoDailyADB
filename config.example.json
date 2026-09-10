@@ -578,7 +578,7 @@
         "battle": {
           "start_timeout_seconds": 20,
           "timeout_seconds": 120,
-          "tap_interval_seconds": 0.01,
+          "tap_interval_seconds": 0,
           "battle_marker": {
             "name": "战斗暂停按钮",
             "template": "assets/battle_pause.png",
@@ -763,7 +763,7 @@
         "battle": {
           "start_timeout_seconds": 60,
           "timeout_seconds": 300,
-          "tap_interval_seconds": 0.01,
+          "tap_interval_seconds": 0,
           "battle_marker": {
             "name": "战斗暂停按钮",
             "template": "assets/battle_pause.png",

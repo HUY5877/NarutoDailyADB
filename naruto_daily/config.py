@@ -172,7 +172,7 @@ def _validate_battle(battle: Any, width: int, height: int, context: str, max_tim
     _require_exact_keys(battle, {"start_timeout_seconds", "timeout_seconds", "tap_interval_seconds",
                                 "battle_marker", "end_targets", "buttons"}, f"{context}.battle")
     for key, lower, upper in (("start_timeout_seconds", 1, 60), ("timeout_seconds", 1, max_timeout),
-                              ("tap_interval_seconds", 0.01, 2)):
+                              ("tap_interval_seconds", 0, 2)):
         value = battle[key]
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not lower <= value <= upper:
             raise ConfigError(f"{context}.battle 的 {key} 必须在 {lower} 到 {upper} 之间")

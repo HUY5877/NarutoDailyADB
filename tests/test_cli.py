@@ -93,6 +93,25 @@ def test_run_all_counts_down_before_input(tmp_path):
     assert events[5] == ("tap", 10, 20)
 
 
+def test_ctrl_c_stops_without_an_empty_error(tmp_path, capsys):
+    client = FakeClient(["a"])
+
+    def interrupt(_seconds):
+        raise KeyboardInterrupt
+
+    result = main(
+        ["run", "all", "--config", str(config_path(tmp_path))],
+        client_factory=factory_for(client),
+        sleep=interrupt,
+    )
+
+    output = capsys.readouterr()
+    assert result == 130
+    assert "已停止" in output.out
+    assert output.err == ""
+    assert client.inputs == []
+
+
 def test_login_is_an_independently_runnable_command(tmp_path):
     client = FakeClient(["a"], size=(1920, 1080))
     payload = json.loads(config_path(tmp_path).read_text(encoding="utf-8"))
