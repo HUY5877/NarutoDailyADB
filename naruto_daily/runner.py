@@ -19,14 +19,20 @@ from .fortune import handle_coin_fortune
 from .recruit import handle_free_recruit
 from .abundance import handle_abundance
 from .secret_realm import handle_secret_realm
+from .survival_challenge import handle_survival_challenge
+from .ichiraku import handle_ichiraku_takeout
+from .equipment import handle_equipment_upgrade
 
 
 LOGGER = logging.getLogger("naruto_daily")
 ACTION_NAMES = {
+    "handle_ichiraku_takeout": "判断并领取一乐外卖",
+    "handle_equipment_upgrade": "优先最低装备扫荡材料、合成和进阶",
     "enter_secret_realm": "进入秘境探险",
     "handle_secret_realm": "创建秘境房间并按挑战券循环出战",
     "authorize_account": "选择指定 QQ 账号并授权",
     "handle_abundance": "挑战丰饶之间并执行通用战斗",
+    "handle_survival_challenge": "执行生存挑战扫荡并按重置次数循环",
     "tap": "点击",
     "swipe": "滑动",
     "back": "返回",
@@ -173,6 +179,18 @@ class ActionRunner:
                     self.client, action, template_matcher=self.template_matcher,
                     asset_root=self.asset_root, sleep=self.sleep,
                 )
+            elif action_type == "handle_survival_challenge":
+                handle_survival_challenge(
+                    self.client,
+                    action,
+                    template_matcher=self.template_matcher,
+                    asset_root=self.asset_root,
+                    sleep=self.sleep,
+                )
+            elif action_type in ("handle_ichiraku_takeout", "handle_equipment_upgrade"):
+                handler = handle_ichiraku_takeout if action_type == "handle_ichiraku_takeout" else handle_equipment_upgrade
+                handler(self.client, action, template_matcher=self.template_matcher,
+                        asset_root=self.asset_root, sleep=self.sleep)
             elif action_type == "handle_free_recruit":
                 handle_free_recruit(
                     self.client,

@@ -150,10 +150,265 @@
         "close_target": {
           "name": "通用关闭按钮",
           "template": "assets/promo_close.png",
-          "left": 1700,
+          "left": 1650,
           "top": 0,
           "right": 1920,
-          "bottom": 180,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      }
+    ],
+    "ichiraku_takeout": [
+      {
+        "type": "return_to_main",
+        "max_rounds": 5,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_page_marker": {
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      },
+      {
+        "type": "tap",
+        "x": 960,
+        "y": 200
+      },
+      {
+        "type": "wait",
+        "seconds": 1
+      },
+      {
+        "type": "required_template_tap",
+        "name": "活动入口",
+        "template": "assets/activities_entry.png",
+        "left": 1720,
+        "top": 0,
+        "right": 1920,
+        "bottom": 220,
+        "threshold": 0.9,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1
+      },
+      {
+        "type": "required_template_tap",
+        "name": "一乐外卖",
+        "template": "assets/ichiraku_tab.png",
+        "left": 0,
+        "top": 140,
+        "right": 300,
+        "bottom": 300,
+        "threshold": 0.9,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1
+      },
+      {
+        "type": "handle_ichiraku_takeout",
+        "timeout_seconds": 240,
+        "post_click_wait_seconds": 1,
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
+      },
+      {
+        "type": "return_to_main",
+        "max_rounds": 5,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_page_marker": {
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      }
+    ],
+    "equipment_upgrade": [
+      {
+        "type": "return_to_main",
+        "max_rounds": 5,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_page_marker": {
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      },
+      {
+        "type": "tap",
+        "x": 960,
+        "y": 200
+      },
+      {
+        "type": "wait",
+        "seconds": 1
+      },
+      {
+        "type": "required_template_tap",
+        "name": "主界面装备",
+        "template": "assets/equipment_entry.png",
+        "left": 310,
+        "top": 910,
+        "right": 540,
+        "bottom": 1080,
+        "threshold": 0.9,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1
+      },
+      {
+        "type": "required_template_tap",
+        "name": "二级菜单装备",
+        "template": "assets/equipment_submenu.png",
+        "left": 50,
+        "top": 750,
+        "right": 215,
+        "bottom": 920,
+        "threshold": 0.9,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1
+      },
+      {
+        "type": "handle_equipment_upgrade",
+        "timeout_seconds": 3600,
+        "max_rounds": 100,
+        "poll_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "sweep_timeout_seconds": 120,
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 3
+        },
+        "one_click_sweep": {
+          "name": "一键扫荡",
+          "template": "assets/equipment_one_click_sweep.png",
+          "left": 400,
+          "top": 730,
+          "right": 900,
+          "bottom": 945,
+          "threshold": 0.9
+        },
+        "start_sweep": {
+          "name": "开始扫荡",
+          "template": "assets/equipment_start_sweep.png",
+          "left": 1080,
+          "top": 670,
+          "right": 1490,
+          "bottom": 860,
+          "threshold": 0.9
+        },
+        "sweep_done": {
+          "name": "扫荡完成（继续扫荡）",
+          "template": "assets/equipment_sweep_done.png",
+          "left": 1080,
+          "top": 815,
+          "right": 1490,
+          "bottom": 990,
+          "threshold": 0.9
+        },
+        "advance": {
+          "name": "装备进阶",
+          "template": "assets/equipment_advance.png",
+          "left": 1550,
+          "top": 740,
+          "right": 1920,
+          "bottom": 930,
+          "threshold": 0.9
+        }
+      },
+      {
+        "type": "return_to_main",
+        "max_rounds": 5,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_page_marker": {
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
           "threshold": 0.95
         }
       }
@@ -270,10 +525,10 @@
         "close_target": {
           "name": "通用关闭按钮",
           "template": "assets/promo_close.png",
-          "left": 1700,
+          "left": 1650,
           "top": 0,
           "right": 1920,
-          "bottom": 180,
+          "bottom": 300,
           "threshold": 0.95
         }
       },
@@ -933,6 +1188,195 @@
           "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 10
+        }
+      }
+    ],
+    "survival_challenge": [
+      {
+        "type": "return_to_main",
+        "max_rounds": 5,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_page_marker": {
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      },
+      {
+        "type": "required_template_tap",
+        "name": "奖励入口",
+        "template": "assets/reward_entry.png",
+        "left": 1700,
+        "top": 400,
+        "right": 1920,
+        "bottom": 700,
+        "threshold": 0.85,
+        "timeout_seconds": 20,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1
+      },
+      {
+        "type": "find_card_and_click",
+        "name": "完成1次生存挑战",
+        "template": "assets/survival_challenge_label.png",
+        "left": 0,
+        "top": 250,
+        "right": 1920,
+        "bottom": 650,
+        "threshold": 0.8,
+        "button_template": "assets/go_now_button.png",
+        "button_threshold": 0.85,
+        "completed_template": "assets/completed_stamp.png",
+        "completed_threshold": 0.9,
+        "button_left_offset": -160,
+        "button_top_offset": 90,
+        "button_right_offset": 160,
+        "button_bottom_offset": 280,
+        "max_swipes": 10,
+        "swipe_x1": 1450,
+        "swipe_y1": 550,
+        "swipe_x2": 800,
+        "swipe_y2": 550,
+        "swipe_duration_ms": 500,
+        "wait_seconds": 2,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 5,
+        "completed_skip_type": "handle_survival_challenge"
+      },
+      {
+        "type": "handle_survival_challenge",
+        "timeout_seconds": 900,
+        "max_rounds": 10,
+        "wait_seconds": 60,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "transfer_marker": {
+          "name": "传送提示",
+          "template": "assets/survival_transfer.png",
+          "left": 350,
+          "top": 180,
+          "right": 950,
+          "bottom": 550,
+          "threshold": 0.8
+        },
+        "start_sweep": {
+          "name": "开始扫荡",
+          "template": "assets/survival_start_sweep.png",
+          "left": 980,
+          "top": 760,
+          "right": 1350,
+          "bottom": 1080,
+          "threshold": 0.8
+        },
+        "ready": {
+          "name": "准备就绪",
+          "template": "assets/survival_ready.png",
+          "left": 450,
+          "top": 620,
+          "right": 1500,
+          "bottom": 1080,
+          "threshold": 0.75
+        },
+        "confirm_first": {
+          "name": "生存挑战确定",
+          "template": "assets/survival_confirm.png",
+          "left": 760,
+          "top": 600,
+          "right": 1160,
+          "bottom": 780,
+          "threshold": 0.78
+        },
+        "confirm_second": {
+          "name": "扫荡确认",
+          "template": "assets/survival_reset_confirm.png",
+          "left": 550,
+          "top": 600,
+          "right": 980,
+          "bottom": 780,
+          "threshold": 0.78
+        },
+        "reset": {
+          "name": "重置",
+          "template": "assets/survival_reset.png",
+          "left": 1150,
+          "top": 760,
+          "right": 1600,
+          "bottom": 1080,
+          "threshold": 0.75
+        },
+        "reset_confirm": {
+          "name": "重置确认",
+          "template": "assets/survival_reset_confirm.png",
+          "left": 450,
+          "top": 450,
+          "right": 1200,
+          "bottom": 900,
+          "threshold": 0.78
+        },
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 20,
+          "max_calls": 10
+        },
+        "sweep_prompt": {
+          "name": "扫荡券确认提示",
+          "template": "assets/survival_sweep_prompt.png",
+          "left": 540,
+          "top": 360,
+          "right": 1380,
+          "bottom": 590,
+          "threshold": 0.9
+        }
+      },
+      {
+        "type": "return_to_main",
+        "max_rounds": 5,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_page_marker": {
+          "name": "主界面奖励文字",
+          "template": "assets/main_reward_label.png",
+          "left": 1700,
+          "top": 400,
+          "right": 1920,
+          "bottom": 700,
+          "threshold": 0.9,
+          "alternate_templates": [
+            "assets/main_reward_label_red_dot.png"
+          ]
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
         }
       }
     ]

@@ -5,8 +5,8 @@ from typing import Literal
 from .config import Settings
 
 
-TaskName = Literal["login", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "secret_realm", "secret_realm_farm"]
-TASK_ORDER: tuple[TaskName, ...] = ("login", "organization_pray", "recruit", "sign_in", "stamina", "abundance", "secret_realm")
+TaskName = Literal["login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "secret_realm", "secret_realm_farm"]
+TASK_ORDER: tuple[TaskName, ...] = ("login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "recruit", "sign_in", "stamina", "abundance", "survival_challenge", "secret_realm")
 
 
 class TaskError(ValueError):
@@ -24,7 +24,7 @@ def build_task(settings: Settings, name: TaskName) -> list[dict]:
         return [dict(a) for a in [*settings.tasks.get("login", []), *entry, *secret[shared_start:]]]
     if name not in TASK_ORDER:
         raise TaskError(f"未知任务：{name!r}")
-    task_names = ("login", "organization_pray", "recruit", "abundance", "secret_realm") if name == "login" else (name,)
+    task_names = ("login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "recruit", "abundance", "survival_challenge", "secret_realm") if name == "login" else (name,)
     return [dict(action) for task_name in task_names for action in settings.tasks.get(task_name, [])]
 
 

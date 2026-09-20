@@ -74,7 +74,12 @@ def run_agent(client, model, goal: str, *, joystick: Joystick, max_steps: int = 
     """真实连接使用 Claude Agent SDK；本地 HTTP 替身只用于离线测试。"""
     connection = model.agent_connection()
     base_url = str(connection.get('base_url', ''))
-    if base_url.startswith(('http://127.0.0.1:', 'http://localhost:')):
+    # Modelink/OpenAI-compatible endpoints use the native Python OpenAI adapter.
+    # Claude Messages endpoints omit /v1 and keep the Claude Agent SDK path.
+    openai_compatible = (base_url.rstrip('/').endswith('/v1')
+                         or base_url.startswith(('http://127.0.0.1:', 'http://localhost:'))
+                         or '/' in str(connection.get('model', '')))
+    if openai_compatible:
         from .compat_runner import run_agent as run_compat_agent
         return run_compat_agent(client, model, goal, joystick=joystick, max_steps=max_steps,
                                 settle_seconds=settle_seconds, sleep=sleep,

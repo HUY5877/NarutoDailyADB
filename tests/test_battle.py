@@ -157,3 +157,37 @@ def test_one_failed_parallel_tap_stops_after_current_batch_without_retry():
                    sleep=lambda _: None, clock=clock)
     assert sorted(client.taps) == [(1, 1), (2, 2), (3, 3), (4, 4)]
     assert client.frames == [0]
+
+
+class CompletionModel:
+    def __init__(self, result):
+        self.config = {'max_calls': 3}
+        self.result = result
+        self.calls = 0
+    def complete_json(self, png, prompt, *, timeout_seconds=None):
+        self.calls += 1
+        return self.result
+
+
+def test_multimodal_completion_stops_clicking_when_result_template_is_missing():
+    clock, waits = Clock(), []
+    client = Client(clock)
+    model = CompletionModel({'finished': True, 'page': 'finished', 'reason': '奖励弹窗'})
+    result = run_battle(client, battle_config(), template_matcher=lambda *a: (None, .2),
+                        sleep=waits.append, clock=clock, model=model)
+    assert result.end_target == 'multimodal'
+    assert model.calls == 1
+    assert client.taps == []
+
+
+def test_multimodal_completion_keeps_battle_clicking_when_pending():
+    clock, waits = Clock(), []
+    client = Client(clock)
+    model = CompletionModel({'finished': False, 'page': 'battle', 'reason': '仍在战斗'})
+    action = battle_config()
+    action['timeout_seconds'] = 65
+    with pytest.raises(VisualError, match='战斗完成识别达到模型调用上限'):
+        run_battle(client, action, template_matcher=lambda *a: (None, .2),
+                   sleep=waits.append, clock=clock, model=model)
+    assert model.calls == 3
+    assert len(client.taps) > 0

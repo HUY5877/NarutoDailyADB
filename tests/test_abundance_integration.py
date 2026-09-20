@@ -52,11 +52,11 @@ def test_real_screens_follow_abundance_from_main_page_through_result_and_back(mo
                     self.state = 'result'
             else:
                 if x > 1300:
-                    # 结算在20秒检查间隔内出现时，继续连点直到下次检查。
+                    # 示例配置没有模型，结算模板仍在下一个战斗检查周期才发现。
                     now[0] += .25
                     self.result_extra_taps += 1
                     return
-                assert 650 < x < 1300 and y > 950
+                assert (x, y) == (400, 540)
                 self.state = 'home'
         def swipe(self, *args): raise AssertionError('卡片已在当前页面，不应滑动')
 
@@ -124,3 +124,40 @@ def test_completed_abundance_card_skips_challenge_and_battle_but_returns_home():
         raise AssertionError('已完成的任务不应查询挑战或战斗目标')
     ActionRunner(Client(), template_matcher=matcher, sleep=lambda _: None).run([card, handler, back])
     assert calls == []
+
+
+def test_service_popup_real_frames_dismiss_then_return_home():
+    from naruto_daily.abundance import finish_abundance_result
+    from naruto_daily.return_to_main import return_to_main
+    config = load_settings(ROOT / 'config.example.json')
+    action, back = config.tasks['abundance'][3:]
+    frames = {name: (ROOT / 'tests/fixtures' / filename).read_bytes() for name, filename in {
+        'popup': 'abundance_service_popup.png', 'completed': 'abundance_completed.png',
+        'home': 'main_page_reward_dot.png',
+    }.items()}
+
+    class ReplayClient:
+        def __init__(self):
+            self.state = 'popup'
+            self.taps = []
+        def screenshot(self):
+            return frames[self.state]
+        def tap(self, x, y):
+            self.taps.append((x, y))
+            if self.state == 'popup':
+                assert (x, y) == (400, 540)
+                self.state = 'completed'
+            else:
+                assert self.state == 'completed' and x > 1700 and y < 150
+                self.state = 'home'
+
+    class Model:
+        def complete_json(self, png, prompt, *, timeout_seconds):
+            assert png == frames['popup']
+            return {'page': 'service_popup'}
+
+    client = ReplayClient()
+    finish_abundance_result(client, action, asset_root=ROOT, model=Model(), sleep=lambda _: None)
+    assert client.state == 'completed' and client.taps == [(400, 540)]
+    summary = return_to_main(client, back, asset_root=ROOT, sleep=lambda _: None)
+    assert client.state == 'home' and len(client.taps) == 2

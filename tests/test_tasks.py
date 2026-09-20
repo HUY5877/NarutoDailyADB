@@ -41,6 +41,21 @@ def test_login_main_flow_continues_to_prayer_recruit_and_abundance_after_cleanup
     ]
 
 
+def test_login_main_flow_places_survival_challenge_before_secret_realm():
+    tasks = {
+        "login": [],
+        "organization_pray": [],
+        "recruit": [],
+        "abundance": [{"type": "handle_abundance"}],
+        "survival_challenge": [{"type": "handle_survival_challenge"}],
+        "secret_realm": [{"type": "enter_secret_realm"}],
+    }
+
+    assert [action["type"] for action in build_task(settings_with_tasks(tasks), "login")] == [
+        "handle_abundance", "handle_survival_challenge", "enter_secret_realm",
+    ]
+
+
 def test_build_all_preserves_approved_order():
     tasks = {name: [{"type": "tap", "x": index, "y": 0}] for index, name in enumerate(
         ["login", "organization_pray", "sign_in", "stamina", "recruit", "abundance"], start=1

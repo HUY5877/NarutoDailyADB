@@ -651,7 +651,7 @@ def test_single_wait_above_supported_range_is_rejected(tmp_path):
         load_settings(write_config(tmp_path, payload))
 
 
-def test_only_recruit_return_action_uses_extended_fortune_close_area():
+def test_all_return_actions_use_extended_close_area():
     project_root = Path(__file__).parents[1]
     settings = load_settings(project_root / "config.example.json")
 
@@ -669,15 +669,10 @@ def test_only_recruit_return_action_uses_extended_fortune_close_area():
     )
 
     assert login_return["close_target"] == prayer_return["close_target"]
-    assert (
-        login_return["close_target"]["left"],
-        login_return["close_target"]["top"],
-        login_return["close_target"]["right"],
-        login_return["close_target"]["bottom"],
-    ) == (1700, 0, 1920, 180)
-    assert (
-        recruit_return["close_target"]["left"],
-        recruit_return["close_target"]["top"],
-        recruit_return["close_target"]["right"],
-        recruit_return["close_target"]["bottom"],
-    ) == (1650, 0, 1920, 300)
+    for action in (login_return, recruit_return):
+        assert (
+            action["close_target"]["left"],
+            action["close_target"]["top"],
+            action["close_target"]["right"],
+            action["close_target"]["bottom"],
+        ) == (1650, 0, 1920, 300)

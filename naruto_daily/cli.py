@@ -20,7 +20,7 @@ def _parser() -> argparse.ArgumentParser:
     check = subparsers.add_parser("check", help="检查配置和设备")
     check.add_argument("--config", type=Path, required=True)
     run = subparsers.add_parser("run", help="执行一个已配置任务")
-    run.add_argument("task", choices=["login", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "secret_realm", "secret_realm_farm", "all"])
+    run.add_argument("task", choices=["login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "secret_realm", "secret_realm_farm", "all"])
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--dry-run", action="store_true")
     return parser

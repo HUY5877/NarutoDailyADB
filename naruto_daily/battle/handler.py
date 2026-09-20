@@ -10,6 +10,8 @@ from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
+from naruto_daily.multimodal.client import MultimodalClient
+from naruto_daily.multimodal.prompts import BATTLE_COMPLETION
 
 
 LOGGER = logging.getLogger('naruto_daily')
@@ -26,6 +28,7 @@ def run_battle(
     client, battle: dict, *, template_matcher: Callable = find_template_in_png,
     asset_root: Path = Path('.'), sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    model: MultimodalClient | None = None,
 ) -> BattleSummary:
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     # 调用方已经完成加载等待；一批四个输入完成后再开始下一批。
@@ -51,6 +54,8 @@ def run_battle(
         return 1
 
     targets = battle['end_targets']
+    model_calls = 0
+    model_max_calls = int(getattr(model, "config", {}).get("max_calls", 0)) if model is not None else 0
     round_number = 0
     next_check = 0.0
     with ThreadPoolExecutor(max_workers=len(buttons), thread_name_prefix='battle-tap') as pool:
@@ -66,6 +71,21 @@ def run_battle(
                         name = target['name']
                         LOGGER.info('发现战斗结束标记：%s，停止战斗点击，共点击 %d 次', name, taps)
                         return BattleSummary(taps, name)
+                if model is not None:
+                    if model_calls >= model_max_calls:
+                        raise VisualError('战斗完成识别达到模型调用上限，已停止点击')
+                    model_calls += 1
+                    result = model.complete_json(screenshot, BATTLE_COMPLETION,
+                                                 timeout_seconds=max(0.01, remaining()))
+                    finished = result.get('finished')
+                    page = result.get('page')
+                    reason = result.get('reason')
+                    if type(finished) is not bool or page not in {'battle', 'finished', 'unknown'} or not isinstance(reason, str):
+                        raise VisualError('战斗完成识别返回格式无效，已停止点击')
+                    LOGGER.info('[战斗完成模型 第%d/%d] page=%s finished=%s reason=%s',
+                                model_calls, model_max_calls, page, finished, reason)
+                    if finished or page != 'battle':
+                        return BattleSummary(taps, 'multimodal')
                 next_check = elapsed() + RESULT_CHECK_INTERVAL_SECONDS
             if remaining() <= 0:
                 break

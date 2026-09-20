@@ -32,8 +32,12 @@ class Settings:
 
 
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
-TASK_NAMES = {"login", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "secret_realm", "secret_realm_farm"}
+TASK_NAMES = {"login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "secret_realm", "secret_realm_farm"}
 ACTION_KEYS = {
+    "handle_ichiraku_takeout": {"type", "timeout_seconds", "post_click_wait_seconds", "multimodal"},
+    "handle_equipment_upgrade": {"type", "timeout_seconds", "post_click_wait_seconds", "multimodal",
+                                  "max_rounds", "poll_seconds", "sweep_timeout_seconds",
+                                  "one_click_sweep", "start_sweep", "sweep_done", "advance"},
     "enter_secret_realm": {"type", "method", "return_to_main", "reward_button", "card",
                            "swipe", "timeout_seconds", "poll_seconds", "pre_click_wait_seconds",
                            "post_click_wait_seconds", "multimodal"},
@@ -48,7 +52,13 @@ ACTION_KEYS = {
     },
     "handle_abundance": {
         "type", "timeout_seconds", "pre_click_wait_seconds", "post_click_wait_seconds",
-        "load_wait_seconds", "challenge_button", "result_return", "battle",
+        "load_wait_seconds", "challenge_button", "result_return", "multimodal", "battle",
+    },
+    "handle_survival_challenge": {
+        "type", "timeout_seconds", "max_rounds", "wait_seconds", "poll_seconds",
+        "pre_click_wait_seconds", "post_click_wait_seconds",
+        "transfer_marker", "start_sweep", "ready", "confirm_first", "confirm_second",
+        "reset", "reset_confirm", "multimodal", "sweep_prompt",
     },
     "tap": {"type", "x", "y"},
     "swipe": {"type", "x1", "y1", "x2", "y2", "duration_ms"},
@@ -305,12 +315,17 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             "required_template_tap", "finish_login_authorization", "return_to_main",
             "handle_coin_fortune", "popup_cleanup", "handle_organization_prayer",
             "handle_free_recruit", "handle_abundance", "authorize_account", "handle_secret_realm",
+            "handle_survival_challenge",
     }:
         optional_keys = CLICK_WAIT_KEYS
     elif action_type == "find_card_and_click":
         optional_keys = {"completed_skip_type"} | CLICK_WAIT_KEYS
     else:
         optional_keys = set()
+    if action_type == "handle_abundance":
+        optional_keys = optional_keys | {"multimodal"}
+    if action_type == "handle_survival_challenge":
+        optional_keys = optional_keys | {"sweep_prompt"}
     _require_exact_keys(action, ACTION_KEYS[action_type], context, optional_keys)
     if action_type == "tap":
         _coordinate(action["x"], width, context)
@@ -491,7 +506,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         _validate_click_waits(action, context)
         completed_skip_type = action.get("completed_skip_type", "handle_organization_prayer")
         if completed_skip_type not in {
-            "handle_organization_prayer", "handle_coin_fortune", "handle_free_recruit", "handle_abundance", "handle_secret_realm",
+            "handle_organization_prayer", "handle_coin_fortune", "handle_free_recruit", "handle_abundance", "handle_survival_challenge", "handle_secret_realm",
         }:
             raise ConfigError(f"{context} 的 completed_skip_type 不是允许的页面处理动作")
         return
@@ -536,6 +551,52 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         if challenge["threshold"] < 0.85:
             raise ConfigError(f"{context} 的挑战识别阈值不能低于 0.85")
         _validate_battle(action["battle"], width, height, context)
+        if "multimodal" in action:
+            _validate_multimodal_config(action["multimodal"], f"{context}.multimodal")
+        return
+    elif action_type in ("handle_ichiraku_takeout", "handle_equipment_upgrade"):
+        if (width, height) != (1920, 1080):
+            raise ConfigError(f"{context} 只支持 1920×1080 安卓画面")
+        _validate_click_waits(action, context)
+        max_timeout = 3600 if action_type == "handle_equipment_upgrade" else 300
+        if type(action['timeout_seconds']) not in (int, float) or not 10 <= action['timeout_seconds'] <= max_timeout:
+            raise ConfigError(f"{context}.timeout_seconds 必须在 10 到 {max_timeout} 之间")
+        _validate_multimodal_config(action['multimodal'], f'{context}.multimodal')
+        if action_type == 'handle_equipment_upgrade':
+            for key, lower, upper in (('max_rounds', 1, 200), ('poll_seconds', .2, 5), ('sweep_timeout_seconds', 5, 300)):
+                value = action[key]
+                if type(value) not in (int, float) or not lower <= value <= upper or (key == 'max_rounds' and type(value) is not int):
+                    raise ConfigError(f'{context}.{key} 必须在 {lower} 到 {upper} 之间')
+            for key in ('one_click_sweep', 'start_sweep', 'sweep_done', 'advance'):
+                _validate_template_target(action[key], width, height, f'{context}.{key}', True)
+                if action[key]['threshold'] < .85:
+                    raise ConfigError(f'{context}.{key} 识别阈值不能低于 0.85')
+            if action['advance']['top'] < 720 or action['advance']['left'] < 1500:
+                raise ConfigError(f'{context}.advance 必须限制在右下角，避开升级按钮')
+        return
+    elif action_type == "handle_survival_challenge":
+        if (width, height) != (1920, 1080):
+            raise ConfigError(f"{context} 只支持 1920×1080 安卓画面")
+        _validate_click_waits(action, context)
+        timeout = action["timeout_seconds"]
+        if type(timeout) not in (int, float) or not 61 <= timeout <= 3600:
+            raise ConfigError(f"{context}.timeout_seconds 必须在 61 到 3600 之间")
+        rounds = action["max_rounds"]
+        if type(rounds) is not int or not 1 <= rounds <= 20:
+            raise ConfigError(f"{context}.max_rounds 必须在 1 到 20 之间")
+        wait_seconds = action["wait_seconds"]
+        if type(wait_seconds) not in (int, float) or wait_seconds != 60:
+            raise ConfigError(f"{context}.wait_seconds 必须为 60 秒")
+        poll_seconds = action["poll_seconds"]
+        if type(poll_seconds) not in (int, float) or not 0.2 <= poll_seconds <= 5:
+            raise ConfigError(f"{context}.poll_seconds 必须在 0.2 到 5 之间")
+        for key in ("transfer_marker", "start_sweep", "ready", "confirm_first", "confirm_second", "reset", "reset_confirm"):
+            _validate_template_target(action[key], width, height, f"{context}.{key}", require_name=True)
+        if "sweep_prompt" in action:
+            _validate_template_target(action['sweep_prompt'], width, height, f"{context}.sweep_prompt", require_name=True)
+        if action["start_sweep"]["top"] < 650 or action["reset"]["top"] < 650:
+            raise ConfigError(f"{context} 的扫荡和重置按钮必须限制在底部操作区域")
+        _validate_multimodal_config(action["multimodal"], f"{context}.multimodal")
         return
     elif action_type == "handle_organization_prayer":
         timeout_seconds = action["timeout_seconds"]
@@ -710,7 +771,7 @@ def load_settings(path: Path) -> Settings:
     tasks = payload["tasks"]
     if not isinstance(tasks, dict):
         raise ConfigError("tasks 必须是对象")
-    _require_exact_keys(tasks, TASK_NAMES, "tasks", optional={"secret_realm", "secret_realm_farm"})
+    _require_exact_keys(tasks, TASK_NAMES, "tasks", optional={"secret_realm", "secret_realm_farm", "survival_challenge", "ichiraku_takeout", "equipment_upgrade"})
     validated: dict[str, list[dict[str, Any]]] = {}
     for task_name, actions in tasks.items():
         if not isinstance(actions, list):

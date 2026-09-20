@@ -11,7 +11,7 @@
 SDK 管理会话、工具调用、权限和请求轮次；移动工具在执行 ADB 前检查页面、完成条件和移动上限。
 
 模型、接口地址、超时和密钥复用已有 `MultimodalClient` 配置，在同一 Python 进程中使用。
-Claude Agent SDK 会通过 `ANTHROPIC_BASE_URL` 使用 Messages API；阶跃接口地址需去掉结尾 `/v1`，SDK 会请求 `/v1/messages`。
+Claude Agent SDK 会通过 `ANTHROPIC_BASE_URL` 使用 Messages API；ModelLink 中国大陆接入点配置为 `https://api.qnaigc.com/v1`，客户端会自动去掉结尾 `/v1`，SDK 会请求 `/v1/messages`。模型由 `.env` 中的 `MULTIMODAL_MODEL` 指定。
 原有昵称、挑战券等 JSON 图片识别继续使用现有客户端；导航 agent 已不再使用 Pydantic AI。
 
 ## 秘境内部调用
