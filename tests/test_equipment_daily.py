@@ -97,6 +97,99 @@ def test_material_selection_uses_leftmost_missing_slot_and_requires_selected_equ
         first_material(materials(['filled'] * 6, False), 5)
 
 
+def test_filled_material_info_is_closed_and_next_missing_slot_is_opened():
+    before = materials(['filled', 'equipable', 'filled', 'sweepable', 'sweepable', 'sweepable'])
+    after = materials(['filled', 'filled', 'filled', 'sweepable', 'sweepable', 'sweepable'])
+    client, _ = run(
+        overview(), before, dict(page='material_info'), dict(page='equipment'), after,
+        material('sweep'), setup(4), dict(page='material'), dict(page='equipment'),
+    )
+    assert client.taps == [
+        (525, 610), (1244, 690), (1600, 920), (1518, 690),
+        CENTERS['one_click_sweep'], (1600, 920), (1600, 920),
+    ]
+
+
+def test_last_filled_material_info_leads_to_advance_after_verification():
+    client, _ = run(
+        overview(), materials(['filled'] * 5 + ['equipable']),
+        dict(page='material_info'), dict(page='equipment'), materials(['filled'] * 6, True),
+        overview([85, 45, 23, 85, 3, 78]), materials(), material('sweep'), setup(4),
+        dict(page='material'), dict(page='equipment'),
+    )
+    assert client.taps[:4] == [(525, 610), (1792, 690), (1600, 920), CENTERS['advance']]
+    assert client.taps.count((1792, 690)) == 1
+
+
+def test_multiple_filled_info_cards_continue_forward_without_reopening_them():
+    client, _ = run(
+        overview(), materials(['filled', 'equipable', 'equipable', 'sweepable', 'filled', 'filled']),
+        dict(page='material_info'), dict(page='material_info'), dict(page='equipment'),
+        materials(['filled', 'filled', 'equipable', 'sweepable', 'filled', 'filled']),
+        dict(page='material_info'), dict(page='equipment'),
+        materials(['filled', 'filled', 'filled', 'sweepable', 'filled', 'filled']),
+        material('sweep'), setup(4), dict(page='material'), dict(page='equipment'),
+    )
+    assert client.taps == [
+        (525, 610), (1244, 690), (1600, 920), (1600, 920),
+        (1380, 690), (1600, 920), (1518, 690), CENTERS['one_click_sweep'],
+        (1600, 920), (1600, 920),
+    ]
+
+
+def test_info_verification_cannot_reopen_an_earlier_confirmed_filled_slot():
+    client = Client()
+    with pytest.raises(VisualError, match='已确认的成品格'):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), materials(['filled', 'equipable', 'filled', 'sweepable', 'filled', 'filled']),
+            dict(page='material_info'), dict(page='equipment'),
+            materials(['equipable', 'filled', 'filled', 'sweepable', 'filled', 'filled'])),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps == [(525, 610), (1244, 690), (1600, 920)]
+
+
+@pytest.mark.parametrize('state', ['equipable', 'sweepable', 'craftable'])
+def test_material_info_does_not_skip_slot_without_filled_confirmation(state):
+    client = Client()
+    before = materials(['filled', 'equipable', 'filled', 'sweepable', 'sweepable', 'sweepable'])
+    after = materials(['filled', state, 'filled', 'sweepable', 'sweepable', 'sweepable'])
+    with pytest.raises(VisualError, match='第2格.*已装备'):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), before, dict(page='material_info'), dict(page='equipment'), after),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps == [(525, 610), (1244, 690), (1600, 920)]
+
+
+@pytest.mark.parametrize('after', [
+    dict(materials(), selected_slot=1), dict(page='unknown'), dict(page='material_info'),
+])
+def test_material_info_requires_fresh_same_equipment_verification(after):
+    client = Client()
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), materials(), dict(page='material_info'), dict(page='equipment'), after, after),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps == [(525, 610), (1106, 690), (1600, 920)]
+
+
+def test_unknown_material_entry_is_not_treated_as_read_only_info():
+    client = Client()
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), materials(), dict(page='unknown'), dict(page='unknown')),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps == [(525, 610), (1106, 690)]
+
+
+def test_material_info_after_synthesis_does_not_trigger_entry_recovery():
+    client = Client()
+    flow = ModelWorkflow(client, action(), model=Model(
+        dict(page='material_info'), dict(page='material_info')), sleep=lambda _: None)
+    with pytest.raises(VisualError):
+        _finish_material(flow, 'synthesize')
+    assert client.taps == [(650, 840)]
+
+
 @pytest.mark.parametrize('stamina', [0, 4, 5])
 def test_low_stamina_dismisses_both_layers_without_starting(stamina):
     client, _ = run(overview(), materials(), material('sweep'), setup(stamina),

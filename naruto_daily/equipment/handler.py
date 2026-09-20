@@ -50,6 +50,12 @@ def _material(data):
     return data['action']
 
 
+def _material_entry(data):
+    if isinstance(data, dict) and data.get('page') == 'material_info':
+        return 'material_info'
+    return _material(data)
+
+
 def _stamina(data):
     require_page(data, 'sweep_setup')
     stamina = data.get('stamina')
@@ -61,7 +67,8 @@ def _stamina(data):
 
 
 def _page(data):
-    if not isinstance(data, dict) or data.get('page') not in ('equipment', 'material', 'sweep_setup', 'sweep_result'):
+    if not isinstance(data, dict) or data.get('page') not in (
+            'equipment', 'material', 'material_info', 'sweep_setup', 'sweep_result'):
         raise VisualError('未确认装备弹层状态')
     return data['page']
 
@@ -147,13 +154,27 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
         if unchanged_material == signature:
             raise VisualError('合成装备后材料状态未变化，已停止循环')
         unchanged_material = None
+        while index is not None:
+            flow.tap(MATERIAL_POINTS[index - 1])
+            button = flow.read('装备材料详情', prompts.MATERIAL_ENTRY, _material_entry)
+            if button != 'material_info':
+                break
+            LOGGER.info('第%d格打开成品信息卡，关闭后复查是否已装备', index)
+            _close_layers(flow, 'material_info')
+            materials = flow.read('成品信息卡关闭后材料复查', prompts.MATERIALS, validate_materials)
+            if materials['materials'][index - 1] != 'filled':
+                raise VisualError(f'第{index}格信息卡已关闭，但未确认已装备，已停止')
+            next_index = first_material(materials, slot)
+            if next_index is not None and next_index <= index:
+                raise VisualError('已确认的成品格再次显示未装备，已停止重复点击')
+            LOGGER.info('确认第%d格成品已装备，继续检查后面的材料', index)
+            index = next_index
+            signature = (levels, slot, tuple(materials['materials']))
         if index is None:
             LOGGER.info('当前装备六个成品均已齐全，执行进阶')
             flow.button('advance')
             previous_advance = levels
             continue
-        flow.tap(MATERIAL_POINTS[index - 1])
-        button = flow.read('装备材料详情', prompts.MATERIAL, _material)
         if button != 'sweep':
             _finish_material(flow, button)
             unchanged_material = signature
