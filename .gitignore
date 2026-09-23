@@ -15,8 +15,8 @@ build/
 .env.*
 !.env.example
 
-# TypeScript QR login service
-node_modules/
-login-service/dist/
-login-service/.data/
-login-service/coverage/
+# Python QR login service
+.venv-login-service/
+.data/
+# Cached artifacts from the replaced Node service; implementation now lives in Python.
+login-service/

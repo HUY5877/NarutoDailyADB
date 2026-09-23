@@ -1,10 +1,10 @@
 # NarutoDailyADB
 
-## 扫码登录任务服务（TypeScript）
+## 扫码登录任务服务（Python）
 
-新增的 [login-service](login-service/README.md) 与现有 Python 日常自动化独立运行：接收客户端登录任务，写入模拟 Redis 队列，每个任务启动独立 Node 子进程模拟雷电及游戏登录步骤，生成二维码后写入本地模拟 OSS 或阿里云 OSS。当前二维码仅用于联调，不能授权真实账号；雷电和游戏点击适配器留待有模拟器时接入。
+新增的 [login_service](naruto_daily/login_service/README.md) 使用 Python 实现，与现有日常自动化独立运行：接收客户端登录任务，写入模拟 Redis 队列，每个任务启动独立 Python 子进程模拟雷电及游戏登录步骤，生成二维码后写入本地模拟 OSS 或阿里云 OSS。当前二维码仅用于联调，不能授权真实账号；雷电和游戏点击适配器留待有模拟器时接入。
 
-客户端前后端位于新仓库 [NarutoLoginClient](https://github.com/HUY5877/NarutoLoginClient)。本机客户端目录为 `E:\code\NarutoLoginClient`。在本项目 `login-service` 目录运行 `npm ci`、`npm run dev`，随后在客户端目录运行 `npm ci`、`npm run dev`，打开 `http://127.0.0.1:5173` 即可验证完整模拟链路。默认无须配置 Redis、OSS 或雷电。
+客户端前后端位于 [NarutoLoginClient](https://github.com/HUY5877/NarutoLoginClient)，仍使用 TSX + TypeScript。本项目根目录执行 `python -m pip install -e ".[login-service]"`，再执行 `python -m naruto_daily.login_service` 启动 Python 任务服务（默认 `127.0.0.1:4320`）。本机已准备独立环境，也可直接用 `.\.venv-login-service\Scripts\python.exe -m naruto_daily.login_service` 启动。随后在客户端目录 `E:\code\NarutoLoginClient` 运行 `npm ci`、`npm run dev`，打开 `http://127.0.0.1:5173` 即可验证完整模拟链路。默认无须配置 Redis、OSS 或雷电。
 
 ---
 
