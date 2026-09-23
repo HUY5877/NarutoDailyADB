@@ -14,3 +14,9 @@ build/
 .env
 .env.*
 !.env.example
+
+# TypeScript QR login service
+node_modules/
+login-service/dist/
+login-service/.data/
+login-service/coverage/

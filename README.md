@@ -1,5 +1,13 @@
 # NarutoDailyADB
 
+## 扫码登录任务服务（TypeScript）
+
+新增的 [login-service](login-service/README.md) 与现有 Python 日常自动化独立运行：接收客户端登录任务，写入模拟 Redis 队列，每个任务启动独立 Node 子进程模拟雷电及游戏登录步骤，生成二维码后写入本地模拟 OSS 或阿里云 OSS。当前二维码仅用于联调，不能授权真实账号；雷电和游戏点击适配器留待有模拟器时接入。
+
+客户端前后端位于新仓库 [NarutoLoginClient](https://github.com/HUY5877/NarutoLoginClient)。本机客户端目录为 `E:\code\NarutoLoginClient`。在本项目 `login-service` 目录运行 `npm ci`、`npm run dev`，随后在客户端目录运行 `npm ci`、`npm run dev`，打开 `http://127.0.0.1:5173` 即可验证完整模拟链路。默认无须配置 Redis、OSS 或雷电。
+
+---
+
 雷电模拟器 9 的 ADB 坐标自动化实验项目。
 
 第一阶段目标是以固定安卓分辨率和显式坐标配置，分别调试登录、组织祈福、两次免费招财、签到、领取体力、免费招募和一次丰饶之间战斗。项目不包含内存读取、注入、改包、验证码处理、付费操作或反检测功能。
