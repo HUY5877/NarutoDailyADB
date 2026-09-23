@@ -5,6 +5,7 @@ import pytest
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.model_workflow import ModelWorkflow
 from naruto_daily.equipment.handler import handle_equipment_upgrade, lowest_equipment, first_material, _finish_material
+from naruto_daily.equipment import prompts
 from naruto_daily.ichiraku import handle_ichiraku_takeout
 
 
@@ -30,6 +31,12 @@ class Model:
         return answer
 
 
+class OverviewOnlyModel(Model):
+    def complete_json(self, png, prompt, **kwargs):
+        assert prompt == prompts.EQUIPMENT, '进阶按钮仍可用时不应进入材料识别'
+        return super().complete_json(png, prompt, **kwargs)
+
+
 def target(name):
     return dict(name=name, template=name + '.png', left=0, top=0, right=1920,
                 bottom=1080, threshold=.9)
@@ -47,13 +54,15 @@ CENTERS = {'one_click_sweep': (650, 840), 'start_sweep': (1300, 780),
 
 
 def matcher(png, path, roi, threshold):
+    if path.stem == 'advance':
+        return None, .1
     if path.stem == 'sweep_done' and png == b'(1600, 920)':
         return None, .1
     return CENTERS[path.stem], 1
 
 
-def overview(levels=None):
-    return dict(page='equipment', progressions=levels or [85, 45, 23, 85, 2, 78], selected_slot=5)
+def overview(levels=None, selected_slot=5):
+    return dict(page='equipment', progressions=levels or [85, 45, 23, 85, 2, 78], selected_slot=selected_slot)
 
 
 def materials(states=None, advance=False):
@@ -111,11 +120,17 @@ def test_filled_material_info_is_closed_and_next_missing_slot_is_opened():
 
 
 def test_last_filled_material_info_leads_to_advance_after_verification():
+    def advance_after_info(png, path, roi, threshold):
+        if path.stem == 'advance' and png == b'(1600, 920)':
+            return CENTERS['advance'], 1
+        return matcher(png, path, roi, threshold)
+
     client, _ = run(
         overview(), materials(['filled'] * 5 + ['equipable']),
         dict(page='material_info'), dict(page='equipment'), materials(['filled'] * 6, True),
         overview([85, 45, 23, 85, 3, 78]), materials(), material('sweep'), setup(4),
         dict(page='material'), dict(page='equipment'),
+        match=advance_after_info,
     )
     assert client.taps[:4] == [(525, 610), (1792, 690), (1600, 920), CENTERS['advance']]
     assert client.taps.count((1792, 690)) == 1
@@ -320,20 +335,77 @@ def test_synthesis_recheck_wait_exhausting_timeout_stops_before_model_or_click()
     assert client.taps == [(650, 840)]
 
 
-def test_all_materials_ready_advances_then_selects_new_lowest():
-    client, _ = run(overview(), materials(['filled'] * 6, True),
-                    overview([85, 45, 23, 85, 3, 78]), materials(), material('sweep'), setup(4),
-                    dict(page='material'), dict(page='equipment'))
-    assert client.taps.count(CENTERS['advance']) == 1
-
-
-def test_advance_without_change_does_not_repeat_click():
+@pytest.mark.parametrize('advances', [1, 2])
+def test_visible_advance_precedes_materials_even_when_level_reading_is_unchanged(advances):
     client = Client()
-    with pytest.raises(VisualError, match='进阶.*未变化'):
-        handle_equipment_upgrade(client, action(), model=Model(
-            overview(), materials(['filled'] * 6, True), overview()),
-            template_matcher=matcher, sleep=lambda _: None)
-    assert client.taps.count(CENTERS['advance']) == 1
+
+    def available_advance(png, path, roi, threshold):
+        if path.stem == 'advance' and client.taps.count(CENTERS['advance']) < advances:
+            return CENTERS['advance'], 1
+        return matcher(png, path, roi, threshold)
+
+    class AdvanceFirstModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            if prompt == prompts.MATERIALS:
+                assert client.taps.count(CENTERS['advance']) == advances, '进阶按钮消失前不应读取材料'
+            return super().complete_json(png, prompt, **kwargs)
+
+    handle_equipment_upgrade(client, action(), model=AdvanceFirstModel(
+        *[overview() for _ in range(advances + 1)],
+        materials(), material('sweep'), setup(4), dict(page='material'), dict(page='equipment')),
+        template_matcher=available_advance, sleep=lambda _: None)
+    assert client.taps[:advances * 2] == [(525, 610), (1750, 830)] * advances
+    assert client.taps[advances * 2:advances * 2 + 3] == [(525, 610), (1106, 690), (650, 840)]
+    assert client.taps.count(CENTERS['advance']) == advances
+
+
+def test_advancing_reselects_new_lowest_equipment_before_checking_button():
+    client = Client()
+
+    def available_advance(png, path, roi, threshold):
+        if path.stem == 'advance':
+            return CENTERS['advance'], 1
+        return matcher(png, path, roi, threshold)
+
+    with pytest.raises(VisualError, match='最多2轮'):
+        handle_equipment_upgrade(client, dict(action(), max_rounds=2), model=OverviewOnlyModel(
+            overview([2, 5, 6, 7, 3, 8]), overview([2, 5, 6, 7, 3, 8], selected_slot=1),
+            overview([4, 5, 6, 7, 3, 8], selected_slot=1), overview([4, 5, 6, 7, 3, 8])),
+            template_matcher=available_advance, sleep=lambda _: None)
+    assert client.taps == [(275, 360), (1750, 830), (525, 610), (1750, 830)]
+
+
+def test_ignored_equipment_selection_cannot_advance_previous_equipment():
+    client = Client()
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, dict(action(), max_rounds=1), model=OverviewOnlyModel(
+            overview(selected_slot=1), overview(selected_slot=1), overview(selected_slot=1)),
+            template_matcher=lambda *args: (CENTERS['advance'], 1), sleep=lambda _: None)
+    assert client.taps == [(525, 610)]
+
+
+def test_persistent_advance_button_still_respects_round_limit():
+    client = Client()
+    with pytest.raises(VisualError, match='最多2轮'):
+        handle_equipment_upgrade(client, dict(action(), max_rounds=2), model=OverviewOnlyModel(overview(), overview()),
+            template_matcher=lambda *args: (CENTERS['advance'], 1), sleep=lambda _: None)
+    assert client.taps == [(525, 610), (1750, 830), (525, 610), (1750, 830)]
+
+
+def test_advance_detection_after_timeout_does_not_click(monkeypatch):
+    from naruto_daily.common import model_workflow
+    now = [0]
+    monkeypatch.setattr(model_workflow.time, 'monotonic', lambda: now[0])
+    client = Client()
+
+    def late_match(*args):
+        now[0] = 2000
+        return CENTERS['advance'], 1
+
+    with pytest.raises(VisualError, match='超时'):
+        handle_equipment_upgrade(client, action(), model=OverviewOnlyModel(overview()),
+            template_matcher=late_match, sleep=lambda _: None)
+    assert client.taps == [(525, 610)]
 
 
 @pytest.mark.parametrize('bad', [dict(page='material', stamina=200, auto_stop=True),

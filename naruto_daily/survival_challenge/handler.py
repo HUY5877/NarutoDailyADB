@@ -128,9 +128,7 @@ def handle_survival_challenge(
         if count == 0:
             LOGGER.info("生存挑战重置次数为0，结束扫荡循环")
             return
-        if count == 1:
-            raise VisualError("生存挑战重置次数为1，无法按安全规则判断是否继续")
-        LOGGER.info("生存挑战重置次数为%d，大于1，点击重置并确认后继续", count)
+        LOGGER.info("生存挑战重置次数为%d，大于0，点击重置并确认后继续", count)
         _wait_and_click(client, images, action["reset"], deadline=deadline,
                         poll_seconds=poll_seconds, post_click_wait=post_click_wait,
                         elapsed=elapsed)

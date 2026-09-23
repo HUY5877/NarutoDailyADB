@@ -43,6 +43,13 @@ def _overview(data):
     return data
 
 
+def _selected_overview(data, slot):
+    _overview(data)
+    if type(data.get('selected_slot')) is not int or data['selected_slot'] != slot:
+        raise VisualError('未确认已选中最低进阶装备')
+    return data
+
+
 def _material(data):
     require_page(data, 'material')
     if data.get('action') not in ('sweep', 'synthesize', 'equip'):
@@ -133,18 +140,26 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
                              asset_root=Path('.'), sleep=time.sleep):
     flow = ModelWorkflow(client, action, model=model, template_matcher=template_matcher,
                          asset_root=asset_root, sleep=sleep)
-    previous_advance = None
     previous_sweep = None
     unchanged_material = None
     for round_number in range(1, action['max_rounds'] + 1):
         overview = flow.read('最低进阶装备识别', prompts.EQUIPMENT, _overview)
         slot = lowest_equipment(overview)
         levels = tuple(overview['progressions'])
-        if previous_advance == levels:
-            raise VisualError('进阶后装备等级未变化，未重复点击')
-        previous_advance = None
         LOGGER.info('[装备养成 第%d轮] 选择第%d件装备，进阶+%d', round_number, slot, levels[slot - 1])
         flow.tap(EQUIPMENT_POINTS[slot - 1])
+        if type(overview.get('selected_slot')) is not int or overview['selected_slot'] != slot:
+            flow.read('最低装备选中确认', prompts.EQUIPMENT, lambda data: _selected_overview(data, slot))
+        # 每轮以当前选中装备的按钮为准；进阶后数字暂未刷新也继续检查。
+        advance_center, advance_score = flow.images.find(
+            action['advance'], deadline=flow.images.elapsed + flow.remaining())
+        flow.remaining()
+        if advance_center is not None:
+            LOGGER.info('发现装备进阶按钮，相似度 %.3f，先执行进阶，再重新选择最低装备', advance_score)
+            flow.tap(advance_center)
+            unchanged_material = None
+            continue
+        LOGGER.info('未发现装备进阶按钮，相似度 %.3f，开始检查材料', advance_score)
         def validate_materials(data):
             first_material(data, slot)
             return data
@@ -173,7 +188,6 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
         if index is None:
             LOGGER.info('当前装备六个成品均已齐全，执行进阶')
             flow.button('advance')
-            previous_advance = levels
             continue
         if button != 'sweep':
             _finish_material(flow, button)

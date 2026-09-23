@@ -155,11 +155,19 @@ def test_survival_without_transfer_starts_directly_and_zero_breaks():
     assert waits[-1] == 60
 
 
-def test_survival_rejects_ambiguous_reset_count_without_reset_click():
+@pytest.mark.parametrize('counts,expected_resets', [([1, 0], 1), ([2, 1, 0], 2)])
+def test_survival_uses_last_reset_and_continues_until_zero(counts, expected_resets):
     client, waits = Client(transfer=False), []
-    with pytest.raises(VisualError, match='重置次数'):
-        run(action(), client, Model([1]), waits)
-    assert not any(x == 1400 for x, _, _ in client.taps)
+    action_value = action()
+    action_value['timeout_seconds'] = 300
+
+    run(action_value, client, Model(counts), waits)
+
+    assert client.taps.count((1400, 900, 'map')) == expected_resets
+    assert client.taps.count((1100, 900, 'reset_confirm')) == expected_resets
+    assert client.taps.count((1100, 900, 'map')) == len(counts)
+    assert waits.count(60) == len(counts)
+    assert client.taps[-1] == (1100, 900, 'confirm_second')
 
 
 def test_survival_rejects_invalid_model_result():
