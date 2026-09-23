@@ -32,13 +32,23 @@ npm ci
 npm run dev
 ```
 
-打开 `http://127.0.0.1:5173`。如果客户端已完成 `npm run build`，可以使用 `npm start` 后打开 `http://127.0.0.1:4300`。
+打开 `http://127.0.0.1:4300`。客户端页面、API 和开发热更新共用这个端口，只需设置客户端 `PORT` 即可一起调整。如果客户端已完成 `npm run build`，也可用 `npm start` 启动，地址相同。Python 任务服务仍独立监听 `127.0.0.1:4320`。
 
 默认配置直接可用。自定义时将本目录 `.env.example` 复制为 `.env`，也可通过 `--env-file <路径>` 指定。进程环境变量优先于文件；服务不会自动读取原日常脚本的根目录 `.env`，避免混用配置。
 
+以下均为可选设置，只在需要调整时加入本服务的 `.env`：
+
+| 变量 | 默认值与用途 |
+| --- | --- |
+| `HOST` / `PORT` | `127.0.0.1` / `4320`，任务服务监听地址；变更后同步修改客户端 `LOGIN_SERVICE_URL` |
+| `LOCAL_STORAGE_DIR` | `.data/login-service/objects`，相对项目根目录解析的本地对象目录 |
+| `WORKER_CONCURRENCY` / `MAX_QUEUE_SIZE` / `MAX_TASKS` | `2` / `100` / `500`，工作进程并发数、队列容量和任务总数上限 |
+| `TASK_RETENTION_MS` | `60000`，过期任务状态保留时间 |
+| `MOCK_STEP_DELAY_MS` / `EMULATOR_DRIVER` | `600` / `mock`，模拟步骤延迟与驱动 |
+
 ## 接口兼容
 
-接口路径、字段命名、状态和端口与之前客户端保持一致，无需修改客户端 TS 代码。全部 `/internal/*` 接口要求 `X-Service-Token`，默认值 `local-development-token` 仅用于本机回环地址。客户端后端与任务服务必须使用相同值。
+全部 `/internal/*` 接口要求 `X-Service-Token`，由两边的 `SERVICE_TOKEN` 配置。它是服务间共享凭证，与每次申请的独立访问凭证不同。默认值 `local-development-token` 只允许本机回环地址，无需写入 `.env`；改为非回环监听时，必须为客户端后端与任务服务配置相同的强随机值。
 
 | 接口 | 行为 |
 | --- | --- |
@@ -70,21 +80,22 @@ npm run dev
 
 默认 `STORAGE_DRIVER=local`，本地目录为项目根目录下的 `.data/login-service/objects`，对象键仍为 `login/{id}/qr.png`，旁边的 `metadata.json` 保存过期时间。写入使用临时文件与原子替换；文件夹不会作为公共静态资源开放。过期对象及上次运行遗留的过期对象会定期清理。
 
-真实 OSS 使用 Python `oss2` SDK，在两边配置一致的 Bucket、地域和对象前缀：
+真实 OSS 使用 Python `oss2` SDK，在两边配置一致的 Bucket 和地域：
 
 ```dotenv
 STORAGE_DRIVER=oss
-OSS_REGION=oss-cn-hangzhou
+OSS_REGION=oss-cn-shanghai
 OSS_BUCKET=your-private-bucket
-OSS_KEY_PREFIX=login
-OSS_ACCESS_KEY_ID=configure-locally
-OSS_ACCESS_KEY_SECRET=configure-locally
-# OSS_STS_TOKEN=optional-temporary-token
+OSS_ACCESS_KEY_ID=your-access-key-id
+OSS_ACCESS_KEY_SECRET=your-access-key-secret
+# OSS_STS_TOKEN=your-temporary-token
 ```
+
+`OSS_KEY_PREFIX` 默认是 `login`，表示 Bucket 内对象键的目录前缀，例如 `login/{id}/qr.png`，无需重复配置；自定义时两边必须一致。
 
 服务端拥有指定前缀的写入/读取/删除权限，客户端 TS 后端仅需读取权限；凭据可以不同。OSS 对象使用 HTTPS、私有 ACL、PNG 类型、`no-store` 和过期时间元数据。浏览器通过自己的后端读图片，不获得 OSS 密钥，也不需要 OSS CORS。
 
-真实 OSS 尚未使用凭据联调。过期元数据不等于云端生命周期规则，应配置此前缀的 Bucket 生命周期，兜底清理服务崩溃时的遗留对象。切换 OSS 不会自动启用真实雷电。
+真实 OSS 已完成二维码上传与客户端读取联调。过期元数据不等于云端生命周期规则，应配置此前缀的 Bucket 生命周期，兜底清理服务崩溃时的遗留对象。切换 OSS 不会自动启用真实雷电。
 
 ## 验证
 
