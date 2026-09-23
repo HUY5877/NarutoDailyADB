@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from PIL import Image
+import pytest
 
 from naruto_daily.login_service.app import create_app
 from naruto_daily.login_service.config import load_config
@@ -180,14 +181,10 @@ def test_ready_qr_expires_and_retained_task_is_eventually_removed(tmp_path):
         assert not (tmp_path / "login" / submission["id"] / "qr.png").exists()
 
 
-def test_ldplayer_mode_reports_explicit_failure(tmp_path):
-    with service(tmp_path, emulator_driver="ldplayer") as (client, _runtime):
-        submission = task()
-        assert client.post("/internal/tasks", json=submission).status_code == 202
-        failed = wait_for_status(client, submission, "failed")
-        assert "not implemented" in failed["error"]
-        assert "accessToken" not in failed
-        assert client.get(f"/internal/objects/{submission['id']}/qr.png").status_code == 404
+def test_ldplayer_mode_rejects_missing_console_configuration_at_startup(tmp_path):
+    with pytest.raises(ValueError, match="LDPLAYER_CONSOLE_PATH"):
+        with service(tmp_path, emulator_driver="ldplayer"):
+            pass
 
 
 def test_worker_storage_failures_do_not_expose_secrets(tmp_path, monkeypatch):

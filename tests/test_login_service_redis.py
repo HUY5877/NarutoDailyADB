@@ -9,7 +9,9 @@ from uuid import uuid4
 import pytest
 
 from naruto_daily.login_service.models import HttpError, parse_queue_task
-from naruto_daily.login_service.queue import RedisQueueError, RedisTaskQueue, SAFE_TASK_ERROR
+from naruto_daily.login_service.queue import (
+    RedisQueueError, RedisTaskQueue, SAFE_DRIVER_ERRORS, SAFE_TASK_ERROR,
+)
 
 
 def task_body(ttl=60):
@@ -214,6 +216,22 @@ def test_status_does_not_recreate_session_or_publish_raw_error():
             await client.delete(key)
             assert not await queue.set_status(record, "failed", SAFE_TASK_ERROR)
             assert await client.exists(key) == 0
+        finally:
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("safe_error", SAFE_DRIVER_ERRORS.values())
+def test_status_publishes_only_approved_ldplayer_errors(safe_error):
+    async def scenario():
+        client = fake_client()
+        try:
+            queue = RedisTaskQueue(config(), client=client)
+            body = task_body()
+            key, _ = await enqueue(client, body)
+            record = await queue.pop()
+            assert await queue.set_status(record, "failed", safe_error)
+            assert json.loads(await client.get(key))["error"] == safe_error
         finally:
             await client.aclose()
     asyncio.run(scenario())

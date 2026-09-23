@@ -20,6 +20,14 @@ MAX_QUEUE_PAYLOAD_BYTES = 8192
 TERMINAL_STATUSES = frozenset({"qr_ready", "failed", "expired"})
 SAFE_TASK_ERROR = "Could not prepare the simulated login QR code. Please create a new login request."
 UNSUPPORTED_DRIVER_ERROR = "LDPlayer adapter is not implemented. Set EMULATOR_DRIVER=mock."
+SAFE_DRIVER_ERRORS = {
+    "configuration_error": "The LDPlayer login service is not configured correctly.",
+    "emulator_start_failed": "Could not start the login emulator. Please create a new login request.",
+    "game_launch_failed": "Could not open the game for login. Please create a new login request.",
+    "qr_not_found": "Could not find the login QR code. Please create a new login request.",
+    "command_timeout": "Login QR code preparation timed out. Please create a new login request.",
+    "unexpected_error": "Could not prepare the login QR code. Please create a new login request.",
+}
 
 
 class RedisQueueError(RuntimeError):
@@ -163,7 +171,8 @@ class RedisTaskQueue:
             raise ValueError("Invalid worker status")
         safe_error = ""
         if status == "failed" and error is not None:
-            safe_error = error if error in (SAFE_TASK_ERROR, UNSUPPORTED_DRIVER_ERROR) else SAFE_TASK_ERROR
+            allowed_errors = {SAFE_TASK_ERROR, UNSUPPORTED_DRIVER_ERROR, *SAFE_DRIVER_ERRORS.values()}
+            safe_error = error if error in allowed_errors else SAFE_TASK_ERROR
         changed = await self._call(
             "eval", _STATUS_SCRIPT, 1, self._session_key(record),
             *self._session_args(record), status, safe_error,

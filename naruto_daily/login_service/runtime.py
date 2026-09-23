@@ -15,14 +15,22 @@ import time
 from typing import TYPE_CHECKING
 
 from .config import ServiceConfig
+from .ldplayer import LDPlayerError, LDPlayerPoolFull
 from .models import HttpError, TaskRecord, UUID_PATTERN, equal_secret, parse_submission
-from .queue import MockRedisQueue, RedisQueueError, RedisTaskQueue
+from .queue import MockRedisQueue, RedisQueueError, RedisTaskQueue, SAFE_DRIVER_ERRORS, SAFE_TASK_ERROR
 
 if TYPE_CHECKING:
     from .storage import ObjectStorage
 
 
 logger = logging.getLogger(__name__)
+
+_CHILD_ENV_ALLOWLIST = frozenset({
+    "ALLUSERSPROFILE", "APPDATA", "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)",
+    "COMSPEC", "HOME", "HOMEDRIVE", "HOMEPATH", "LANG", "LC_ALL", "LOCALAPPDATA",
+    "PATH", "PATHEXT", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PUBLIC",
+    "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR",
+})
 
 
 class _TaskExpired(Exception):
@@ -31,6 +39,10 @@ class _TaskExpired(Exception):
 
 class _WorkerStopping(Exception):
     pass
+
+
+class _WorkerError(Exception):
+    """A worker failure already reduced to an approved public message."""
 
 
 class LoginRuntime:
@@ -49,6 +61,8 @@ class LoginRuntime:
         self._children: dict[str, subprocess.Popen[bytes]] = {}
         self._pending_deletes: set[str] = set()
         self._workers: list[asyncio.Task[None]] = []
+        self._admission_lock = asyncio.Lock()
+        self._manager = None
         self._sweep_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._stopping = False
@@ -60,6 +74,14 @@ class LoginRuntime:
             raise RuntimeError("A stopped LoginRuntime cannot be restarted")
         if self._initialized:
             return
+        if self.config.emulator_driver == "ldplayer":
+            console = self.config.ldplayer_console_path
+            if console is None or not Path(console).is_file():
+                raise ValueError("LDPLAYER_CONSOLE_PATH must name an existing file")
+            if not self.config.ldplayer_pool_indices and not self.config.ldplayer_template.strip():
+                raise ValueError("LDPLAYER_TEMPLATE must name a clean stopped template")
+            if self.config.ldplayer_pool_indices and self._redis_queue is None:
+                raise ValueError("LDPLAYER_POOL_INDICES requires REDIS_URL worker mode")
         try:
             if self._redis_queue is not None:
                 await self._redis_queue.initialize()
@@ -168,23 +190,23 @@ class LoginRuntime:
         record = self._lookup(task_id)
         return record is not None and record.status == "qr_ready"
 
-    async def _run_mock(self, record: TaskRecord) -> bytes:
+    async def _run_child(
+        self, record: TaskRecord, command: list[str], message: dict[str, object],
+    ) -> bytes:
         # Popen plus threaded pipe reads works with both Windows event-loop policies.
-        # Only the job id and a fresh nonce enter the child; service/OSS secrets do not.
-        allowed_env = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE", "LANG", "LC_ALL"}
-        child_env = {key: value for key, value in os.environ.items() if key.upper() in allowed_env}
+        # Only job-scoped public configuration enters the child; service/OSS secrets do not.
+        child_env = {
+            key: value for key, value in os.environ.items()
+            if key.upper() in _CHILD_ENV_ALLOWLIST
+        }
         child = subprocess.Popen(
-            [sys.executable, "-u", str(Path(__file__).with_name("mock_emulator.py"))],
+            command,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env=child_env,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         self._children[record.id] = child
         assert child.stdin is not None and child.stdout is not None
-        message = {
-            "type": "start", "id": record.id, "nonce": secrets.token_hex(32),
-            "stepDelayMs": self.config.step_delay_ms, "expiresAt": record.expires_at,
-        }
         png: bytes | None = None
         try:
             child.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
@@ -210,6 +232,8 @@ class LoginRuntime:
                         candidate = base64.b64decode(event["png"], validate=True)
                         if candidate.startswith(b"\x89PNG\r\n\x1a\n"):
                             png = candidate
+                    elif event.get("type") == "error" and event.get("code") in SAFE_DRIVER_ERRORS:
+                        raise _WorkerError(SAFE_DRIVER_ERRORS[event["code"]])
                 exit_code = await asyncio.to_thread(child.wait)
                 if exit_code != 0 or png is None:
                     raise RuntimeError("Emulator process exited before a QR image was produced")
@@ -219,6 +243,73 @@ class LoginRuntime:
             await asyncio.to_thread(child.wait)
             child.stdin.close()
             child.stdout.close()
+
+    async def _run_mock(self, record: TaskRecord) -> bytes:
+        message = {
+            "type": "start", "id": record.id, "nonce": secrets.token_hex(32),
+            "stepDelayMs": self.config.step_delay_ms, "expiresAt": record.expires_at,
+        }
+        return await self._run_child(
+            record, [sys.executable, "-u", str(Path(__file__).with_name("mock_emulator.py"))], message,
+        )
+
+    async def _run_ldplayer(self, record: TaskRecord) -> bytes:
+        assert self.config.ldplayer_console_path is not None
+        message = {
+            "type": "start", "id": record.id, "expiresAt": record.expires_at,
+            "consolePath": str(self.config.ldplayer_console_path),
+            "template": self.config.ldplayer_template,
+            "poolIndices": list(self.config.ldplayer_pool_indices),
+            "stateDir": str(self.config.ldplayer_state_dir),
+            "package": self.config.ldplayer_package,
+            "commandTimeout": self.config.ldplayer_command_timeout_seconds,
+        }
+        return await self._run_child(
+            record, [sys.executable, "-u", "-m", "naruto_daily.login_service.ldplayer_worker"], message,
+        )
+
+    def _ldplayer_manager(self):
+        from .ldplayer import LDPlayerManager
+
+        assert self.config.ldplayer_console_path is not None
+        if self._manager is None:
+            self._manager = LDPlayerManager(
+                console_path=self.config.ldplayer_console_path,
+                template=self.config.ldplayer_template,
+                state_dir=self.config.ldplayer_state_dir,
+                command_timeout=self.config.ldplayer_command_timeout_seconds,
+                pool_indices=self.config.ldplayer_pool_indices,
+            )
+        return self._manager
+
+    def _close_ldplayer(self, task_id: str) -> None:
+        self._ldplayer_manager().close(task_id)
+
+    def _mark_ldplayer_ready(self, task_id: str) -> None:
+        self._ldplayer_manager().mark_ready(task_id)
+
+    def _prepare_ldplayer_retry(self, task_id: str) -> None:
+        self._ldplayer_manager().prepare_retry(task_id)
+
+    async def _cleanup_ldplayer(self, task_id: str) -> bool:
+        try:
+            await asyncio.to_thread(self._close_ldplayer, task_id)
+            return True
+        except Exception:
+            logger.warning("Could not close the LDPlayer login instance for task %s", task_id)
+            return False
+
+    async def _release_and_requeue(self, record: TaskRecord) -> None:
+        if self.config.emulator_driver == "ldplayer":
+            if not await self._cleanup_ldplayer(record.id):
+                return
+            if self.config.ldplayer_pool_indices:
+                try:
+                    await asyncio.to_thread(self._prepare_ldplayer_retry, record.id)
+                except Exception:
+                    logger.warning("Could not prepare LDPlayer pool task %s for retry", record.id)
+                    return
+        await self._requeue(record)
 
     async def _consume(self) -> None:
         while not self._stopping:
@@ -238,11 +329,44 @@ class LoginRuntime:
                 await self._retry_pause()
                 continue
             try:
-                record = await self._redis_queue.pop()
-                if disconnected:
+                wait_for_capacity = False
+                redis_contacted = False
+                if self.config.emulator_driver == "ldplayer" and self.config.ldplayer_pool_indices:
+                    async with self._admission_lock:
+                        manager = self._ldplayer_manager()
+                        try:
+                            has_capacity = await asyncio.to_thread(manager.has_capacity)
+                        except LDPlayerError:
+                            logger.warning("LDPlayer pool capacity is unavailable; retrying")
+                            has_capacity = False
+                        if not has_capacity:
+                            record = None
+                            wait_for_capacity = True
+                        else:
+                            redis_contacted = True
+                            record = await self._redis_queue.pop()
+                            if record is not None:
+                                try:
+                                    await asyncio.to_thread(
+                                        manager.allocate, record.id, record.expires_at_ms / 1000,
+                                    )
+                                except LDPlayerPoolFull:
+                                    await self._requeue(record)
+                                    record = None
+                                    wait_for_capacity = True
+                                except LDPlayerError:
+                                    # The isolated child retries the idempotent allocation and
+                                    # converts any persistent driver failure to a safe task error.
+                                    logger.warning("LDPlayer pool reservation failed; retrying in task worker")
+                else:
+                    redis_contacted = True
+                    record = await self._redis_queue.pop()
+                if disconnected and redis_contacted:
                     logger.info("Redis connection restored")
                     disconnected = False
                 if record is None:
+                    if wait_for_capacity:
+                        await self._retry_pause()
                     continue
             except (HttpError, ValueError):
                 logger.warning("Skipped an invalid or expired Redis login task")
@@ -254,7 +378,7 @@ class LoginRuntime:
                 await self._retry_pause()
                 continue
             if self._stopping:
-                await self._requeue(record)
+                await self._release_and_requeue(record)
                 return
             self._tasks[record.id] = record
             await self._process_record(record)
@@ -262,13 +386,17 @@ class LoginRuntime:
     async def _process_record(self, record: TaskRecord) -> None:
         task_id = record.id
         uploaded = False
+        keep_ldplayer = False
+        requeue_on_exit = False
         try:
-            if self.config.emulator_driver != "mock":
-                raise RuntimeError("LDPlayer adapter is not implemented")
             await self._set_status(record, "starting_emulator")
             if self._stopping:
                 raise _WorkerStopping
-            png = await self._run_mock(record)
+            png = (
+                await self._run_mock(record)
+                if self.config.emulator_driver == "mock"
+                else await self._run_ldplayer(record)
+            )
             if record.expires_at_ms <= time.time() * 1000:
                 raise _TaskExpired
             if self._stopping:
@@ -280,6 +408,12 @@ class LoginRuntime:
             if self._stopping and self._redis_queue is None:
                 raise _WorkerStopping
             await self._set_status(record, "qr_ready")
+            keep_ldplayer = self.config.emulator_driver == "ldplayer"
+            if self.config.ldplayer_pool_indices:
+                try:
+                    await asyncio.to_thread(self._mark_ldplayer_ready, task_id)
+                except Exception:
+                    logger.warning("Could not mark the LDPlayer pool slot ready for task %s", task_id)
         except Exception as error:
             if isinstance(error, _TaskExpired) or record.expires_at_ms <= time.time() * 1000:
                 self._expire(record)
@@ -293,26 +427,30 @@ class LoginRuntime:
                         pass
             elif self._stopping:
                 if self._redis_queue is not None:
-                    await self._requeue(record)
+                    requeue_on_exit = True
                 else:
                     self._expire(record)
             else:
                 record.error = (
-                    "LDPlayer adapter is not implemented. Set EMULATOR_DRIVER=mock."
-                    if self.config.emulator_driver != "mock"
-                    else "Could not prepare the simulated login QR code. Please create a new login request."
+                    str(error) if isinstance(error, _WorkerError)
+                    else SAFE_TASK_ERROR if self.config.emulator_driver == "mock"
+                    else SAFE_DRIVER_ERRORS["unexpected_error"]
                 )
                 try:
                     await self._set_status(record, "failed")
                 except _TaskExpired:
                     self._expire(record)
                 except _WorkerStopping:
-                    await self._requeue(record)
+                    requeue_on_exit = True
                 self._pending_deletes.add(task_id)
         finally:
             child = self._children.pop(task_id, None)
             if child is not None:
                 self._kill(child)
+            if requeue_on_exit:
+                await self._release_and_requeue(record)
+            elif self.config.emulator_driver == "ldplayer" and not keep_ldplayer:
+                await self._cleanup_ldplayer(task_id)
 
     async def _sweep_loop(self) -> None:
         while not self._stopping:

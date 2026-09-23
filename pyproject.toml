@@ -22,7 +22,7 @@ include = ["naruto_daily*"]
 
 [tool.setuptools.package-data]
 "naruto_daily.multimodal.agent" = ["README.md"]
-"naruto_daily.login_service" = ["README.md", ".env.example"]
+"naruto_daily.login_service" = ["README.md", ".env.example", "templates/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

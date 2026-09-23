@@ -30,13 +30,19 @@ class ServiceConfig:
     retention_ms: int = 60_000
     step_delay_ms: int = 600
     emulator_driver: str = "mock"
+    ldplayer_console_path: Path | None = None
+    ldplayer_template: str = ""
+    ldplayer_pool_indices: tuple[int, ...] = ()
+    ldplayer_state_dir: Path = PROJECT_ROOT / ".data/login-service/ldplayer"
+    ldplayer_package: str = "com.tencent.KiHan"
+    ldplayer_command_timeout_seconds: int = 20
     sweep_interval_ms: int = 250
     storage_sweep_interval_ms: int = 10_000
     oss_region: str = ""
     oss_bucket: str = ""
     oss_access_key_id: str = ""
-    oss_access_key_secret: str = ""
-    oss_sts_token: str | None = None
+    oss_access_key_secret: str = field(default="", repr=False)
+    oss_sts_token: str | None = field(default=None, repr=False)
 
 
 def _integer(env: Mapping[str, str], name: str, fallback: int, minimum: int, maximum: int) -> int:
@@ -71,6 +77,40 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
     emulator_driver = env.get("EMULATOR_DRIVER", "mock")
     if emulator_driver not in {"mock", "ldplayer"}:
         raise ValueError("EMULATOR_DRIVER must be mock or ldplayer")
+    console_value = env.get("LDPLAYER_CONSOLE_PATH", "").strip()
+    ldplayer_console_path = Path(console_value) if console_value else None
+    if ldplayer_console_path is not None and not ldplayer_console_path.is_absolute():
+        ldplayer_console_path = PROJECT_ROOT / ldplayer_console_path
+    if ldplayer_console_path is not None:
+        ldplayer_console_path = ldplayer_console_path.resolve()
+    ldplayer_template = env.get("LDPLAYER_TEMPLATE", "").strip()
+    pool_value = env.get("LDPLAYER_POOL_INDICES", "").strip()
+    if pool_value:
+        pool_parts = [part.strip() for part in pool_value.split(",")]
+        if any(not re.fullmatch(r"\d+", part) for part in pool_parts):
+            raise ValueError("Invalid LDPLAYER_POOL_INDICES")
+        ldplayer_pool_indices = tuple(int(part) for part in pool_parts)
+        if len(set(ldplayer_pool_indices)) != len(ldplayer_pool_indices):
+            raise ValueError("Invalid LDPLAYER_POOL_INDICES")
+    else:
+        ldplayer_pool_indices = ()
+    state_dir = Path(env.get(
+        "LDPLAYER_STATE_DIR", str(ServiceConfig.ldplayer_state_dir),
+    ))
+    if not state_dir.is_absolute():
+        state_dir = PROJECT_ROOT / state_dir
+    state_dir = state_dir.resolve()
+    ldplayer_package = env.get("LDPLAYER_PACKAGE", "com.tencent.KiHan").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", ldplayer_package):
+        raise ValueError("Invalid LDPLAYER_PACKAGE")
+    if emulator_driver == "ldplayer":
+        if ldplayer_console_path is None or not ldplayer_console_path.is_file():
+            raise ValueError("LDPLAYER_CONSOLE_PATH must name an existing file")
+        if (not ldplayer_pool_indices
+                and (not ldplayer_template or any(ord(character) < 32 for character in ldplayer_template))):
+            raise ValueError("LDPLAYER_TEMPLATE must name a clean stopped template")
+        if ldplayer_pool_indices and redis_url is None:
+            raise ValueError("LDPLAYER_POOL_INDICES requires REDIS_URL worker mode")
     key_prefix = env.get("OSS_KEY_PREFIX", "login").strip("/")
     if not re.fullmatch(r"[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*", key_prefix):
         raise ValueError("Invalid OSS_KEY_PREFIX")
@@ -109,5 +149,13 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         retention_ms=_integer(env, "TASK_RETENTION_MS", 60_000, 0, 3_600_000),
         step_delay_ms=_integer(env, "MOCK_STEP_DELAY_MS", 600, 0, 10_000),
         emulator_driver=emulator_driver,
+        ldplayer_console_path=ldplayer_console_path,
+        ldplayer_template=ldplayer_template,
+        ldplayer_pool_indices=ldplayer_pool_indices,
+        ldplayer_state_dir=state_dir,
+        ldplayer_package=ldplayer_package,
+        ldplayer_command_timeout_seconds=_integer(
+            env, "LDPLAYER_COMMAND_TIMEOUT_SECONDS", 20, 1, 300,
+        ),
         **oss,
     )

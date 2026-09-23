@@ -3,6 +3,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+import json
 import os
 import secrets
 from uuid import uuid4
@@ -11,7 +12,7 @@ import pytest
 
 from naruto_daily.login_service.config import PROJECT_ROOT, ServiceConfig, load_config
 from naruto_daily.login_service.models import HttpError, MAX_TTL_MS, equal_secret, parse_submission
-from naruto_daily.login_service.queue import MockRedisQueue
+from naruto_daily.login_service.queue import MockRedisQueue, SAFE_DRIVER_ERRORS
 from naruto_daily.login_service.runtime import LoginRuntime
 
 
@@ -67,13 +68,78 @@ def test_config_defaults_and_project_relative_storage(monkeypatch, tmp_path):
     assert config.local_storage_dir == PROJECT_ROOT / ".data/login-service/objects"
     assert load_config({"LOCAL_STORAGE_DIR": "relative-objects"}).local_storage_dir == PROJECT_ROOT / "relative-objects"
     assert load_config({"LOCAL_STORAGE_DIR": str(tmp_path)}).local_storage_dir == tmp_path
+    assert config.ldplayer_console_path is None
+    assert config.ldplayer_template == ""
+    assert config.ldplayer_pool_indices == ()
+    assert config.ldplayer_state_dir == PROJECT_ROOT / ".data/login-service/ldplayer"
+    assert config.ldplayer_package == "com.tencent.KiHan"
+    assert config.ldplayer_command_timeout_seconds == 20
+
+
+def test_ldplayer_config_resolves_paths_and_redacts_oss_secrets(tmp_path):
+    console = tmp_path / "dnconsole.exe"
+    console.write_bytes(b"")
+    config = load_config({
+        "REDIS_URL": "redis://localhost/0",
+        "EMULATOR_DRIVER": "ldplayer",
+        "LDPLAYER_CONSOLE_PATH": str(console),
+        "LDPLAYER_TEMPLATE": "clean-login-template",
+        "LDPLAYER_STATE_DIR": "relative-state",
+        "LDPLAYER_PACKAGE": "example.game",
+        "LDPLAYER_COMMAND_TIMEOUT_SECONDS": "31",
+        "OSS_ACCESS_KEY_SECRET": "private-oss-secret",
+        "OSS_STS_TOKEN": "private-sts-token",
+    })
+    assert config.ldplayer_console_path == console
+    assert config.ldplayer_template == "clean-login-template"
+    assert config.ldplayer_state_dir == PROJECT_ROOT / "relative-state"
+    assert config.ldplayer_package == "example.game"
+    assert config.ldplayer_command_timeout_seconds == 31
+    assert "private-oss-secret" not in repr(config)
+    assert "private-sts-token" not in repr(config)
+
+
+def test_ldplayer_pool_config_does_not_require_clone_template(tmp_path):
+    console = tmp_path / "dnconsole.exe"
+    console.write_bytes(b"")
+    config = load_config({
+        "REDIS_URL": "redis://localhost/0",
+        "EMULATOR_DRIVER": "ldplayer",
+        "LDPLAYER_CONSOLE_PATH": str(console),
+        "LDPLAYER_POOL_INDICES": "0, 2",
+    })
+    assert config.ldplayer_pool_indices == (0, 2)
+    assert config.ldplayer_template == ""
+
+
+def test_ldplayer_pool_requires_redis_worker_mode(tmp_path):
+    console = tmp_path / "dnconsole.exe"
+    console.write_bytes(b"")
+    with pytest.raises(ValueError, match="REDIS_URL"):
+        load_config({
+            "EMULATOR_DRIVER": "ldplayer", "LDPLAYER_CONSOLE_PATH": str(console),
+            "LDPLAYER_POOL_INDICES": "0,2",
+        })
+
+
+@pytest.mark.parametrize("env", [
+    {"EMULATOR_DRIVER": "ldplayer"},
+    {"EMULATOR_DRIVER": "ldplayer", "LDPLAYER_CONSOLE_PATH": "missing.exe", "LDPLAYER_TEMPLATE": "clean"},
+    {"EMULATOR_DRIVER": "ldplayer", "LDPLAYER_CONSOLE_PATH": __file__, "LDPLAYER_TEMPLATE": ""},
+])
+def test_ldplayer_config_rejects_missing_console_or_template(env):
+    with pytest.raises(ValueError, match="LDPLAYER"):
+        load_config(env)
 
 
 @pytest.mark.parametrize("env", [
     {"HOST": "0.0.0.0"}, {"SERVICE_TOKEN": "short"}, {"PORT": "not-a-number"},
     {"PORT": "-1"}, {"WORKER_CONCURRENCY": "0"}, {"MAX_TASKS": "1.2"},
     {"STORAGE_DRIVER": "bad"}, {"EMULATOR_DRIVER": "bad"}, {"OSS_KEY_PREFIX": "../unsafe"},
-    {"STORAGE_DRIVER": "oss"},
+    {"STORAGE_DRIVER": "oss"}, {"LDPLAYER_COMMAND_TIMEOUT_SECONDS": "0"},
+    {"LDPLAYER_POOL_INDICES": "0,0"}, {"LDPLAYER_POOL_INDICES": "0,00"},
+    {"LDPLAYER_POOL_INDICES": "-1,2"},
+    {"LDPLAYER_POOL_INDICES": "0,"}, {"LDPLAYER_POOL_INDICES": "zero,2"},
 ])
 def test_config_rejects_invalid_values(env):
     with pytest.raises(ValueError):
@@ -317,17 +383,215 @@ def test_shutdown_terminates_and_reaps_child():
     asyncio.run(scenario())
 
 
-def test_unsupported_ldplayer_fails_explicitly():
+def test_ldplayer_start_rejects_incomplete_direct_config():
     async def scenario():
         runtime = LoginRuntime(ServiceConfig(emulator_driver="ldplayer"), MemoryStorage())
+        with pytest.raises(ValueError, match="LDPLAYER"):
+            await runtime.start()
+    asyncio.run(scenario())
+
+
+def test_ldplayer_pool_start_rejects_local_http_mode(tmp_path):
+    async def scenario():
+        runtime = LoginRuntime(ServiceConfig(
+            emulator_driver="ldplayer", ldplayer_console_path=tmp_path / "dnconsole.exe",
+            ldplayer_pool_indices=(0, 2),
+        ), MemoryStorage())
+        runtime.config.ldplayer_console_path.write_bytes(b"")
+        with pytest.raises(ValueError, match="REDIS_URL"):
+            await runtime.start()
+    asyncio.run(scenario())
+
+
+class _OpenBytesIO(BytesIO):
+    def close(self):
+        pass
+
+
+class _ProtocolChild:
+    pid = 98765
+
+    def __init__(self, events, exit_code=0):
+        self.stdin = _OpenBytesIO()
+        self.stdout = _OpenBytesIO(b"".join(
+            json.dumps(event).encode("utf-8") + b"\n" for event in events
+        ))
+        self.exit_code = exit_code
+        self.killed = False
+
+    def poll(self):
+        return self.exit_code
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self):
+        return self.exit_code
+
+
+class _BlockingOutput:
+    def __init__(self, child):
+        self.child = child
+
+    def readline(self, _limit):
+        self.child.finished.wait()
+        return b""
+
+    def close(self):
+        pass
+
+
+class _BlockingChild:
+    pid = 98766
+
+    def __init__(self):
+        import threading
+        self.stdin = _OpenBytesIO()
+        self.finished = threading.Event()
+        self.stdout = _BlockingOutput(self)
+
+    def poll(self):
+        return -9 if self.finished.is_set() else None
+
+    def kill(self):
+        self.finished.set()
+
+    def wait(self):
+        self.finished.wait()
+        return -9
+
+
+def _ldplayer_config(tmp_path):
+    console = tmp_path / "dnconsole.exe"
+    console.write_bytes(b"")
+    return ServiceConfig(
+        emulator_driver="ldplayer", ldplayer_console_path=console,
+        ldplayer_template="clean-template", ldplayer_state_dir=tmp_path / "state",
+        ldplayer_package="example.game", ldplayer_command_timeout_seconds=23,
+    )
+
+
+def test_ldplayer_worker_protocol_is_secret_free_and_ready_instance_is_kept(monkeypatch, tmp_path):
+    png = b"\x89PNG\r\n\x1a\nfixture"
+    child = _ProtocolChild([
+        {"type": "stage", "status": "opening_game"},
+        {"type": "stage", "status": "preparing_qr"},
+        {"type": "qr", "png": __import__("base64").b64encode(png).decode("ascii")},
+    ])
+    spawned = {}
+
+    def popen(command, **kwargs):
+        spawned.update(command=command, kwargs=kwargs)
+        return child
+
+    monkeypatch.setenv("REDIS_URL", "redis://user:private@host/0")
+    monkeypatch.setenv("OSS_ACCESS_KEY_SECRET", "private-oss-secret")
+    windows_paths = {
+        "SYSTEMDRIVE": "C:", "COMSPEC": r"C:\Windows\System32\cmd.exe",
+        "PATHEXT": ".COM;.EXE;.BAT;.CMD", "APPDATA": r"C:\Users\test\AppData\Roaming",
+        "LOCALAPPDATA": r"C:\Users\test\AppData\Local", "PROGRAMDATA": r"C:\ProgramData",
+        "ALLUSERSPROFILE": r"C:\ProgramData", "PROGRAMFILES": r"C:\Program Files",
+        "PROGRAMFILES(X86)": r"C:\Program Files (x86)",
+        "COMMONPROGRAMFILES": r"C:\Program Files\Common Files",
+        "COMMONPROGRAMFILES(X86)": r"C:\Program Files (x86)\Common Files",
+        "PUBLIC": r"C:\Users\Public", "HOMEDRIVE": "C:", "HOMEPATH": r"\Users\test",
+    }
+    for name, value in windows_paths.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("LOGIN_SERVICE_PRIVATE_SECRET", "must-not-enter-child")
+    monkeypatch.setattr("naruto_daily.login_service.runtime.subprocess.Popen", popen)
+    closed = []
+
+    async def scenario():
+        storage = MemoryStorage()
+        runtime = LoginRuntime(_ldplayer_config(tmp_path), storage)
+        monkeypatch.setattr(runtime, "_close_ldplayer", lambda task_id: closed.append(task_id))
+        await runtime.start()
+        try:
+            body = submission()
+            task_id = runtime.submit(body)
+            await eventually(lambda: runtime.get_task(task_id, body["accessToken"])["status"] == "qr_ready")
+            assert storage.objects[task_id][0] == png
+            assert closed == []
+            message = json.loads(child.stdin.getvalue())
+            assert message == {
+                "type": "start", "id": task_id, "expiresAt": body["expiresAt"],
+                "consolePath": str(tmp_path / "dnconsole.exe"),
+                "template": "clean-template", "poolIndices": [],
+                "stateDir": str(tmp_path / "state"),
+                "package": "example.game", "commandTimeout": 23,
+            }
+            assert spawned["command"][-2:] == ["-m", "naruto_daily.login_service.ldplayer_worker"]
+            assert "REDIS_URL" not in spawned["kwargs"]["env"]
+            assert "OSS_ACCESS_KEY_SECRET" not in spawned["kwargs"]["env"]
+            assert "LOGIN_SERVICE_PRIVATE_SECRET" not in spawned["kwargs"]["env"]
+            assert {name: spawned["kwargs"]["env"][name] for name in windows_paths} == windows_paths
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+    assert closed == []
+
+
+def test_ldplayer_worker_error_is_whitelisted_and_instance_is_closed(monkeypatch, tmp_path):
+    child = _ProtocolChild([{
+        "type": "error", "code": "qr_not_found",
+        "message": "redis://user:password@private-host should never escape",
+    }])
+    monkeypatch.setattr("naruto_daily.login_service.runtime.subprocess.Popen", lambda *a, **k: child)
+    closed = []
+
+    async def scenario():
+        runtime = LoginRuntime(_ldplayer_config(tmp_path), MemoryStorage())
+        monkeypatch.setattr(runtime, "_close_ldplayer", lambda task_id: closed.append(task_id))
         await runtime.start()
         try:
             body = submission()
             task_id = runtime.submit(body)
             await eventually(lambda: runtime.get_task(task_id, body["accessToken"])["status"] == "failed")
             view = runtime.get_task(task_id, body["accessToken"])
-            assert "LDPlayer adapter is not implemented" in view["error"]
-            assert runtime.stats["active"] == 0
+            assert view["error"] == SAFE_DRIVER_ERRORS["qr_not_found"]
+            assert "private-host" not in json.dumps(view)
+            await eventually(lambda: closed == [task_id])
+            assert closed == [task_id]
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
+def test_ldplayer_worker_shutdown_closes_unfinished_instance(monkeypatch, tmp_path):
+    child = _BlockingChild()
+    monkeypatch.setattr("naruto_daily.login_service.runtime.subprocess.Popen", lambda *a, **k: child)
+    closed = []
+
+    async def scenario():
+        runtime = LoginRuntime(_ldplayer_config(tmp_path), MemoryStorage())
+        monkeypatch.setattr(runtime, "_close_ldplayer", lambda task_id: closed.append(task_id))
+        await runtime.start()
+        task_id = runtime.submit(submission())
+        await eventually(lambda: task_id in runtime._children)
+        await asyncio.wait_for(runtime.stop(), 2)
+        assert child.poll() is not None
+        assert closed == [task_id]
+    asyncio.run(scenario())
+
+
+def test_ldplayer_worker_expiry_closes_unfinished_instance(monkeypatch, tmp_path):
+    child = _BlockingChild()
+    monkeypatch.setattr("naruto_daily.login_service.runtime.subprocess.Popen", lambda *a, **k: child)
+    closed = []
+
+    async def scenario():
+        runtime = LoginRuntime(_ldplayer_config(tmp_path), MemoryStorage())
+        monkeypatch.setattr(runtime, "_close_ldplayer", lambda task_id: closed.append(task_id))
+        await runtime.start()
+        try:
+            body = submission()
+            task_id = runtime.submit(body)
+            await eventually(lambda: task_id in runtime._children)
+            runtime._tasks[task_id].expires_at_ms = 0
+            assert runtime.get_task(task_id, body["accessToken"])["status"] == "expired"
+            await eventually(lambda: closed == [task_id])
+            assert child.poll() is not None
         finally:
             await runtime.stop()
     asyncio.run(scenario())
