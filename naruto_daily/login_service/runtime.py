@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -15,14 +16,28 @@ from typing import TYPE_CHECKING
 
 from .config import ServiceConfig
 from .models import HttpError, TaskRecord, UUID_PATTERN, equal_secret, parse_submission
-from .queue import MockRedisQueue
+from .queue import MockRedisQueue, RedisQueueError, RedisTaskQueue
 
 if TYPE_CHECKING:
     from .storage import ObjectStorage
 
 
+logger = logging.getLogger(__name__)
+
+
+class _TaskExpired(Exception):
+    pass
+
+
+class _WorkerStopping(Exception):
+    pass
+
+
 class LoginRuntime:
-    def __init__(self, config: ServiceConfig, storage: ObjectStorage | None = None) -> None:
+    def __init__(
+        self, config: ServiceConfig, storage: ObjectStorage | None = None,
+        *, redis_queue: RedisTaskQueue | None = None,
+    ) -> None:
         if storage is None:
             from .storage import create_storage
             storage = create_storage(config)
@@ -30,6 +45,7 @@ class LoginRuntime:
         self.storage = storage
         self._tasks: dict[str, TaskRecord] = {}
         self._queue: MockRedisQueue[str] = MockRedisQueue(config.max_queue_size)
+        self._redis_queue = redis_queue or (RedisTaskQueue(config) if config.redis_url else None)
         self._children: dict[str, subprocess.Popen[bytes]] = {}
         self._pending_deletes: set[str] = set()
         self._workers: list[asyncio.Task[None]] = []
@@ -44,10 +60,18 @@ class LoginRuntime:
             raise RuntimeError("A stopped LoginRuntime cannot be restarted")
         if self._initialized:
             return
-        await self.storage.initialize()
+        try:
+            if self._redis_queue is not None:
+                await self._redis_queue.initialize()
+            await self.storage.initialize()
+        except BaseException:
+            if self._redis_queue is not None:
+                await self._redis_queue.close()
+            raise
         self._next_storage_sweep_at = time.monotonic() + self.config.storage_sweep_interval_ms / 1000
         self._initialized = True
-        self._workers = [asyncio.create_task(self._consume()) for _ in range(self.config.concurrency)]
+        consume = self._consume_redis if self._redis_queue is not None else self._consume
+        self._workers = [asyncio.create_task(consume()) for _ in range(self.config.concurrency)]
         self._sweep_task = asyncio.create_task(self._sweep_loop())
 
     @property
@@ -55,6 +79,8 @@ class LoginRuntime:
         return {"queued": self._queue.length, "active": len(self._children), "tasks": len(self._tasks)}
 
     def submit(self, body: object) -> str:
+        if self._redis_queue is not None:
+            raise HttpError(503, "Submit login requests through the TypeScript client")
         if self._stopping or not self._initialized:
             raise HttpError(503, "Service is unavailable")
         record = parse_submission(body)
@@ -71,6 +97,39 @@ class LoginRuntime:
             del self._tasks[record.id]
             raise HttpError(429, "Queue is full; retry later")
         return record.id
+
+    async def _retry_pause(self) -> None:
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), 1)
+        except TimeoutError:
+            pass
+
+    async def _set_status(self, record: TaskRecord, status: str) -> None:
+        warned = False
+        while self._redis_queue is not None:
+            if record.expires_at_ms <= time.time() * 1000:
+                raise _TaskExpired
+            try:
+                if not await self._redis_queue.set_status(record, status, record.error):
+                    raise _TaskExpired
+                break
+            except RedisQueueError:
+                if self._stopping:
+                    raise _WorkerStopping from None
+                if not warned:
+                    logger.warning("Redis status update unavailable; retrying task %s", record.id)
+                    warned = True
+                await self._retry_pause()
+        record.status = status
+        logger.info("Task %s: %s", record.id, status)
+
+    async def _requeue(self, record: TaskRecord) -> None:
+        assert self._redis_queue is not None
+        try:
+            if await self._redis_queue.requeue(record):
+                logger.info("Task %s: returned to Redis for the next worker", record.id)
+        except RedisQueueError:
+            logger.warning("Could not return task %s to Redis; create a new request if it expires", record.id)
 
     @staticmethod
     def _kill(child: subprocess.Popen[bytes]) -> None:
@@ -146,7 +205,7 @@ class LoginRuntime:
                         if record.expires_at_ms <= time.time() * 1000:
                             self._expire(record)
                         if record.status != "expired" and not self._stopping:
-                            record.status = event["status"]
+                            await self._set_status(record, event["status"])
                     elif event.get("type") == "qr" and isinstance(event.get("png"), str):
                         candidate = base64.b64decode(event["png"], validate=True)
                         if candidate.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -169,36 +228,91 @@ class LoginRuntime:
             record = self._lookup(task_id)
             if record is None or record.status == "expired" or self._stopping:
                 continue
+            await self._process_record(record)
+
+    async def _consume_redis(self) -> None:
+        assert self._redis_queue is not None
+        disconnected = False
+        while not self._stopping:
+            if len(self._tasks) >= self.config.max_tasks:
+                await self._retry_pause()
+                continue
             try:
-                if self.config.emulator_driver != "mock":
-                    raise RuntimeError("LDPlayer adapter is not implemented")
-                record.status = "starting_emulator"
-                png = await self._run_mock(record)
-                if record.expires_at_ms <= time.time() * 1000 or self._stopping:
-                    self._expire(record)
+                record = await self._redis_queue.pop()
+                if disconnected:
+                    logger.info("Redis connection restored")
+                    disconnected = False
+                if record is None:
                     continue
-                await self.storage.put(task_id, png, record.expires_at)
-                if record.expires_at_ms <= time.time() * 1000 or self._stopping:
-                    self._expire(record)
+            except (HttpError, ValueError):
+                logger.warning("Skipped an invalid or expired Redis login task")
+                continue
+            except RedisQueueError:
+                if not disconnected:
+                    logger.warning("Redis is unavailable; waiting to reconnect")
+                    disconnected = True
+                await self._retry_pause()
+                continue
+            if self._stopping:
+                await self._requeue(record)
+                return
+            self._tasks[record.id] = record
+            await self._process_record(record)
+
+    async def _process_record(self, record: TaskRecord) -> None:
+        task_id = record.id
+        uploaded = False
+        try:
+            if self.config.emulator_driver != "mock":
+                raise RuntimeError("LDPlayer adapter is not implemented")
+            await self._set_status(record, "starting_emulator")
+            if self._stopping:
+                raise _WorkerStopping
+            png = await self._run_mock(record)
+            if record.expires_at_ms <= time.time() * 1000:
+                raise _TaskExpired
+            if self._stopping:
+                raise _WorkerStopping
+            await self.storage.put(task_id, png, record.expires_at)
+            uploaded = True
+            if record.expires_at_ms <= time.time() * 1000:
+                raise _TaskExpired
+            if self._stopping and self._redis_queue is None:
+                raise _WorkerStopping
+            await self._set_status(record, "qr_ready")
+        except Exception as error:
+            if isinstance(error, _TaskExpired) or record.expires_at_ms <= time.time() * 1000:
+                self._expire(record)
+                if uploaded:
+                    # The sweeper may have deleted the object before a slow upload finished.
                     self._pending_deletes.add(task_id)
-                    await self.storage.delete(task_id)
+                    try:
+                        await self.storage.delete(task_id)
+                        self._pending_deletes.discard(task_id)
+                    except Exception:
+                        pass
+            elif self._stopping:
+                if self._redis_queue is not None:
+                    await self._requeue(record)
                 else:
-                    record.status = "qr_ready"
-            except Exception:
-                if record.expires_at_ms <= time.time() * 1000:
                     self._expire(record)
-                elif not self._stopping:
-                    record.status = "failed"
-                    record.error = (
-                        "LDPlayer adapter is not implemented. Set EMULATOR_DRIVER=mock."
-                        if self.config.emulator_driver != "mock"
-                        else "Could not prepare the simulated login QR code. Please create a new login request."
-                    )
-                    self._pending_deletes.add(task_id)
-            finally:
-                child = self._children.pop(task_id, None)
-                if child is not None:
-                    self._kill(child)
+            else:
+                record.error = (
+                    "LDPlayer adapter is not implemented. Set EMULATOR_DRIVER=mock."
+                    if self.config.emulator_driver != "mock"
+                    else "Could not prepare the simulated login QR code. Please create a new login request."
+                )
+                try:
+                    await self._set_status(record, "failed")
+                except _TaskExpired:
+                    self._expire(record)
+                except _WorkerStopping:
+                    await self._requeue(record)
+                self._pending_deletes.add(task_id)
+        finally:
+            child = self._children.pop(task_id, None)
+            if child is not None:
+                self._kill(child)
 
     async def _sweep_loop(self) -> None:
         while not self._stopping:
@@ -241,9 +355,13 @@ class LoginRuntime:
         await asyncio.gather(*self._workers, return_exceptions=True)
         if self._sweep_task is not None:
             await self._sweep_task
+        # Ready OSS images remain available to the client until their own expiry.
+        to_delete = self._pending_deletes if self._redis_queue is not None else set(self._tasks) | self._pending_deletes
         await asyncio.gather(
-            *(self.storage.delete(task_id) for task_id in set(self._tasks) | self._pending_deletes),
+            *(self.storage.delete(task_id) for task_id in to_delete),
             return_exceptions=True,
         )
+        if self._redis_queue is not None:
+            await self._redis_queue.close()
         self._tasks.clear()
         self._pending_deletes.clear()

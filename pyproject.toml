@@ -10,8 +10,8 @@ dependencies = ["numpy>=2", "opencv-python-headless>=4.10", "python-dotenv>=1.0"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-login-service = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "qrcode[pil]>=8,<9", "oss2>=2.19,<3"]
-login-service-test = ["pytest>=8", "httpx>=0.28,<1"]
+login-service = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "qrcode[pil]>=8,<9", "oss2>=2.19,<3", "redis>=5,<8"]
+login-service-test = ["pytest>=8", "httpx>=0.28,<1", "fakeredis[lua]>=2,<3"]
 
 [project.scripts]
 naruto-daily = "naruto_daily.cli:main"

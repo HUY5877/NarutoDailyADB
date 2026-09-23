@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import hmac
 import re
@@ -39,6 +39,7 @@ class TaskRecord:
     expires_at_ms: float
     status: str = "queued"
     error: str | None = None
+    _queue_payload: str | None = field(default=None, repr=False, compare=False)
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {
@@ -50,17 +51,10 @@ class TaskRecord:
         return view
 
 
-def parse_submission(body: object) -> TaskRecord:
-    if not isinstance(body, dict):
-        raise HttpError(400, "Invalid task body")
-    task_id, token = body.get("id"), body.get("accessToken")
-    created_at, expires_at = body.get("createdAt"), body.get("expiresAt")
-    if (not isinstance(task_id, str) or not UUID_PATTERN.fullmatch(task_id)
-            or not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token)
-            or not isinstance(created_at, str) or not isinstance(expires_at, str)):
-        raise HttpError(400, "Expected UUID id, 64-character hex accessToken and ISO timestamps")
+def _validate_timestamps(created_at: object, expires_at: object) -> float:
     invalid_timestamps = "Task timestamps must be recent; expiry must be in the future and within 10 minutes"
-    if not ISO_PATTERN.fullmatch(created_at) or not ISO_PATTERN.fullmatch(expires_at):
+    if (not isinstance(created_at, str) or not isinstance(expires_at, str)
+            or not ISO_PATTERN.fullmatch(created_at) or not ISO_PATTERN.fullmatch(expires_at)):
         raise HttpError(400, invalid_timestamps)
     try:
         created, expires = timestamp_ms(created_at), timestamp_ms(expires_at)
@@ -70,4 +64,34 @@ def parse_submission(body: object) -> TaskRecord:
     if (created > now + 5000 or created < now - MAX_TTL_MS or expires <= now
             or expires <= created or expires - created > MAX_TTL_MS or expires - now > MAX_TTL_MS):
         raise HttpError(400, invalid_timestamps)
+    return expires
+
+
+def parse_submission(body: object) -> TaskRecord:
+    if not isinstance(body, dict):
+        raise HttpError(400, "Invalid task body")
+    task_id, token = body.get("id"), body.get("accessToken")
+    created_at, expires_at = body.get("createdAt"), body.get("expiresAt")
+    if (not isinstance(task_id, str) or not UUID_PATTERN.fullmatch(task_id)
+            or not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token)
+            or not isinstance(created_at, str) or not isinstance(expires_at, str)):
+        raise HttpError(400, "Expected UUID id, 64-character hex accessToken and ISO timestamps")
+    expires = _validate_timestamps(created_at, expires_at)
     return TaskRecord(task_id.lower(), token, created_at, expires_at, expires)
+
+
+def parse_queue_task(body: object, key_prefix: str) -> TaskRecord:
+    """Validate the shared TypeScript queue envelope without a bearer token."""
+    if not isinstance(body, dict):
+        raise HttpError(400, "Invalid queue task")
+    task_id = body.get("id")
+    if (type(body.get("version")) is not int or body["version"] != 1
+            or not isinstance(task_id, str) or not UUID_PATTERN.fullmatch(task_id)
+            or task_id != task_id.lower()
+            or not isinstance(key_prefix, str)
+            or not re.fullmatch(r"[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*", key_prefix)
+            or body.get("objectKey") != f"{key_prefix}/{task_id}/qr.png"):
+        raise HttpError(400, "Invalid queue task")
+    created_at, expires_at = body.get("createdAt"), body.get("expiresAt")
+    expires = _validate_timestamps(created_at, expires_at)
+    return TaskRecord(task_id, "", created_at, expires_at, expires)

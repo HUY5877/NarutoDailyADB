@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import re
 from typing import Mapping
+from urllib.parse import urlsplit
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +16,8 @@ DEFAULT_SERVICE_TOKEN = "local-development-token"
 
 @dataclass(frozen=True)
 class ServiceConfig:
+    redis_url: str | None = field(default=None, repr=False)
+    redis_queue_key: str = "naruto:login:tasks"
     host: str = "127.0.0.1"
     port: int = 4320
     service_token: str = DEFAULT_SERVICE_TOKEN
@@ -48,6 +51,20 @@ def _integer(env: Mapping[str, str], name: str, fallback: int, minimum: int, max
 
 def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
     env = os.environ if env is None else env
+    redis_url = env.get("REDIS_URL", "").strip() or None
+    if redis_url:
+        try:
+            address = urlsplit(redis_url)
+            if (address.scheme not in {"redis", "rediss"} or not address.hostname
+                    or address.query or address.fragment
+                    or not re.fullmatch(r"/\d*", address.path or "/")
+                    or (address.port is not None and not 1 <= address.port <= 65535)):
+                raise ValueError
+        except ValueError:
+            raise ValueError("REDIS_URL must be a valid redis:// or rediss:// URL") from None
+    redis_queue_key = env.get("REDIS_QUEUE_KEY", "naruto:login:tasks")
+    if not re.fullmatch(r"[a-zA-Z0-9_:{}-]{1,128}", redis_queue_key):
+        raise ValueError("Invalid REDIS_QUEUE_KEY")
     storage_driver = env.get("STORAGE_DRIVER", "local")
     if storage_driver not in {"local", "oss"}:
         raise ValueError("STORAGE_DRIVER must be local or oss")
@@ -78,6 +95,8 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
     if not local_storage_dir.is_absolute():
         local_storage_dir = PROJECT_ROOT / local_storage_dir
     return ServiceConfig(
+        redis_url=redis_url,
+        redis_queue_key=redis_queue_key,
         host=host,
         port=_integer(env, "PORT", 4320, 0, 65535),
         service_token=service_token,
