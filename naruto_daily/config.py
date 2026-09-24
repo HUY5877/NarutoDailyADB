@@ -747,11 +747,23 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
     return
 
 
-def load_settings(path: Path) -> Settings:
+def load_settings(path: Path, *, skip_account_login: bool = False) -> Settings:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigError(f"无法加载配置：{exc}") from exc
+    if skip_account_login:
+        tasks = payload.get("tasks") if isinstance(payload, dict) else None
+        login = tasks.get("login") if isinstance(tasks, dict) else None
+        if not isinstance(login, list):
+            raise ConfigError("扫码登录配置必须包含 tasks.login 动作列表")
+        start = next((index for index, action in enumerate(login)
+                      if isinstance(action, dict)
+                      and action.get("type") == "finish_login_authorization"), None)
+        if start is None:
+            raise ConfigError("扫码登录配置缺少 finish_login_authorization 衔接动作")
+        # 扫码已经替代账号选择；先移除旧登录前缀，避免要求保存账号的环境变量。
+        tasks["login"] = login[start:]
     try:
         payload = resolve_environment(payload, read_environment(Path(path).parent))
     except EnvironmentConfigError as exc:

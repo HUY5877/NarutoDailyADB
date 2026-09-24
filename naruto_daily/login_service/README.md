@@ -1,14 +1,14 @@
 # Python 扫码登录 worker
 
-本模块位于现有 `NarutoDailyADB` Python 项目中，与日常自动化独立运行。启动命令仅运行常驻 Redis worker，`REDIS_URL` 为必填项；未配置或为空时会明确报错并以退出码 1 结束，**不开放 HTTP 端口**。
+本模块位于现有 `NarutoDailyADB` Python 项目中，作为常驻 Redis worker 接收扫码任务，并在扫码登录后复用原完整日常流程。`REDIS_URL` 为必填项；未配置或为空时会明确报错并以退出码 1 结束，**不开放 HTTP 端口**。
 
 网站或 Vercel 上的 `NarutoLoginClient` TypeScript 后端生成 UUID 和独立访问凭证，将登录任务写入 Redis。Python 从同一个 Redis 队列消费任务，为每项任务启动独立 Python 子进程。`mock` 驱动生成模拟二维码；`ldplayer` 驱动从固定实例池分配一个雷电实例、打开游戏并导航到二维码登录，把真实二维码 PNG 写入 OSS，再将阶段状态回写 Redis。客户端后端查询 Redis 状态并读取 OSS，浏览器通过客户端后端显示图片；网站无需通过 HTTP 连接本机 Python。留空实例池并配置模板时，仍兼容原有的复制实例模式。
 
-`mock` 驱动的二维码仅用于联调，不能登录真实游戏。`ldplayer` 驱动只负责生成真实登录二维码；扫码后的账号绑定、会话接管和日常任务启动属于后续流程，本 worker 不会运行日常任务。
+`mock` 驱动的二维码仅用于联调，不能登录真实游戏，也不运行日常。`ldplayer` 子进程生成二维码后继续等待扫码；父进程收到二维码即上传并回写 `qr_ready`。子进程复用原登录模块完成可选第二次授权、开始游戏、清理弹窗和回到主界面，确认登录成功后在同一子进程、同一 ADB serial 上继续执行原 `run all` 的后续日常动作。
 
 点击“扫码登录”后只等待二维码加载，最多等待 30 秒，不重复点击该按钮或“其他登录方式”。进入 QQ 消息首页会停止任务；上传内容仅为授权二维码裁剪图。
 
-后续系统必须先确认用户已完成本次新二维码的扫码授权，再把该实例绑定到账号并运行日常任务。仅生成或展示二维码不能证明授权成功。
+仅生成或展示二维码不能证明授权成功。服务不会执行原保存账号的选择/授权前缀，也不要求 `LOGIN_ACCOUNT_NAME`；从原配置中的 `finish_login_authorization` 衔接，确认主界面后才开始日常。原日常任务的内容和执行顺序保持一致。
 
 ## 配置和启动
 
@@ -34,7 +34,7 @@ REDIS_URL=redis://127.0.0.1:6379/0
 
 其他环境使用 `python -m naruto_daily.login_service`，安装后的 `naruto-login-service` 命令也可用。worker 会持续等待并消费任务；暂时断线会自动重连，停止时按 `Ctrl+C`。
 
-也可用 `--env-file <路径>` 指定配置文件。进程环境变量优先于文件；服务不会自动读取原日常脚本的根目录 `.env`，避免混用配置。Redis 凭据和 OSS 密钥只放在服务端配置中，不放进浏览器或提交到仓库。
+也可用 `--env-file <路径>` 指定服务配置文件，进程环境变量优先。Redis/OSS 配置从服务环境读取；日常任务通过 `DAILY_CONFIG_PATH` 加载 JSON，并沿用原规则读取该 JSON 所在目录的 `.env`。多模态配置也可以放在服务环境中，三项 `MULTIMODAL_BASE_URL`、`MULTIMODAL_MODEL`、`MULTIMODAL_API_KEY` 会单独传给日常子进程。凭据不放进浏览器或提交到仓库。
 
 | 变量 | 默认值与用途 |
 | --- | --- |
@@ -51,12 +51,16 @@ REDIS_URL=redis://127.0.0.1:6379/0
 | `LDPLAYER_STATE_DIR` | `.data/login-service/ldplayer`，任务与实例状态目录；相对项目根目录解析 |
 | `LDPLAYER_PACKAGE` | `com.tencent.KiHan`，游戏 Android 包名 |
 | `LDPLAYER_COMMAND_TIMEOUT_SECONDS` | `20`，单条雷电控制台命令的超时秒数 |
+| `DAILY_CONFIG_PATH` | 项目根目录的 `config.example.json`；复用原日常任务配置，相对路径以项目根目录解析 |
+| `DAILY_TIMEOUT_SECONDS` | `7200`，确认进入游戏主界面后开始计时的日常总超时，范围 1–86400 秒 |
+
+日常 JSON 及引用的图片必须一同保留，图片路径相对 JSON 所在目录解析。若通过 wheel 安装服务，请将原配置和完整 `assets/` 目录放在本机，并将 `DAILY_CONFIG_PATH` 指向该 JSON；无需修改 JSON 中原有的 `adb_path` 或 `serial`，执行时强制使用本次任务分配到的实例。
 
 固定实例池只支持 Redis worker 模式；配置 `LDPLAYER_POOL_INDICES` 时必须同时配置 `REDIS_URL`。旧 HTTP 本地演示只保留 `mock` 驱动，启动时会拒绝固定池配置，避免池满后错误地把任务取出并标记失败。
 
 客户端在其自己的环境中启动或部署。Python worker 所在机器需要能够连接 Redis 和 OSS，并在网站处理登录申请期间保持运行。网站/Vercel 和 Python 使用同一 Redis、数据库、队列、OSS Bucket、地域及对象前缀；客户端不需要配置指向本机 Python 的 `LOGIN_SERVICE_URL`。
 
-真实雷电冷启动、游戏启动和页面导航可能超过客户端默认的 120 秒。TypeScript 客户端建议设置 `SESSION_TTL_MS=600000`（10 分钟）；该值同时受本服务任务最大有效期 10 分钟限制。会话一旦过期，worker 会停止尚未完成的出码流程，客户端也无法继续查询该任务。
+真实雷电冷启动、游戏启动和等待扫码可能超过客户端默认的 120 秒。TypeScript 客户端建议设置 `SESSION_TTL_MS=600000`（10 分钟）；该值同时受本服务任务最大有效期 10 分钟限制。会话到期时仍未确认进入主界面，会停止子进程并释放实例；已经开始的日常任务使用独立超时继续运行，二维码和客户端会话仍按原 TTL 过期，不续期。
 
 ## Redis 消息和状态
 
@@ -78,7 +82,9 @@ TypeScript 后端通过 `LPUSH` 投递，Python 通过 `BRPOP` 按 FIFO 顺序�
 
 状态依次为 `queued`、`starting_emulator`、`opening_game`、`preparing_qr`、`qr_ready`；失败为 `failed`，过期为 `expired`。`qr_ready` 表示二维码已生成，不代表账号已登录。客户端会话中的 `simulation: true` 是现有跨服务协议的兼容字段，真实驱动也必须保持该值。worker 会跳过过期、格式无效或重复的任务。
 
-按 `Ctrl+C` 优雅停止时，worker 回收子进程并将未完成任务重新入队；已完成的二维码保留至过期。队列使用直接 `BRPOP`，没有消息确认与崩溃恢复机制：进程被强制终止或机器崩溃后，已取出的任务可能无法恢复，此时需要在网站重新申请。Redis 断线期间尚未完成的操作也受任务有效期限制。
+日常状态不写入原客户端的 `status` 白名单，独立保存在 `${LDPLAYER_STATE_DIR}/runs/<任务UUID>.json`。`status` 依次为 `preparing_qr`、`waiting_scan`、`running_daily`、`completed`，失败为 `failed`，服务停止为 `interrupted`；记录包含开始时间、截止时间、完成动作数或安全错误码，不含凭据。原网站目前只展示二维码，不展示日常进度或结果。
+
+按 `Ctrl+C` 优雅停止时，worker 回收子进程并关闭对应实例。出码前未过期的任务仍尝试重新入队；已发布二维码或已开始日常的任务记录为中断，不自动重排，以免重复执行游戏操作。队列使用直接 `BRPOP`，没有消息确认与崩溃恢复机制：进程被强制终止或机器崩溃后，需先检查本地运行记录和实例占用，再决定是否释放或重新申请。
 
 ## 保留的 HTTP 接口代码
 
@@ -108,17 +114,18 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 | `queue.py` / `runtime.py` | Redis 队列与内存演示队列、并发消费、状态回写和清理 |
 | `mock_emulator.py` | 每个任务单独启动的 Python 工作进程，生成模拟二维码 |
 | `ldplayer.py` / `ldplayer_worker.py` | 固定实例分配、持久绑定、启动和隔离工作进程 |
+| `daily.py` | 在任务绑定的 ADB 设备上复用原登录收尾和 `ActionRunner` 日常流程 |
 | `qr_navigation.py` / `templates/` | 页面识别、ADB 点击和真实二维码裁剪，不调用多模态 API |
 | `pool_admin.py` | 查看实例占用，按任务 ID 显式释放实例 |
 | `storage.py` | 本地与阿里云 OSS 存储适配 |
 
-子进程生成二维码后退出。真实雷电实例会继续运行以便用户扫码；成功到达 `qr_ready` 后，即使二维码对象过期也只删除图片，不会自动关闭或释放实例。未出码即失败或过期、worker 关闭中断任务时，会按任务 ID 执行 `quit` 并释放池槽，不会删除实例。后续绑定流程或管理员 CLI 必须显式释放成功任务占用的实例。
+子进程从生成二维码一直运行到等待扫码、确认登录和日常执行结束，期间始终占用同一实例。成功、失败、超时或优雅停止后，父进程按任务 ID 执行 `quit` 并释放池槽，不删除实例；若关闭失败，保留占位，并在运行记录中标记 `instance_cleanup_failed`，供管理员检查后通过 CLI 释放。
 
 释放池槽只会关闭雷电进程并解除任务对实例索引的占用，不会删除实例，也不会清除 QQ 或游戏的账号数据。固定池不提供账号数据擦除或账号隔离。为避免继承上一个任务仍在运行的登录页面，每次新任务启动实例后会先强制停止游戏和 QQ 进程，再重新打开游戏；这同样不会清除应用数据。
 
-配置 `LDPLAYER_POOL_INDICES=0,2` 时，最多只有两个 `active` 或 `qr_ready` 任务占用实例。第三个任务会保持在 Redis 的 `queued` 状态，直到管理员 CLI 释放一个槽位；排队期间仍遵守客户端会话 TTL，超时后不会再处理。`WORKER_CONCURRENCY=2` 只控制本进程同时生成二维码的 worker 数，不能扩大池容量。复制模式不受固定池容量限制。
+配置 `LDPLAYER_POOL_INDICES=0,1,2`、`WORKER_CONCURRENCY=3` 时，最多有三个任务同时占用实例，等待扫码和执行日常都计入占用。第四个任务保持在 Redis 的 `queued` 状态，直到已有任务结束并释放槽位；排队期间仍遵守客户端会话 TTL。并发数不能扩大实际实例池容量，冷启动管理操作仍通过锁依次执行。
 
-真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程只传任务 ID、有效期和雷电公开配置，不向子进程传 Redis URL 或 OSS 密钥；子进程错误只会转换为固定的安全提示。
+真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，不传 Redis URL 或 OSS 密钥；仅额外允许日常所需的三项多模态环境变量。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
 
 ## 对象存储
 

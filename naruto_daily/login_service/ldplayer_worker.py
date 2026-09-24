@@ -1,8 +1,9 @@
-"""Isolated LDPlayer QR-login worker using the parent's line protocol."""
+"""Isolated LDPlayer login and daily worker using the parent's line protocol."""
 
 from __future__ import annotations
 
 import base64
+from contextlib import redirect_stdout
 from datetime import datetime
 import json
 import math
@@ -27,6 +28,12 @@ def _load_dependencies():
     from .qr_navigation import LoginDevice, fetch_login_qr
 
     return LDPlayerManager, LDPlayerError, LoginDevice, fetch_login_qr
+
+
+def _load_daily_session():
+    from .daily import DailySession
+
+    return DailySession
 
 
 def _send(stream: TextIO, event: dict[str, object]) -> None:
@@ -100,6 +107,22 @@ def _is_timeout(error: BaseException, deadline: float, clock: Callable[[], float
     return "timed out" in message or "timeout" in message or "deadline" in message
 
 
+def _daily_options(message: dict[str, object]) -> tuple[Path, float] | None:
+    has_path = "dailyConfigPath" in message
+    has_timeout = "dailyTimeoutSeconds" in message
+    if not has_path and not has_timeout:
+        return None
+    if not has_path or not has_timeout:
+        raise ValueError
+    path, timeout = message["dailyConfigPath"], message["dailyTimeoutSeconds"]
+    if not isinstance(path, str) or not path.strip() or not Path(path).is_absolute():
+        raise ValueError
+    if (not isinstance(timeout, (int, float)) or isinstance(timeout, bool)
+            or not math.isfinite(timeout) or not 1 <= timeout <= 86_400):
+        raise ValueError
+    return Path(path), float(timeout)
+
+
 def main(
     *,
     input_stream=None,
@@ -123,6 +146,7 @@ def main(
             task_id, deadline, console_path, template, state_dir, package,
             command_timeout, pool_indices,
         ) = _validate(message, clock())
+        daily_options = _daily_options(message)
         if watchdog is not None:
             watchdog.cancel()
     except Exception:
@@ -152,6 +176,18 @@ def main(
         instance = manager.allocate(task_id, deadline)
         serial = manager.start(instance, deadline)
 
+        daily_session = None
+        if daily_options is not None:
+            phase = "configuration"
+            # The protocol stream is captured above; legacy task imports and
+            # prints must never become JSON events on the parent's stdout pipe.
+            with redirect_stdout(sys.stderr):
+                DailySession = _load_daily_session()
+                daily_session = DailySession(
+                    config_path=daily_options[0], adb_path=manager.adb_path,
+                    serial=serial, command_timeout=command_timeout,
+                )
+
         phase = "game"
         _send(output_stream, {"type": "stage", "status": "opening_game"})
         manager.launch_game(instance, package, deadline)
@@ -164,12 +200,33 @@ def main(
                 or len(png) > _MAX_PNG_BYTES):
             raise ValueError
         _send(output_stream, {"type": "qr", "png": base64.b64encode(png).decode("ascii")})
+        if daily_session is not None:
+            phase = "login"
+            with redirect_stdout(sys.stderr):
+                daily_session.wait_for_login(deadline)
+            if clock() >= deadline:
+                raise TimeoutError
+            _send(output_stream, {"type": "logged_in"})
+
+            phase = "daily"
+            deadline = clock() + daily_options[1]
+            with redirect_stdout(sys.stderr):
+                action_count = daily_session.run_daily(deadline)
+            if clock() >= deadline:
+                raise TimeoutError
+            if type(action_count) is not int or action_count < 0:
+                raise ValueError
+            _send(output_stream, {"type": "daily_completed", "actionCount": action_count})
         return 0
     except Exception as error:
-        if _is_timeout(error, deadline, clock):
-            code = "command_timeout"
-        elif phase == "configuration":
+        if phase == "configuration":
             code = "configuration_error"
+        elif phase == "login":
+            code = "login_timeout" if _is_timeout(error, deadline, clock) else "login_failed"
+        elif phase == "daily":
+            code = "daily_timeout" if _is_timeout(error, deadline, clock) else "daily_failed"
+        elif _is_timeout(error, deadline, clock):
+            code = "command_timeout"
         elif phase == "emulator" and isinstance(error, DriverError):
             code = "emulator_start_failed"
         elif phase == "game" and isinstance(error, DriverError):

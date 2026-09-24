@@ -36,6 +36,8 @@ class ServiceConfig:
     ldplayer_state_dir: Path = PROJECT_ROOT / ".data/login-service/ldplayer"
     ldplayer_package: str = "com.tencent.KiHan"
     ldplayer_command_timeout_seconds: int = 20
+    daily_config_path: Path = PROJECT_ROOT / "config.example.json"
+    daily_timeout_seconds: int = 7200
     sweep_interval_ms: int = 250
     storage_sweep_interval_ms: int = 10_000
     oss_region: str = ""
@@ -101,6 +103,13 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         state_dir = PROJECT_ROOT / state_dir
     state_dir = state_dir.resolve()
     ldplayer_package = env.get("LDPLAYER_PACKAGE", "com.tencent.KiHan").strip()
+    daily_value = env.get("DAILY_CONFIG_PATH", str(ServiceConfig.daily_config_path)).strip()
+    if not daily_value:
+        raise ValueError("DAILY_CONFIG_PATH must name the daily task configuration")
+    daily_config_path = Path(daily_value)
+    if not daily_config_path.is_absolute():
+        daily_config_path = PROJECT_ROOT / daily_config_path
+    daily_config_path = daily_config_path.resolve()
     if not re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", ldplayer_package):
         raise ValueError("Invalid LDPLAYER_PACKAGE")
     if emulator_driver == "ldplayer":
@@ -111,6 +120,8 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
             raise ValueError("LDPLAYER_TEMPLATE must name a clean stopped template")
         if ldplayer_pool_indices and redis_url is None:
             raise ValueError("LDPLAYER_POOL_INDICES requires REDIS_URL worker mode")
+        if not daily_config_path.is_file():
+            raise ValueError("DAILY_CONFIG_PATH must name an existing JSON configuration")
     key_prefix = env.get("OSS_KEY_PREFIX", "login").strip("/")
     if not re.fullmatch(r"[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*", key_prefix):
         raise ValueError("Invalid OSS_KEY_PREFIX")
@@ -153,6 +164,8 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         ldplayer_template=ldplayer_template,
         ldplayer_pool_indices=ldplayer_pool_indices,
         ldplayer_state_dir=state_dir,
+        daily_config_path=daily_config_path,
+        daily_timeout_seconds=_integer(env, "DAILY_TIMEOUT_SECONDS", 7200, 1, 86_400),
         ldplayer_package=ldplayer_package,
         ldplayer_command_timeout_seconds=_integer(
             env, "LDPLAYER_COMMAND_TIMEOUT_SECONDS", 20, 1, 300,

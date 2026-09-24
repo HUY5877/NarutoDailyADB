@@ -192,7 +192,8 @@ def test_capacity_probe_error_retries_without_losing_consumer(monkeypatch, tmp_p
         monkeypatch.setattr(runtime, "_ldplayer_manager", lambda: pool)
 
         async def finish(_record):
-            runtime._stop_event.set()
+            # Hold the fake job until shutdown, just like a real in-flight child.
+            await runtime._stop_event.wait()
 
         monkeypatch.setattr(runtime, "_process_record", finish)
         await runtime.start()

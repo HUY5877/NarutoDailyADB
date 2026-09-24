@@ -40,6 +40,9 @@ class TaskRecord:
     status: str = "queued"
     error: str | None = None
     _queue_payload: str | None = field(default=None, repr=False, compare=False)
+    qr_published: bool = False
+    daily_status: str | None = None
+    daily_started_at: float | None = None
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {

@@ -27,6 +27,10 @@ SAFE_DRIVER_ERRORS = {
     "qr_not_found": "Could not find the login QR code. Please create a new login request.",
     "command_timeout": "Login QR code preparation timed out. Please create a new login request.",
     "unexpected_error": "Could not prepare the login QR code. Please create a new login request.",
+    "login_timeout": "Timed out waiting for QR login confirmation.",
+    "login_failed": "Could not confirm the game login.",
+    "daily_timeout": "The daily task execution timed out.",
+    "daily_failed": "Could not complete the daily tasks.",
 }
 
 

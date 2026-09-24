@@ -471,12 +471,14 @@ def _ldplayer_config(tmp_path):
     )
 
 
-def test_ldplayer_worker_protocol_is_secret_free_and_ready_instance_is_kept(monkeypatch, tmp_path):
+def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_released(monkeypatch, tmp_path):
     png = b"\x89PNG\r\n\x1a\nfixture"
     child = _ProtocolChild([
         {"type": "stage", "status": "opening_game"},
         {"type": "stage", "status": "preparing_qr"},
         {"type": "qr", "png": __import__("base64").b64encode(png).decode("ascii")},
+        {"type": "logged_in"},
+        {"type": "daily_completed", "actionCount": 12},
     ])
     spawned = {}
 
@@ -512,7 +514,8 @@ def test_ldplayer_worker_protocol_is_secret_free_and_ready_instance_is_kept(monk
             task_id = runtime.submit(body)
             await eventually(lambda: runtime.get_task(task_id, body["accessToken"])["status"] == "qr_ready")
             assert storage.objects[task_id][0] == png
-            assert closed == []
+            await eventually(lambda: closed == [task_id])
+            assert runtime._tasks[task_id].daily_status == "completed"
             message = json.loads(child.stdin.getvalue())
             assert message == {
                 "type": "start", "id": task_id, "expiresAt": body["expiresAt"],
@@ -520,6 +523,8 @@ def test_ldplayer_worker_protocol_is_secret_free_and_ready_instance_is_kept(monk
                 "template": "clean-template", "poolIndices": [],
                 "stateDir": str(tmp_path / "state"),
                 "package": "example.game", "commandTimeout": 23,
+                "dailyConfigPath": str(runtime.config.daily_config_path),
+                "dailyTimeoutSeconds": runtime.config.daily_timeout_seconds,
             }
             assert spawned["command"][-2:] == ["-m", "naruto_daily.login_service.ldplayer_worker"]
             assert "REDIS_URL" not in spawned["kwargs"]["env"]
@@ -529,7 +534,7 @@ def test_ldplayer_worker_protocol_is_secret_free_and_ready_instance_is_kept(monk
         finally:
             await runtime.stop()
     asyncio.run(scenario())
-    assert closed == []
+    assert len(closed) == 1
 
 
 def test_ldplayer_worker_error_is_whitelisted_and_instance_is_closed(monkeypatch, tmp_path):

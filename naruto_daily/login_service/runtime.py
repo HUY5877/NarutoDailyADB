@@ -11,6 +11,7 @@ from pathlib import Path
 import secrets
 import subprocess
 import sys
+import tempfile
 import time
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,10 @@ class _WorkerStopping(Exception):
 
 class _WorkerError(Exception):
     """A worker failure already reduced to an approved public message."""
+
+    def __init__(self, message: str, code: str = "unexpected_error") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class LoginRuntime:
@@ -167,7 +172,7 @@ class LoginRuntime:
         record.status = "expired"
         record.error = None
         child = self._children.get(record.id)
-        if child is not None:
+        if child is not None and record.daily_started_at is None:
             self._kill(child)
         self._queue.remove(lambda task_id: task_id == record.id)
         self._pending_deletes.add(record.id)
@@ -192,13 +197,20 @@ class LoginRuntime:
 
     async def _run_child(
         self, record: TaskRecord, command: list[str], message: dict[str, object],
+        *, daily: bool = False,
     ) -> bytes:
         # Popen plus threaded pipe reads works with both Windows event-loop policies.
         # Only job-scoped public configuration enters the child; service/OSS secrets do not.
+        if daily:
+            self._set_daily_status(record, "preparing_qr")
         child_env = {
             key: value for key, value in os.environ.items()
             if key.upper() in _CHILD_ENV_ALLOWLIST
         }
+        if daily:
+            for name in ("MULTIMODAL_BASE_URL", "MULTIMODAL_MODEL", "MULTIMODAL_API_KEY"):
+                if name in os.environ:
+                    child_env[name] = os.environ[name]
         child = subprocess.Popen(
             command,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -208,10 +220,11 @@ class LoginRuntime:
         self._children[record.id] = child
         assert child.stdin is not None and child.stdout is not None
         png: bytes | None = None
+        action_count: int | None = None
         try:
             child.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
             child.stdin.close()
-            async with asyncio.timeout(max(0.001, record.expires_at_ms / 1000 - time.time())):
+            async with asyncio.timeout(max(0.001, record.expires_at_ms / 1000 - time.time())) as timeout:
                 while True:
                     line = await asyncio.to_thread(child.stdout.readline, 1_000_001)
                     if not line:
@@ -221,22 +234,52 @@ class LoginRuntime:
                     event = json.loads(line)
                     if not isinstance(event, dict):
                         raise ValueError("Invalid emulator output")
+                    if self._stopping:
+                        raise _WorkerStopping
                     if event.get("type") == "stage" and event.get("status") in (
                         "starting_emulator", "opening_game", "preparing_qr",
                     ):
+                        if daily and png is not None:
+                            raise ValueError("Unexpected login stage after QR publication")
                         if record.expires_at_ms <= time.time() * 1000:
                             self._expire(record)
                         if record.status != "expired" and not self._stopping:
                             await self._set_status(record, event["status"])
                     elif event.get("type") == "qr" and isinstance(event.get("png"), str):
+                        if daily and png is not None:
+                            raise ValueError("Duplicate QR output")
                         candidate = base64.b64decode(event["png"], validate=True)
-                        if candidate.startswith(b"\x89PNG\r\n\x1a\n"):
+                        if candidate.startswith(b"\x89PNG\r\n\x1a\n") and len(candidate) <= 700_000:
                             png = candidate
+                            if daily:
+                                await self._publish_qr(record, png)
+                                self._set_daily_status(record, "waiting_scan")
+                        elif daily:
+                            raise ValueError("Invalid QR image")
+                    elif daily and event.get("type") == "logged_in":
+                        if (not record.qr_published or record.daily_started_at is not None
+                                or record.expires_at_ms <= time.time() * 1000):
+                            raise ValueError("Unexpected login confirmation")
+                        record.daily_started_at = time.time()
+                        timeout.reschedule(asyncio.get_running_loop().time() + self.config.daily_timeout_seconds)
+                        self._set_daily_status(record, "running_daily")
+                    elif daily and event.get("type") == "daily_completed":
+                        count = event.get("actionCount")
+                        if (record.daily_started_at is None or action_count is not None
+                                or type(count) is not int or count < 0):
+                            raise ValueError("Unexpected daily completion")
+                        action_count = count
                     elif event.get("type") == "error" and event.get("code") in SAFE_DRIVER_ERRORS:
-                        raise _WorkerError(SAFE_DRIVER_ERRORS[event["code"]])
+                        raise _WorkerError(SAFE_DRIVER_ERRORS[event["code"]], event["code"])
+                    elif daily:
+                        raise ValueError("Invalid daily worker event")
                 exit_code = await asyncio.to_thread(child.wait)
-                if exit_code != 0 or png is None:
+                if self._stopping:
+                    raise _WorkerStopping
+                if exit_code != 0 or png is None or daily and action_count is None:
                     raise RuntimeError("Emulator process exited before a QR image was produced")
+                if daily:
+                    self._set_daily_status(record, "completed", action_count=action_count)
                 return png
         finally:
             self._kill(child)
@@ -263,10 +306,64 @@ class LoginRuntime:
             "stateDir": str(self.config.ldplayer_state_dir),
             "package": self.config.ldplayer_package,
             "commandTimeout": self.config.ldplayer_command_timeout_seconds,
+            "dailyConfigPath": str(self.config.daily_config_path),
+            "dailyTimeoutSeconds": self.config.daily_timeout_seconds,
         }
         return await self._run_child(
             record, [sys.executable, "-u", "-m", "naruto_daily.login_service.ldplayer_worker"], message,
+            daily=True,
         )
+
+    async def _publish_qr(self, record: TaskRecord, png: bytes) -> None:
+        if record.expires_at_ms <= time.time() * 1000:
+            raise _TaskExpired
+        try:
+            await self.storage.put(record.id, png, record.expires_at)
+            await self._set_status(record, "qr_ready")
+        except BaseException:
+            self._pending_deletes.add(record.id)
+            raise
+        record.qr_published = True
+        if self.config.ldplayer_pool_indices:
+            await asyncio.to_thread(self._mark_ldplayer_ready, record.id)
+
+    def _set_daily_status(
+        self, record: TaskRecord, status: str, *,
+        error_code: str | None = None, action_count: int | None = None,
+    ) -> None:
+        """Keep execution results beyond the independent Redis/QR session TTL."""
+        record.daily_status = status
+        directory = self.config.ldplayer_state_dir / "runs"
+        result = {
+            "taskId": record.id, "status": status, "updatedAt": time.time(),
+            "startedAt": record.daily_started_at,
+            "deadline": (record.daily_started_at + self.config.daily_timeout_seconds
+                         if record.daily_started_at is not None else record.expires_at_ms / 1000),
+        }
+        if error_code is not None:
+            result["errorCode"] = error_code
+        if action_count is not None:
+            result["actionCount"] = action_count
+        temporary = None
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(result, handle, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, directory / f"{record.id}.json")
+        except OSError:
+            # An unwritable journal must not bypass emulator cleanup or kill a
+            # consumer permanently. Never log filesystem/SDK exception text.
+            logger.warning("Could not persist daily execution status for task %s", record.id)
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        logger.info("Task %s daily: %s%s", record.id, status, f" ({error_code})" if error_code else "")
 
     def _ldplayer_manager(self):
         from .ldplayer import LDPlayerManager
@@ -397,6 +494,10 @@ class LoginRuntime:
                 if self.config.emulator_driver == "mock"
                 else await self._run_ldplayer(record)
             )
+            if record.qr_published:
+                # The QR was published while the child was alive. The same
+                # child has now finished its daily run; finally releases it.
+                return
             if record.expires_at_ms <= time.time() * 1000:
                 raise _TaskExpired
             if self._stopping:
@@ -415,7 +516,34 @@ class LoginRuntime:
                 except Exception:
                     logger.warning("Could not mark the LDPlayer pool slot ready for task %s", task_id)
         except Exception as error:
-            if isinstance(error, _TaskExpired) or record.expires_at_ms <= time.time() * 1000:
+            if not record.qr_published and record.daily_status is not None:
+                code = error.code if isinstance(error, _WorkerError) else "protocol_error"
+                if self._stopping:
+                    code = "worker_stopped"
+                elif isinstance(error, (TimeoutError, _TaskExpired)):
+                    code = "command_timeout"
+                self._set_daily_status(
+                    record, "interrupted" if self._stopping else "failed", error_code=code,
+                )
+            if record.qr_published:
+                if self._stopping:
+                    status, code = "interrupted", "worker_stopped"
+                elif isinstance(error, TimeoutError) or (
+                    record.daily_started_at is None and record.expires_at_ms <= time.time() * 1000
+                ):
+                    status = "failed"
+                    code = "daily_timeout" if record.daily_started_at is not None else "login_timeout"
+                else:
+                    status = "failed"
+                    code = error.code if isinstance(error, _WorkerError) else "protocol_error"
+                self._set_daily_status(record, status, error_code=code)
+                # qr_ready is terminal in the existing browser/Redis protocol.
+                # Record execution failures locally, never rewrite that session
+                # or automatically replay an already published login task.
+                self._pending_deletes.add(task_id)
+                if record.expires_at_ms <= time.time() * 1000:
+                    self._expire(record)
+            elif isinstance(error, _TaskExpired) or record.expires_at_ms <= time.time() * 1000:
                 self._expire(record)
                 if uploaded:
                     # The sweeper may have deleted the object before a slow upload finished.
@@ -450,7 +578,9 @@ class LoginRuntime:
             if requeue_on_exit:
                 await self._release_and_requeue(record)
             elif self.config.emulator_driver == "ldplayer" and not keep_ldplayer:
-                await self._cleanup_ldplayer(task_id)
+                released = await self._cleanup_ldplayer(task_id)
+                if record.qr_published and not released:
+                    self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
 
     async def _sweep_loop(self) -> None:
         while not self._stopping:
