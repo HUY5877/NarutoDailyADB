@@ -193,8 +193,8 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
             logger.info("launch game")
 
     class Device:
-        def __init__(self, *args):
-            pass
+        def __init__(self, *args, game_package):
+            assert game_package == "test.game"
 
     def fetch(device):
         logger.info("fetch qr")

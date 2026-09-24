@@ -20,11 +20,13 @@ class QRNavigationError(RuntimeError):
 
 
 class LoginDevice:
-    def __init__(self, adb_path: Path, serial: str, deadline: float, command_timeout: float = 20):
+    def __init__(self, adb_path: Path, serial: str, deadline: float, command_timeout: float = 20,
+                 *, game_package: str = "com.tencent.KiHan"):
         if not re.fullmatch(r"[A-Za-z0-9._:-]+", serial) or command_timeout <= 0:
             raise QRNavigationError("Invalid ADB device configuration")
         self.adb_path, self.serial = Path(adb_path), serial
         self.deadline, self.command_timeout = deadline, command_timeout
+        self.game_package = game_package
 
     def _run(self, *arguments: str) -> bytes:
         remaining = self.deadline - time.time()
@@ -97,13 +99,17 @@ def _template(name: str) -> np.ndarray:
     return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_GRAYSCALE)
 
 
-def _match(frame: np.ndarray, name: str, roi=(0, 0, 1920, 1080), threshold=.92):
+def _match(frame: np.ndarray, name: str, roi=(0, 0, 1920, 1080), threshold=.92,
+           *, binary_threshold: int | None = None):
     left, top, right, bottom = roi
     region = frame[top:bottom, left:right]
     if region.size == 0:
         return None
     gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
     needle = _template(name)
+    if binary_threshold is not None:
+        gray = cv2.threshold(gray, binary_threshold, 255, cv2.THRESH_BINARY)[1]
+        needle = cv2.threshold(needle, binary_threshold, 255, cv2.THRESH_BINARY)[1]
     if any(a < b for a, b in zip(gray.shape, needle.shape)):
         return None
     _, score, _, point = cv2.minMaxLoc(cv2.matchTemplate(gray, needle, cv2.TM_CCOEFF_NORMED))
@@ -138,14 +144,38 @@ def _node_action(xml: str, labels: tuple[str, ...], name: str):
     return None
 
 
-def crop_authorization_qr(frame: np.ndarray, xml: str) -> bytes | None:
+def crop_authorization_qr(frame: np.ndarray, xml: str,
+                          *, game_package: str = "com.tencent.KiHan") -> bytes | None:
     texts = " ".join(node.get("text", "") + node.get("content-desc", "") for node in _qq_nodes(xml))
-    if any(word in texts for word in ("二维码已失效", "二维码已过期")):
+    game_texts = " ".join(node.get("text", "") + node.get("content-desc", "")
+                          for node in _nodes(xml) if node.get("package") == game_package)
+    authorization_texts = [re.sub(r"\s+", "", value) for value in (texts, game_texts)]
+    if any(word in text for text in authorization_texts
+           for word in ("二维码失效", "二维码已失效", "二维码已过期")):
         raise QRNavigationError("QQ authorization QR expired; request a new login")
-    if not ("使用另一部手机QQ扫码" in texts or _match(frame, "qr_heading", (650, 100, 1300, 370))):
+
+    native_page = "使用另一部手机QQ扫码" in texts or _match(frame, "qr_heading", (650, 100, 1300, 370))
+    web_page = False
+    if not native_page:
+        # Without QQ installed, the game opens its own authorization web page.
+        # Require both its title and scanning instructions before accepting a QR.
+        web_page = (
+            any("QQ授权登录" in text and "使用QQ手机版扫码授权登录" in text for text in authorization_texts)
+        ) or (
+            _match(frame, "web_qr_heading", (480, 0, 1440, 220))
+            and _match(frame, "web_qr_instruction", (480, 450, 1440, 820))
+        )
+    if not (native_page or web_page):
         return None
-    # Only inspect the code area of the confirmed QQ authorization page.
-    region = frame[310:820, 620:1320]
+    if any(word in text for text in authorization_texts for word in ("已失效", "已过期")):
+        raise QRNavigationError("QQ authorization QR expired; request a new login")
+    if web_page and _match(frame, "web_qr_expired", (480, 180, 1440, 900), binary_threshold=220):
+        # The game SurfaceView does not expose this expiry message in UI XML.
+        # Its white text sits over a dimmed QR which the detector can still find.
+        raise QRNavigationError("QQ authorization QR expired; request a new login")
+    # The two confirmed authorization layouts place the QR at different heights.
+    # Detect its actual bounds instead of cutting off a code at a fixed y offset.
+    region = frame
     found, points = cv2.QRCodeDetector().detect(region)
     if not found or points is None:
         return None
@@ -213,14 +243,15 @@ def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1) -> bytes:
         if guard is not None:
             guard()
         frame = device.screenshot()
-        # Game pages are a SurfaceView; native QQ text is a fallback for template changes.
-        png = crop_authorization_qr(frame, "")
+        # Game pages are a SurfaceView; scoped UI text is a fallback for template changes.
+        game_package = getattr(device, "game_package", "com.tencent.KiHan")
+        png = crop_authorization_qr(frame, "", game_package=game_package)
         if png:
             return png
         action = None if qr_wait_until is not None else choose_action(frame, "")
         if action is None:
             xml = device.hierarchy()
-            png = crop_authorization_qr(frame, xml)
+            png = crop_authorization_qr(frame, xml, game_package=game_package)
             if png:
                 return png
             action = choose_action(frame, xml)
