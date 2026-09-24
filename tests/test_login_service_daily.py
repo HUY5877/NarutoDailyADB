@@ -147,6 +147,47 @@ def test_login_cleanup_cannot_start_before_authorization(tmp_path):
     assert calls == []
 
 
+@pytest.mark.parametrize("marker", [
+    "start_game_button.png", "qq_agree_game_info.png", "main_reward_label.png",
+])
+def test_authorization_returns_on_first_confirmed_page_without_clicks_or_fixed_waits(tmp_path, marker):
+    def match(png, path, roi, threshold):
+        return ((900, 900), 1.0) if path.name == marker else (None, 0.0)
+
+    session, clock, calls = session_for(tmp_path, matcher=match)
+    before = clock()
+    session.wait_for_authorization(before + 1)
+    assert clock() == before
+    assert len(calls) == 1  # A single observation, before any button or 3-second wait.
+    assert "screencap" in calls[0][0]
+    assert not any("tap" in command for command, _ in calls)
+    with pytest.raises(RuntimeError, match="先完成扫码登录"):
+        session.run_daily(clock() + 300)
+
+
+def test_disappeared_qr_or_unknown_loading_page_does_not_confirm_authorization(tmp_path):
+    session, clock, calls = session_for(tmp_path, matcher=lambda *args: (None, 0.0))
+    deadline = clock() + 1
+    with pytest.raises(TimeoutError):
+        session.wait_for_authorization(deadline)
+    assert clock() == deadline
+    assert len(calls) == 2  # Half-second polling while awaiting a positive marker.
+    with pytest.raises(RuntimeError, match="先完成扫码授权"):
+        session.finish_login(clock() + 300)
+    assert not any("tap" in command for command, _ in calls)
+
+
+def test_already_entered_game_does_not_wait_for_start_button_again(tmp_path):
+    def match(png, path, roi, threshold):
+        return ((1800, 500), 1.0) if path.name == "main_reward_label.png" else (None, 0.0)
+
+    session, clock, calls = session_for(tmp_path, matcher=match)
+    session.wait_for_authorization(clock() + 1)
+    session.finish_login(clock() + 300)
+    assert not any("tap" in command for command, _ in calls)
+    assert session.run_daily(clock() + 300) == len(TASK_ORDER) - 1
+
+
 def test_login_wait_extends_past_old_40_second_authorization_timeout(tmp_path):
     state = {}
 

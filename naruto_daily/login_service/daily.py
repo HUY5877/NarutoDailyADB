@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import logging
 import math
 from pathlib import Path
 import subprocess
@@ -15,6 +16,9 @@ from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.config import ConfigError, load_settings
 from naruto_daily.runner import ActionRunner
 from naruto_daily.tasks import build_all
+
+
+LOGGER = logging.getLogger("naruto_daily")
 
 
 def _templates(value):
@@ -62,6 +66,7 @@ class DailySession:
         self._command_timeout = float(command_timeout)
         self._deadline: float | None = None
         self._authorized = False
+        self._already_in_game = False
         self._logged_in = False
         self.client = AdbClient(Path(adb_path), serial=serial,
                                 run_command=self._run_text, run_binary=self._run_binary)
@@ -115,17 +120,31 @@ class DailySession:
                             asset_root=self.asset_root)
 
     def wait_for_authorization(self, deadline: float) -> None:
-        """仅等待扫码和可选二次授权，确认并点击开始游戏。"""
+        """观察扫码后的明确页面，立即交接；按钮操作留给登录收尾。"""
         self._authorized = False
+        self._already_in_game = False
         self._logged_in = False
         self._set_deadline(deadline)
-        actions = deepcopy(self._login_actions[:1])
-        if not actions or actions[0]["type"] != "finish_login_authorization":
+        if not self._login_actions or self._login_actions[0]["type"] != "finish_login_authorization":
             raise ConfigError("扫码登录必须先确认授权并开始游戏")
-        actions[0]["timeout_seconds"] = self._remaining()
-        self._runner().run(actions)
-        self._remaining()
-        self._authorized = True
+        action = self._login_actions[0]
+        targets = (action["start_game"], action["second_authorization"], self._main_marker)
+        images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
+        LOGGER.info("等待手机扫码确认；识别到授权后的页面即结束二维码等待")
+        while True:
+            self._remaining()
+            png = self.client.screenshot()
+            for index, target in enumerate(targets):
+                center, _ = images.match(png, target)
+                if center is not None:
+                    self._remaining()
+                    self._authorized = True
+                    self._already_in_game = index == 2
+                    LOGGER.info("已确认扫码授权，识别到%s，立即结束二维码等待", target.get("name", "游戏主界面"))
+                    return
+            # A missing QR alone is not evidence: loading, cancellation and
+            # network errors must not be mistaken for successful authorization.
+            self._sleep(min(0.5, self._remaining()))
 
     def finish_login(self, deadline: float) -> None:
         """授权后使用独立预算等待加载、清弹窗并确认主界面。"""
@@ -133,7 +152,10 @@ class DailySession:
             raise RuntimeError("必须先完成扫码授权")
         self._logged_in = False
         self._set_deadline(deadline)
-        self._runner().run(deepcopy(self._login_actions[1:]))
+        actions = deepcopy(self._login_actions[1:] if self._already_in_game else self._login_actions)
+        if not self._already_in_game:
+            actions[0]["timeout_seconds"] = self._remaining()
+        self._runner().run(actions)
         images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
         center, _ = images.find(self._main_marker)
         if center is None:
