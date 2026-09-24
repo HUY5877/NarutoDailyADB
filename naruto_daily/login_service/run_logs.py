@@ -11,6 +11,7 @@ import logging
 import time
 
 from .models import TaskRecord
+from .queue import SAFE_REJECTION_ERRORS
 
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,22 @@ STAGE_MESSAGES = {
     "failed": "任务执行失败",
     "interrupted": "服务已停止，任务执行中断",
     "expired": "登录申请已过期",
+}
+SAFE_RUN_ERRORS = {
+    **SAFE_REJECTION_ERRORS,
+    "configuration_error": "执行服务器配置有误，无法开始任务，请联系管理员。",
+    "emulator_start_failed": "模拟器启动失败，请重新申请；若仍失败，请联系管理员。",
+    "game_launch_failed": "游戏启动失败，请重新申请。",
+    "qr_not_found": "未能获取登录二维码，请重新申请。",
+    "command_timeout": "启动模拟器或获取二维码超时，请重新申请。",
+    "unexpected_error": "执行任务时发生异常，请重新申请；若仍失败，请联系管理员。",
+    "login_timeout": "等待扫码登录超时，请重新申请并及时扫码。",
+    "login_failed": "未能确认游戏登录成功，请重新申请。",
+    "daily_timeout": "日常任务执行超时，本次任务已停止。",
+    "daily_failed": "日常任务执行失败，本次任务已停止。",
+    "protocol_error": "执行进程返回的数据异常，任务已停止，请联系管理员。",
+    "instance_cleanup_failed": "任务结束后未能关闭模拟器，请联系管理员检查执行服务器。",
+    "worker_stopped": "执行服务器已停止，任务执行中断。",
 }
 
 # Retry is safe even when Redis accepted the write but its response was lost.
@@ -136,9 +153,13 @@ class RedisRunReporter:
         state.update(updatedAt=now, workerId=self.queue.owner, sequence=self._sequence)
         if level not in {"INFO", "WARNING", "ERROR"}:
             level = "INFO"
+        default_message = (
+            SAFE_RUN_ERRORS.get(error_code, STAGE_MESSAGES[state["status"]])
+            if state["status"] in {"failed", "interrupted"} else STAGE_MESSAGES[state["status"]]
+        )
         event = {
             "time": timestamp or now, "level": level,
-            "message": sanitize_log_message(message or STAGE_MESSAGES[state["status"]]),
+            "message": sanitize_log_message(message or default_message),
         }
         if action_index is not None and action_total is not None:
             event.update(actionIndex=action_index, actionTotal=action_total)

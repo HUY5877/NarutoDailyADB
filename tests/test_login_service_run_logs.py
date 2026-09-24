@@ -13,9 +13,9 @@ import pytest
 
 from naruto_daily.login_service.config import ServiceConfig, load_config
 from naruto_daily.login_service.models import parse_queue_task
-from naruto_daily.login_service.queue import RedisTaskQueue
-from naruto_daily.login_service.run_logs import RedisRunReporter, iso_time
-from naruto_daily.login_service.runtime import LoginRuntime
+from naruto_daily.login_service.queue import RedisTaskQueue, SAFE_DRIVER_ERRORS
+from naruto_daily.login_service.run_logs import RedisRunReporter, SAFE_RUN_ERRORS, STAGE_MESSAGES, iso_time
+from naruto_daily.login_service.runtime import LoginRuntime, _WorkerError
 
 
 def fake_client():
@@ -436,6 +436,8 @@ def test_mock_completed_run_is_not_overwritten_when_its_qr_later_expires(monkeyp
             completed_snapshot = await client.get(run_key)
             completed_logs = await entries(client, stream_key)
             assert json.loads(completed_snapshot)["status"] == "completed"
+            assert completed_logs[-1][1]["message"] == "模拟二维码已生成"
+            assert all(event["message"] != STAGE_MESSAGES["completed"] for _, event in completed_logs)
             runtime._expire(record)
             await drain(reporter)
             assert await client.get(run_key) == completed_snapshot
@@ -474,6 +476,7 @@ def test_real_child_log_events_preserve_protocol_and_publish_terminal_after_clea
         png = b"\x89PNG\r\n\x1a\nfixture"
         plan = [
             {"type": "log", "time": iso_time(), "level": "INFO", "message": "initializing"},
+            {"type": "stage", "status": "starting_emulator"},
             {"type": "stage", "status": "opening_game"},
             {"type": "stage", "status": "preparing_qr"},
             {"type": "qr", "png": base64.b64encode(png).decode("ascii")},
@@ -506,6 +509,12 @@ def test_real_child_log_events_preserve_protocol_and_publish_terminal_after_clea
             assert json.loads(await client.get(session_key))["status"] == "qr_ready"
             logs = [event for _, event in await entries(client, stream_key)]
             assert any(event["message"] == "daily action" and event["actionTotal"] == 3 for event in logs)
+            assert [event["message"] for event in logs] == [
+                STAGE_MESSAGES["starting_emulator"], STAGE_MESSAGES["opening_game"],
+                STAGE_MESSAGES["preparing_qr"], STAGE_MESSAGES["waiting_scan"],
+                "scan waiting", STAGE_MESSAGES["running_daily"], "daily action",
+                SAFE_RUN_ERRORS["instance_cleanup_failed"] if cleanup_fails else STAGE_MESSAGES["completed"],
+            ]
             assert "private cleanup failure detail" not in json.dumps(logs)
             assert storage.put_ids == [record.id]
         finally:
@@ -514,6 +523,62 @@ def test_real_child_log_events_preserve_protocol_and_publish_terminal_after_clea
             await reporter.close()
             await client.aclose()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("code", ["emulator_start_failed", "qr_not_found", "daily_failed", None])
+def test_failure_before_child_admission_has_a_safe_specific_error_log(monkeypatch, code):
+    async def scenario():
+        redis, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=redis)
+        record = await claim(redis, queue)
+        reporter = RedisRunReporter(cfg, queue)
+        runtime = LoginRuntime(cfg, MemoryStorage(), redis_queue=queue, run_reporter=reporter)
+
+        async def fail(current):
+            if code is None:
+                raise RuntimeError("redis://private-secret@internal-host private diagnostic")
+            raise _WorkerError(SAFE_DRIVER_ERRORS[code], code)
+
+        monkeypatch.setattr(runtime, "_run_mock", fail)
+        reporter.start()
+        try:
+            await runtime._process_record(record)
+            await drain(reporter)
+            run_key, stream_key, _ = keys(cfg, record)
+            state = json.loads(await redis.get(run_key))
+            logs = await entries(redis, stream_key)
+            expected = code or "unexpected_error"
+            assert state["errorCode"] == expected
+            assert logs[-1][1]["level"] == "ERROR"
+            assert logs[-1][1]["message"] == SAFE_RUN_ERRORS[expected]
+            assert "private-secret" not in json.dumps(logs)
+            assert "internal-host" not in json.dumps(logs)
+        finally:
+            await reporter.close()
+            await redis.aclose()
+    asyncio.run(scenario())
+
+
+def test_parent_keeps_action_boundaries_and_warnings_but_omits_low_level_info():
+    reported = []
+
+    class Reporter:
+        def emit(self, record, **event):
+            reported.append(event)
+
+    runtime = LoginRuntime(config(redis_url=None), MemoryStorage(), run_reporter=Reporter())
+    record = parse_queue_task(body(), "login")
+    for event in [
+        {"message": "截图匹配相似度 0.85", "level": "INFO"},
+        {"message": "点击坐标 (10,20)", "level": "INFO"},
+        {"message": "动作 2/38：领取昨日奖励并执行铜币祈福", "level": "INFO", "actionIndex": 2, "actionTotal": 38},
+        {"message": "本次识别暂未成功", "level": "WARNING"},
+        {"message": "任务失败", "level": "ERROR"},
+    ]:
+        runtime._accept_log(record, {"type": "log", "time": iso_time()} | event)
+    assert [event["message"] for event in reported] == [
+        "动作 2/38：领取昨日奖励并执行铜币祈福", "本次识别暂未成功", "任务失败",
+    ]
 
 
 @pytest.mark.parametrize("changes", [

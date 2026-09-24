@@ -219,7 +219,7 @@ class LoginRuntime:
         # Popen plus threaded pipe reads works with both Windows event-loop policies.
         # Only job-scoped public configuration enters the child; service/OSS secrets do not.
         if daily:
-            self._set_daily_status(record, "preparing_qr")
+            self._set_daily_status(record, "starting_emulator")
         child_env = {
             key: value for key, value in os.environ.items()
             if key.upper() in _CHILD_ENV_ALLOWLIST
@@ -321,6 +321,10 @@ class LoginRuntime:
             type(index) is not int or type(total) is not int or not 0 <= index <= total <= 100_000
         ):
             raise ValueError("Invalid task log progress")
+        # Public logs describe stages and action boundaries. Repeated screenshot,
+        # similarity, polling and ADB coordinate INFO messages remain internal.
+        if level == "INFO" and index is None:
+            return
         if self._run_reporter is not None:
             self._run_reporter.emit(record, message=message, level=level, timestamp=timestamp,
                                     action_index=index, action_total=total)
@@ -560,6 +564,14 @@ class LoginRuntime:
                 except Exception:
                     logger.warning("Could not mark the LDPlayer pool slot ready for task %s", task_id)
         except Exception as error:
+            # Failures before the child starts have no daily status yet, but
+            # still need a safe public reason in the final execution log.
+            record.daily_error_code = (
+                error.code if isinstance(error, _WorkerError) else
+                "worker_stopped" if self._stopping else
+                "command_timeout" if isinstance(error, (TimeoutError, _TaskExpired)) else
+                "unexpected_error"
+            )
             if not record.qr_published and record.daily_status is not None:
                 code = error.code if isinstance(error, _WorkerError) else "protocol_error"
                 if self._stopping:
