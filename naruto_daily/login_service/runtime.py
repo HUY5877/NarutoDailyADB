@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime
 import json
 import logging
 import os
@@ -17,8 +18,9 @@ from typing import TYPE_CHECKING
 
 from .config import ServiceConfig
 from .ldplayer import LDPlayerError, LDPlayerPoolFull
-from .models import HttpError, TaskRecord, UUID_PATTERN, equal_secret, parse_submission
+from .models import HttpError, ISO_PATTERN, TaskRecord, UUID_PATTERN, equal_secret, parse_submission
 from .queue import MockRedisQueue, RedisQueueError, RedisTaskQueue, SAFE_DRIVER_ERRORS, SAFE_TASK_ERROR
+from .run_logs import RedisRunReporter, TERMINAL as RUN_TERMINAL_STATUSES
 
 if TYPE_CHECKING:
     from .storage import ObjectStorage
@@ -54,6 +56,7 @@ class LoginRuntime:
     def __init__(
         self, config: ServiceConfig, storage: ObjectStorage | None = None,
         *, redis_queue: RedisTaskQueue | None = None,
+        run_reporter: RedisRunReporter | None = None,
     ) -> None:
         if storage is None:
             from .storage import create_storage
@@ -63,6 +66,12 @@ class LoginRuntime:
         self._tasks: dict[str, TaskRecord] = {}
         self._queue: MockRedisQueue[str] = MockRedisQueue(config.max_queue_size)
         self._redis_queue = redis_queue or (RedisTaskQueue(config) if config.redis_url else None)
+        self._run_reporter = run_reporter
+        if self._run_reporter is None and isinstance(self._redis_queue, RedisTaskQueue):
+            self._run_reporter = RedisRunReporter(
+                config, self._redis_queue, retention_seconds=config.run_log_retention_seconds,
+                stream_limit=config.run_log_max_entries,
+            )
         self._children: dict[str, subprocess.Popen[bytes]] = {}
         self._pending_deletes: set[str] = set()
         self._workers: list[asyncio.Task[None]] = []
@@ -97,6 +106,8 @@ class LoginRuntime:
             raise
         self._next_storage_sweep_at = time.monotonic() + self.config.storage_sweep_interval_ms / 1000
         self._initialized = True
+        if self._run_reporter is not None:
+            self._run_reporter.start()
         consume = self._consume_redis if self._redis_queue is not None else self._consume
         self._workers = [asyncio.create_task(consume()) for _ in range(self.config.concurrency)]
         self._sweep_task = asyncio.create_task(self._sweep_loop())
@@ -149,6 +160,9 @@ class LoginRuntime:
                 await self._retry_pause()
         record.status = status
         logger.info("Task %s: %s", record.id, status)
+        if self._run_reporter is not None and status not in {"failed", "expired"}:
+            self._run_reporter.emit(record, status="waiting_scan" if status == "qr_ready" else status,
+                                    level="ERROR" if status == "failed" else "INFO")
 
     async def _requeue(self, record: TaskRecord) -> None:
         assert self._redis_queue is not None
@@ -171,6 +185,9 @@ class LoginRuntime:
             return
         record.status = "expired"
         record.error = None
+        if (self._run_reporter is not None and record.id not in self._children and record.daily_started_at is None
+                and record.daily_status not in {"failed", "interrupted", "completed"}):
+            self._run_reporter.emit(record, status="expired", level="WARNING")
         child = self._children.get(record.id)
         if child is not None and record.daily_started_at is None:
             self._kill(child)
@@ -236,7 +253,9 @@ class LoginRuntime:
                         raise ValueError("Invalid emulator output")
                     if self._stopping:
                         raise _WorkerStopping
-                    if event.get("type") == "stage" and event.get("status") in (
+                    if daily and event.get("type") == "log":
+                        self._accept_log(record, event)
+                    elif event.get("type") == "stage" and event.get("status") in (
                         "starting_emulator", "opening_game", "preparing_qr",
                     ):
                         if daily and png is not None:
@@ -287,6 +306,25 @@ class LoginRuntime:
             child.stdin.close()
             child.stdout.close()
 
+    def _accept_log(self, record: TaskRecord, event: dict) -> None:
+        message, timestamp, level = event.get("message"), event.get("time"), event.get("level")
+        if (not isinstance(message, str) or not message or len(message) > 1000
+                or not isinstance(timestamp, str) or not ISO_PATTERN.fullmatch(timestamp)
+                or level not in {"INFO", "WARNING", "ERROR"}):
+            raise ValueError("Invalid task log event")
+        try:
+            datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("Invalid task log time") from None
+        index, total = event.get("actionIndex"), event.get("actionTotal")
+        if (index is not None or total is not None) and (
+            type(index) is not int or type(total) is not int or not 0 <= index <= total <= 100_000
+        ):
+            raise ValueError("Invalid task log progress")
+        if self._run_reporter is not None:
+            self._run_reporter.emit(record, message=message, level=level, timestamp=timestamp,
+                                    action_index=index, action_total=total)
+
     async def _run_mock(self, record: TaskRecord) -> bytes:
         message = {
             "type": "start", "id": record.id, "nonce": secrets.token_hex(32),
@@ -333,6 +371,10 @@ class LoginRuntime:
     ) -> None:
         """Keep execution results beyond the independent Redis/QR session TTL."""
         record.daily_status = status
+        record.daily_error_code = error_code
+        if self._run_reporter is not None and status not in RUN_TERMINAL_STATUSES:
+            self._run_reporter.emit(record, status=status, error_code=error_code,
+                                    level="ERROR" if status == "failed" else "WARNING" if status == "interrupted" else "INFO")
         directory = self.config.ldplayer_state_dir / "runs"
         result = {
             "taskId": record.id, "status": status, "updatedAt": time.time(),
@@ -485,6 +527,8 @@ class LoginRuntime:
         uploaded = False
         keep_ldplayer = False
         requeue_on_exit = False
+        if self._run_reporter is not None:
+            self._run_reporter.emit(record, status="starting_emulator")
         try:
             await self._set_status(record, "starting_emulator")
             if self._stopping:
@@ -581,6 +625,21 @@ class LoginRuntime:
                 released = await self._cleanup_ldplayer(task_id)
                 if record.qr_published and not released:
                     self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
+            if self._run_reporter is not None:
+                final_status = record.daily_status
+                if final_status not in RUN_TERMINAL_STATUSES:
+                    final_status = ("interrupted" if self._stopping else record.status
+                                    if record.status in {"failed", "expired"} else
+                                    "completed" if self.config.emulator_driver == "mock" else "failed")
+                if not requeue_on_exit:
+                    record.daily_status = final_status
+                    self._run_reporter.emit(
+                        record, status=final_status,
+                        error_code=record.daily_error_code,
+                        level="ERROR" if final_status == "failed" else "WARNING" if final_status in {"interrupted", "expired"} else "INFO",
+                        message="模拟二维码已生成" if self.config.emulator_driver == "mock" and final_status == "completed" else None,
+                    )
+                self._run_reporter.finish(task_id)
 
     async def _sweep_loop(self) -> None:
         while not self._stopping:
@@ -621,6 +680,8 @@ class LoginRuntime:
         for child in list(self._children.values()):
             self._kill(child)
         await asyncio.gather(*self._workers, return_exceptions=True)
+        if self._run_reporter is not None:
+            await self._run_reporter.close()
         if self._sweep_task is not None:
             await self._sweep_task
         # Ready OSS images remain available to the client until their own expiry.

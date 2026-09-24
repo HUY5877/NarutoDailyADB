@@ -53,6 +53,8 @@ REDIS_URL=redis://127.0.0.1:6379/0
 | `LDPLAYER_COMMAND_TIMEOUT_SECONDS` | `20`，单条雷电控制台命令的超时秒数 |
 | `DAILY_CONFIG_PATH` | 项目根目录的 `config.example.json`；复用原日常任务配置，相对路径以项目根目录解析 |
 | `DAILY_TIMEOUT_SECONDS` | `7200`，确认进入游戏主界面后开始计时的日常总超时，范围 1–86400 秒 |
+| `RUN_LOG_RETENTION_SECONDS` | `86400`，最终执行记录和日志的保留秒数，范围 60–604800；运行中的 TTL 额外加上日常超时预算 |
+| `RUN_LOG_MAX_ENTRIES` | `2000`，每个任务在 Redis 保留的最新日志条数，范围 100–10000 |
 
 日常 JSON 及引用的图片必须一同保留，图片路径相对 JSON 所在目录解析。若通过 wheel 安装服务，请将原配置和完整 `assets/` 目录放在本机，并将 `DAILY_CONFIG_PATH` 指向该 JSON；无需修改 JSON 中原有的 `adb_path` 或 `serial`，执行时强制使用本次任务分配到的实例。
 
@@ -82,7 +84,22 @@ TypeScript 后端通过 `LPUSH` 投递，Python 通过 `BRPOP` 按 FIFO 顺序�
 
 状态依次为 `queued`、`starting_emulator`、`opening_game`、`preparing_qr`、`qr_ready`；失败为 `failed`，过期为 `expired`。`qr_ready` 表示二维码已生成，不代表账号已登录。客户端会话中的 `simulation: true` 是现有跨服务协议的兼容字段，真实驱动也必须保持该值。worker 会跳过过期、格式无效或重复的任务。
 
-日常状态不写入原客户端的 `status` 白名单，独立保存在 `${LDPLAYER_STATE_DIR}/runs/<任务UUID>.json`。`status` 依次为 `preparing_qr`、`waiting_scan`、`running_daily`、`completed`，失败为 `failed`，服务停止为 `interrupted`；记录包含开始时间、截止时间、完成动作数或安全错误码，不含凭据。原网站目前只展示二维码，不展示日常进度或结果。
+日常状态不写入原客户端的 `status` 白名单，独立保存在 `${LDPLAYER_STATE_DIR}/runs/<任务UUID>.json`，并将执行快照和日志同步到 Redis。`status` 依次为 `preparing_qr`、`waiting_scan`、`running_daily`、`completed`，失败为 `failed`，服务停止为 `interrupted`；本地记录包含开始时间、截止时间、完成动作数或安全错误码，不含凭据。
+
+### 用户执行记录
+
+子进程通过 `log` JSON 事件转发 `naruto_daily` 的 INFO、WARNING、ERROR 日志和当前动作序号。父进程校验事件后交给独立的后台发布协程，写入两个 key：
+
+| Key | 内容 |
+| --- | --- |
+| `${REDIS_QUEUE_KEY}:runs:<UUID>` | String JSON；执行阶段、更新时间、开始/结束时间、当前动作及安全错误码 |
+| `${REDIS_QUEUE_KEY}:logs:<UUID>` | Stream；每条日志的 `json` 字段包含 `time`、`level`、`message`，可选 `actionIndex`、`actionTotal` |
+
+网站通过账号 Cookie 和 PostgreSQL 中的任务归属读取执行记录，每 1.5 秒增量查询，刷新时恢复最近的任务；二维码过期后仍能查看日常。日志读取不会消费或删除条目，不同页面可分别使用自己的 Stream ID 游标。最终状态在子进程退出和模拟器清理之后发布；网站读完终态的剩余日志后停止轮询。
+
+日志先过滤已知模型密钥、认证头及凭证字段，单条最多 1000 字，不包含异常堆栈。Redis 短暂故障会后台重试，不阻塞游戏动作；每个任务的内存缓冲最多保留最新 256 条，发生丢弃会在恢复后的日志中提示。进程被强杀时尚未上传的内存日志可能丢失，本功能不提供任务接管或执行重放。
+
+Redis 用 Lua 同步追加日志、更新快照和设置 TTL；worker 标识与递增序号用于拒绝旧 worker 写入及避免响应丢失后的重复日志。二维码会话过期不会删除已有运行记录。默认最多保留最近 2000 条日志，最终写入后保留 24 小时；未收到终态的运行记录也会按独立 TTL 过期。客户端无需新增连接配置，继续使用相同 `REDIS_URL` 和 `REDIS_QUEUE_KEY`。
 
 按 `Ctrl+C` 优雅停止时，worker 回收子进程并关闭对应实例。出码前未过期的任务仍尝试重新入队；已发布二维码或已开始日常的任务记录为中断，不自动重排，以免重复执行游戏操作。队列使用直接 `BRPOP`，没有消息确认与崩溃恢复机制：进程被强制终止或机器崩溃后，需先检查本地运行记录和实例占用，再决定是否释放或重新申请。
 
@@ -115,6 +132,7 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 | `mock_emulator.py` | 每个任务单独启动的 Python 工作进程，生成模拟二维码 |
 | `ldplayer.py` / `ldplayer_worker.py` | 固定实例分配、持久绑定、启动和隔离工作进程 |
 | `daily.py` | 在任务绑定的 ADB 设备上复用原登录收尾和 `ActionRunner` 日常流程 |
+| `log_events.py` / `run_logs.py` | 子进程日志脱敏、结构化输出，以及父进程有界缓冲和 Redis 执行记录发布 |
 | `qr_navigation.py` / `templates/` | 页面识别、ADB 点击和真实二维码裁剪；QQ 安卓登录、切换账号、开始游戏三张模板复用项目 `assets/`，其余模板放在本模块 `templates/`；不调用多模态 API |
 | `pool_admin.py` | 查看实例占用，按任务 ID 显式释放实例 |
 | `storage.py` | 本地与阿里云 OSS 存储适配 |

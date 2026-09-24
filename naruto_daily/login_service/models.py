@@ -43,6 +43,7 @@ class TaskRecord:
     qr_published: bool = False
     daily_status: str | None = None
     daily_started_at: float | None = None
+    daily_error_code: str | None = None
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {

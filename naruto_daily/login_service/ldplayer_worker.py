@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from datetime import datetime
 import json
 import math
@@ -16,10 +16,13 @@ import time
 from typing import Callable, TextIO
 from uuid import UUID
 
+from .log_events import forward_task_logs
+
 
 _MAX_INPUT_BYTES = 16_384
 _MAX_PNG_BYTES = 700_000
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_OUTPUT_LOCK = threading.RLock()
 
 
 def _load_dependencies():
@@ -37,8 +40,11 @@ def _load_daily_session():
 
 
 def _send(stream: TextIO, event: dict[str, object]) -> None:
-    stream.write(json.dumps(event, separators=(",", ":")) + "\n")
-    stream.flush()
+    # Task logs may originate from a background thread. All protocol events use
+    # the same lock so neither a JSON line nor its flush can be interleaved.
+    with _OUTPUT_LOCK:
+        stream.write(json.dumps(event, separators=(",", ":")) + "\n")
+        stream.flush()
 
 
 def _deadline(value: object, now: float) -> float:
@@ -159,7 +165,12 @@ def main(
         return 1
 
     phase = "configuration"
+    log_context = ExitStack()
     try:
+        # Capture ordinary prints across imports, navigation and daily execution;
+        # structured logs retain the original protocol stream captured above.
+        log_context.enter_context(redirect_stdout(sys.stderr))
+        log_context.enter_context(forward_task_logs(lambda event: _send(output_stream, event)))
         Manager, DriverError, LoginDevice, fetch_login_qr = _load_dependencies()
         manager_options = dict(
             console_path=console_path,
@@ -241,6 +252,7 @@ def main(
             pass
         return 1
     finally:
+        log_context.close()
         if watchdog is not None:
             watchdog.cancel()
 

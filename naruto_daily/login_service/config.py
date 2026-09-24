@@ -38,6 +38,8 @@ class ServiceConfig:
     ldplayer_command_timeout_seconds: int = 20
     daily_config_path: Path = PROJECT_ROOT / "config.example.json"
     daily_timeout_seconds: int = 7200
+    run_log_retention_seconds: int = 86_400
+    run_log_max_entries: int = 2_000
     sweep_interval_ms: int = 250
     storage_sweep_interval_ms: int = 10_000
     oss_region: str = ""
@@ -166,6 +168,8 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         ldplayer_state_dir=state_dir,
         daily_config_path=daily_config_path,
         daily_timeout_seconds=_integer(env, "DAILY_TIMEOUT_SECONDS", 7200, 1, 86_400),
+        run_log_retention_seconds=_integer(env, "RUN_LOG_RETENTION_SECONDS", 86_400, 60, 604_800),
+        run_log_max_entries=_integer(env, "RUN_LOG_MAX_ENTRIES", 2_000, 100, 10_000),
         ldplayer_package=ldplayer_package,
         ldplayer_command_timeout_seconds=_integer(
             env, "LDPLAYER_COMMAND_TIMEOUT_SECONDS", 20, 1, 300,

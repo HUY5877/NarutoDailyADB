@@ -70,12 +70,18 @@ class ActionRunner:
         self.asset_root = Path(asset_root)
 
     def run(self, actions: Sequence[dict]) -> RunSummary:
-        LOGGER.info("开始执行，共 %d 个动作", len(actions))
+        LOGGER.info(
+            "开始执行，共 %d 个动作", len(actions),
+            extra={"action_index": 0, "action_total": len(actions)},
+        )
         images = ImageRecognition(self.client, self.template_matcher, self.asset_root, self.sleep)
         skip_action_type: str | None = None
         completed_card_name = ""
         for index, action in enumerate(actions, start=1):
-            LOGGER.info("动作 %d/%d：%s", index, len(actions), ACTION_NAMES.get(action["type"], "未知动作"))
+            LOGGER.info(
+                "动作 %d/%d：%s", index, len(actions), ACTION_NAMES.get(action["type"], "未知动作"),
+                extra={"action_index": index, "action_total": len(actions)},
+            )
             if self.dry_run:
                 LOGGER.info("模拟运行，不发送输入")
                 continue
@@ -201,5 +207,8 @@ class ActionRunner:
                 )
             else:
                 raise ValueError(f"不支持的动作类型：{action_type!r}")
-        LOGGER.info("执行结束：%d 个动作", len(actions))
+        LOGGER.info(
+            "执行结束：%d 个动作", len(actions),
+            extra={"action_index": len(actions), "action_total": len(actions)},
+        )
         return RunSummary(len(actions))
