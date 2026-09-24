@@ -113,7 +113,7 @@ class Model:
         return {'reset_count': next(self.counts)}
 
 
-def run(action_value, client, model, waits):
+def run(action_value, client, model, waits, *, background_start=False):
     def matcher(png, path, roi, threshold):
         name = path.stem
         visible = {
@@ -124,6 +124,8 @@ def run(action_value, client, model, waits):
             'confirm_second': {'confirm_second'},
             'reset_confirm': {'reset_confirm'},
         }.get(client.state, set())
+        if background_start and client.state in {'ready', 'confirm_first', 'confirm_second'}:
+            visible.add('start_sweep')
         centers = {
             'start_sweep': (1100, 900), 'ready': (1100, 900),
             'confirm_first': (1100, 900), 'confirm_second': (1100, 900),
@@ -169,15 +171,102 @@ def test_survival_rejects_invalid_model_result():
     assert not any(x == 1400 for x, _, _ in client.taps)
 
 
-def test_missing_ready_stops_within_button_timeout_instead_of_whole_task():
+def test_unresponsive_start_sweep_retries_twice_then_stops():
     client, waits = Client(transfer=False), []
     action_value = action()
     action_value['timeout_seconds'] = 900
     client.tap = lambda x, y: client.taps.append((x, y, client.state))
-    with pytest.raises(VisualError, match='ready'):
+    with pytest.raises(VisualError, match='开始扫荡点击后仍停留原页面，已补点 2 次'):
         run(action_value, client, Model([]), waits)
-    assert len(client.taps) == 1  # Start sweep is never clicked again while awaiting ready.
+    assert len(client.taps) == 3  # Initial click and at most two fresh-screen retries.
+    assert all(state == 'map' for _, _, state in client.taps)
     assert sum(waits) <= 21
+
+
+def test_start_sweep_recovers_when_first_click_does_not_change_page(caplog):
+    client, waits = Client(transfer=False), []
+    original_tap = client.tap
+
+    def tap(x, y):
+        if not client.taps:
+            client.taps.append((x, y, client.state))
+        else:
+            original_tap(x, y)
+
+    client.tap = tap
+    with caplog.at_level('INFO', logger='naruto_daily'):
+        run(action(), client, Model([0]), waits)
+    assert [state for _, _, state in client.taps] == ['map', 'map', 'ready', 'confirm_first', 'confirm_second']
+    assert '第1/2次补点' in caplog.text
+    assert '停止补点开始扫荡' in caplog.text
+    assert waits[-1] == 60
+
+
+@pytest.mark.parametrize('next_stage', ['ready', 'confirm_first', 'confirm_second'])
+def test_foreground_stage_prevents_retrying_start_sweep_behind_dialog(next_stage):
+    client, waits = Client(transfer=False), []
+    original_tap = client.tap
+
+    def tap(x, y):
+        was_map = client.state == 'map'
+        original_tap(x, y)
+        if was_map:
+            client.state = next_stage
+
+    client.tap = tap
+    run(action(), client, Model([0]), waits, background_start=True)
+    assert sum(state == 'map' for _, _, state in client.taps) == 1
+    expected = ['ready', 'confirm_first', 'confirm_second']
+    assert [state for _, _, state in client.taps[1:]] == expected[expected.index(next_stage):]
+
+
+@pytest.mark.parametrize('eventually_ready', [False, True])
+def test_unknown_loading_screen_is_waited_for_without_blind_reclick(eventually_ready):
+    client, waits = Client(transfer=False), []
+    original_tap = client.tap
+    loading_shots = 0
+
+    def tap(x, y):
+        was_map = client.state == 'map'
+        original_tap(x, y)
+        if was_map:
+            client.state = 'loading'
+
+    def screenshot():
+        nonlocal loading_shots
+        if client.state == 'loading':
+            loading_shots += 1
+            if eventually_ready and loading_shots == 6:
+                client.state = 'ready'
+        return client.state.encode()
+
+    client.tap, client.screenshot = tap, screenshot
+    if eventually_ready:
+        run(action(), client, Model([0]), waits)
+    else:
+        with pytest.raises(VisualError, match='开始扫荡后等待名单或扫荡确认页面超时'):
+            run(action(), client, Model([]), waits)
+        assert len(client.taps) == 1
+        assert sum(waits) <= 21
+    assert not any(state == 'loading' for _, _, state in client.taps)
+    assert sum(state == 'map' for _, _, state in client.taps) == 1
+
+
+def test_late_post_click_screenshot_cannot_trigger_start_sweep_retry(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr('naruto_daily.survival_challenge.handler.time.monotonic', lambda: now[0])
+    client, waits = Client(transfer=False), []
+    client.tap = lambda x, y: client.taps.append((x, y, client.state))
+
+    def screenshot():
+        if client.taps:
+            now[0] += 25
+        return client.state.encode()
+
+    client.screenshot = screenshot
+    with pytest.raises(VisualError, match='开始扫荡后等待名单或扫荡确认页面超时'):
+        run(action(), client, Model([]), waits)
+    assert len(client.taps) == 1
 
 
 def test_slow_screenshot_result_cannot_trigger_click_after_button_timeout(monkeypatch):

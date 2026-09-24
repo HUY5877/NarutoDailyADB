@@ -15,6 +15,8 @@ from naruto_daily.multimodal.prompts import SURVIVAL_RESET_COUNT
 LOGGER = logging.getLogger("naruto_daily")
 TRANSFER_DISMISS = (960, 540)
 BUTTON_TIMEOUT_SECONDS = 20.0
+START_SWEEP_MAX_RETRIES = 2
+START_SWEEP_RETRY_SECONDS = 2.0
 
 
 def _wait_and_click(client, images: ImageRecognition, target: dict, *, deadline: float,
@@ -73,6 +75,57 @@ def _dismiss_transfer_if_present(client, images: ImageRecognition, target: dict)
     images.sleep(1)
 
 
+def _start_sweep_and_wait(client, images: ImageRecognition, action: dict, *, deadline: float,
+                          poll_seconds: float, post_click_wait: float,
+                          elapsed: Callable[[], float]) -> str:
+    _wait_and_click(client, images, action['start_sweep'], deadline=deadline,
+                    poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
+    deadline = min(deadline, elapsed() + BUTTON_TIMEOUT_SECONDS)
+    retry_at = elapsed() + START_SWEEP_RETRY_SECONDS
+    retries = 0
+
+    def probe(png):
+        # 同一张新截图先查前景页面，避免补点弹窗后方仍可见的开始扫荡。
+        for key, stage in [('sweep_prompt', 'confirm_second'), ('confirm_second', 'confirm_second'),
+                           ('confirm_first', 'confirm_first'), ('ready', 'ready'),
+                           ('start_sweep', 'start_sweep')]:
+            if key not in action:
+                continue
+            center, score = images.match(png, action[key])
+            if center is not None:
+                return stage, center, score
+        return None, None, 0.0
+
+    while elapsed() < deadline:
+        remaining = deadline - elapsed()
+        LOGGER.info('[生存挑战：开始扫荡后] 确认页面切换，剩余 %.2f 秒', remaining)
+        stage, center, score = images.check(
+            probe, lambda result: result[0] is not None, '扫荡后的名单/确认页面或开始扫荡',
+            deadline=images.elapsed + remaining,
+        )
+        if elapsed() >= deadline:
+            break
+        if stage is not None and stage != 'start_sweep':
+            LOGGER.info('已确认%s页面，停止补点开始扫荡，继续处理当前页面', action[stage]['name'])
+            return stage
+        if stage == 'start_sweep' and elapsed() >= retry_at:
+            if retries >= START_SWEEP_MAX_RETRIES:
+                raise VisualError(f"开始扫荡点击后仍停留原页面，已补点 {retries} 次，未继续点击")
+            retries += 1
+            LOGGER.info('仍在开始扫荡页面，相似度 %.3f，第%d/%d次补点，坐标：(%d, %d)',
+                        score, retries, START_SWEEP_MAX_RETRIES, *center)
+            client.tap(*center)
+            retry_at = elapsed() + START_SWEEP_RETRY_SECONDS
+            if post_click_wait:
+                images.sleep(min(post_click_wait, max(0, deadline - elapsed())))
+        elif stage is None:
+            LOGGER.info('尚未确认扫荡后的页面，继续等待，不补点')
+        remaining = deadline - elapsed()
+        if remaining > 0:
+            images.sleep(min(poll_seconds, remaining))
+    raise VisualError('开始扫荡后等待名单或扫荡确认页面超时，未继续点击')
+
+
 def _read_reset_count(model: MultimodalClient, client, *, timeout_seconds: float) -> int:
     result = model.complete_json(client.screenshot(), SURVIVAL_RESET_COUNT,
                                  timeout_seconds=timeout_seconds)
@@ -105,12 +158,17 @@ def handle_survival_challenge(
     for round_number in range(1, int(action["max_rounds"]) + 1):
         LOGGER.info("[生存挑战第%d轮] 开始扫荡→按当前页面处理名单/扫荡确认→等待%d秒",
                     round_number, int(action["wait_seconds"]))
-        _wait_and_click(client, images, action['start_sweep'], deadline=deadline,
-                        poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
-        roster_open = _wait_and_click(
-            client, images, action['ready'], deadline=deadline, poll_seconds=poll_seconds,
-            post_click_wait=post_click_wait, elapsed=elapsed, skip_if=action.get('sweep_prompt'),
+        stage = _start_sweep_and_wait(
+            client, images, action, deadline=deadline, poll_seconds=poll_seconds,
+            post_click_wait=post_click_wait, elapsed=elapsed,
         )
+        if stage == 'ready':
+            roster_open = _wait_and_click(
+                client, images, action['ready'], deadline=deadline, poll_seconds=poll_seconds,
+                post_click_wait=post_click_wait, elapsed=elapsed, skip_if=action.get('sweep_prompt'),
+            )
+        else:
+            roster_open = stage == 'confirm_first'
         if roster_open:
             _wait_and_click(client, images, action['confirm_first'], deadline=deadline,
                             poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
