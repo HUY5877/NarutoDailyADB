@@ -28,6 +28,9 @@ class AgentServer:
                     assert len(images) == 1
                     png = base64.b64decode(images[0].split(',')[1])
                     answer = owner.callback(png, json.dumps(payload, ensure_ascii=False))
+                    if isinstance(answer, dict) and 'http_status' in answer:
+                        self.send_error(answer['http_status'], 'temporary model failure')
+                        return
                     # 简写仅用于通用目标测试；业务证据测试直接给出原生工具参数。
                     status = ('reached' if answer.get('reached') is True else 'pending'
                               if answer.get('reached') is False else answer.get('reached')) if isinstance(answer, dict) else None

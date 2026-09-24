@@ -19,6 +19,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
 
 from naruto_daily.common.visual import VisualError
+from naruto_daily.multimodal.transport import model_api_connection
 
 LOGGER = logging.getLogger('naruto_daily')
 Observation = Annotated[str, Field(strict=True, min_length=1, max_length=2000, pattern=r'\S')]
@@ -204,45 +205,46 @@ def run_agent(
 
     async def navigate():
         # HTTP 客户端与 SDK 同进程运行；退出、异常和取消均关闭连接。
-        async with AsyncClient(follow_redirects=False) as http:
-            async with AsyncOpenAI(base_url=connection['base_url'], api_key=connection['api_key'],
-                                   timeout=timeout, max_retries=0, http_client=http) as api:
-                agent = Agent(
-                    OpenAIChatModel(connection['model'], provider=OpenAIProvider(openai_client=api),
-                                    profile=OpenAIModelProfile(openai_chat_supports_max_completion_tokens=False)),
-                    system_prompt=SYSTEM_PROMPT + ('\n\n业务观察和完成条件：\n' + instructions if instructions else ''),
-                    output_type=ToolOutput(finish, name='finish', max_retries=COMPLETION_RETRIES),
-                    retries=0, capabilities=[hooks],
-                    model_settings={'max_tokens': 4096, 'parallel_tool_calls': False,
-                                    'openai_reasoning_effort': 'low'},
-                )
-
-                @agent.tool_plain(sequential=True, retries=0)
-                async def move(evidence: move_evidence_type) -> ToolReturn:
-                    """沿一个方向短距离移动一次，并获取移动后的新截图。"""
-                    state = state_of(evidence)
-                    if state == 'reached':
-                        raise _NavigationDone(result(True, evidence.observation))
-                    if len(history) >= max_steps:
-                        raise _NavigationDone(result(False, evidence.observation))
-                    direction = evidence.direction
-                    joystick.move(client, direction)
-                    history.append(AgentStep(evidence.observation, direction))
-                    LOGGER.info('[导航 %d/%d] 方向=%s；移动后重新截图', len(history), max_steps, direction)
-                    sleep(settle_seconds)
-                    return ToolReturn(
-                        return_value=f'已移动 {len(history)}/{max_steps} 步，剩余 {max_steps - len(history)} 步。',
-                        content=['请观察移动后的新截图，再判断是否到达。',
-                                 BinaryContent(data=client.screenshot(), media_type='image/png')],
+        with model_api_connection(connection) as api_connection:
+            async with AsyncClient(follow_redirects=False, trust_env=False) as http:
+                async with AsyncOpenAI(base_url=api_connection['base_url'], api_key=api_connection['api_key'],
+                                       timeout=api_connection['timeout_seconds'], max_retries=0, http_client=http) as api:
+                    agent = Agent(
+                        OpenAIChatModel(connection['model'], provider=OpenAIProvider(openai_client=api),
+                                        profile=OpenAIModelProfile(openai_chat_supports_max_completion_tokens=False)),
+                        system_prompt=SYSTEM_PROMPT + ('\n\n业务观察和完成条件：\n' + instructions if instructions else ''),
+                        output_type=ToolOutput(finish, name='finish', max_retries=COMPLETION_RETRIES),
+                        retries=0, capabilities=[hooks],
+                        model_settings={'max_tokens': 4096, 'parallel_tool_calls': False,
+                                        'openai_reasoning_effort': 'low'},
                     )
 
-                run = await agent.run(
-                    [f'目标：{goal.strip()}\n最多移动 {max_steps} 步。先观察当前截图。',
-                     BinaryContent(data=initial_png, media_type='image/png')],
-                    usage_limits=UsageLimits(request_limit=max_steps + 1 + COMPLETION_RETRIES,
-                                             tool_calls_limit=max_steps + 1),
-                )
-                return run.output
+                    @agent.tool_plain(sequential=True, retries=0)
+                    async def move(evidence: move_evidence_type) -> ToolReturn:
+                        """沿一个方向短距离移动一次，并获取移动后的新截图。"""
+                        state = state_of(evidence)
+                        if state == 'reached':
+                            raise _NavigationDone(result(True, evidence.observation))
+                        if len(history) >= max_steps:
+                            raise _NavigationDone(result(False, evidence.observation))
+                        direction = evidence.direction
+                        joystick.move(client, direction)
+                        history.append(AgentStep(evidence.observation, direction))
+                        LOGGER.info('[导航 %d/%d] 方向=%s；移动后重新截图', len(history), max_steps, direction)
+                        sleep(settle_seconds)
+                        return ToolReturn(
+                            return_value=f'已移动 {len(history)}/{max_steps} 步，剩余 {max_steps - len(history)} 步。',
+                            content=['请观察移动后的新截图，再判断是否到达。',
+                                     BinaryContent(data=client.screenshot(), media_type='image/png')],
+                        )
+
+                    run = await agent.run(
+                        [f'目标：{goal.strip()}\n最多移动 {max_steps} 步。先观察当前截图。',
+                         BinaryContent(data=initial_png, media_type='image/png')],
+                        usage_limits=UsageLimits(request_limit=max_steps + 1 + COMPLETION_RETRIES,
+                                                 tool_calls_limit=max_steps + 1),
+                    )
+                    return run.output
 
     try:
         return asyncio.run(navigate())

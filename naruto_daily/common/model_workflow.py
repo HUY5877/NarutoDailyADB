@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .recognition import ImageRecognition
 from .visual import VisualError, find_template_in_png
-from naruto_daily.multimodal.client import MultimodalClient
+from naruto_daily.multimodal.client import MultimodalClient, MultimodalRequestError
 
 LOGGER = logging.getLogger('naruto_daily')
 
@@ -51,6 +51,9 @@ class ModelWorkflow:
                 parsed = validate(result)
                 LOGGER.info('[%s 第%d次] %s', name, attempt, parsed)
                 return parsed
+            except MultimodalRequestError as exc:
+                LOGGER.error('[%s] 接口请求失败：%s；停止识别，不再叠加重试', name, exc)
+                raise
             except VisualError as exc:
                 LOGGER.info('[%s 第%d/%d次] 识别未确认：%s：%s；本次耗时 %.2f 秒；%s',
                             name, attempt, max_calls, type(exc).__name__, exc,

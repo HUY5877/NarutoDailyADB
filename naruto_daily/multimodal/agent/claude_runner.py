@@ -21,6 +21,7 @@ from claude_agent_sdk import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from naruto_daily.common.visual import VisualError
+from naruto_daily.multimodal.transport import model_api_connection
 
 Observation = str
 COMPLETION_RETRIES = 3
@@ -130,6 +131,7 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
         @tool('move', '观察当前截图事实后，沿一个方向移动一次并返回新截图。',
               {**{name: str for name in evidence_type.model_fields}, 'direction': str})
         async def move(args: dict[str, Any]) -> dict[str, Any]:
+            nonlocal final_result
             evidence = parse(args, direction=True)
             if evidence.state() == 'reached' or len(history) >= max_steps:
                 final_result = result(evidence.state() == 'reached', evidence.observation)
@@ -149,6 +151,7 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
         @tool('finish', '根据当前截图事实结束导航；未完成时不要调用。',
               {name: str for name in evidence_type.model_fields})
         async def finish(args: dict[str, Any]) -> dict[str, Any]:
+            nonlocal final_result
             evidence = parse(args, direction=False)
             state = evidence.state()
             if state == 'pending' and len(history) < max_steps:
@@ -158,9 +161,6 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
             return {'content': [{'type': 'text', 'text': '导航结果已记录。'}]}
 
         server = create_sdk_mcp_server(name='navigation', version='1.0.0', tools=[move, finish])
-        base_url = str(connection['base_url']).rstrip('/')
-        if base_url.endswith('/v1'):
-            base_url = base_url[:-3].rstrip('/')
         options = ClaudeAgentOptions(
             model=connection['model'],
             max_turns=max_steps + 1 + COMPLETION_RETRIES,
@@ -174,10 +174,14 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
             tools=[],
             allowed_tools=['mcp__navigation__move', 'mcp__navigation__finish'],
             permission_mode='dontAsk',
-            env={'ANTHROPIC_AUTH_TOKEN': connection['api_key'],
-                 'ANTHROPIC_BASE_URL': base_url,
+            env={'ANTHROPIC_AUTH_TOKEN': api_connection['api_key'],
+                 'ANTHROPIC_BASE_URL': api_connection['base_url'],
                  'ANTHROPIC_MODEL': connection['model'],
-                 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'},
+                 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1',
+                 'CLAUDE_CODE_MAX_RETRIES': '0',
+                 'NO_PROXY': '127.0.0.1,localhost',
+                 'no_proxy': '127.0.0.1,localhost',
+                 'API_TIMEOUT_MS': str(int(api_connection['timeout_seconds'] * 1000))},
             cli_path=None,
             cwd='.',
         )
@@ -198,8 +202,13 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
             raise AgentError('导航模型未调用完成工具，已停止')
         return final_result
 
+    base_url = str(connection['base_url']).rstrip('/')
+    if base_url.endswith('/v1'):
+        base_url = base_url[:-3].rstrip('/')
     try:
-        return asyncio.run(asyncio.wait_for(session(), timeout=timeout * (max_steps + 1 + COMPLETION_RETRIES)))
+        with model_api_connection({**connection, 'base_url': base_url}) as api_connection:
+            return asyncio.run(asyncio.wait_for(
+                session(), timeout=api_connection['timeout_seconds'] * (max_steps + 1 + COMPLETION_RETRIES)))
     except AgentError:
         raise
     except Exception:

@@ -280,3 +280,30 @@ def test_invalid_evidence_type_fails_before_device_read(evidence_type):
     with pytest.raises(ValueError):
         run(device, Model([]), evidence_type=evidence_type)
     assert device.events == []
+
+
+def test_http_retries_reuse_same_frame_without_replaying_moves(monkeypatch):
+    from naruto_daily.multimodal import transport
+    waits = []
+    monkeypatch.setattr(transport.time, 'sleep', waits.append)
+    device = Device()
+    model = Model([{'http_status': 429}, decision('w'),
+                   {'http_status': 503}, decision(reached=True)])
+    result = run(device, model)
+    assert result.reached and result.steps == 1
+    assert waits == [2, 2]
+    assert [png for png, _ in model.requests] == [b'frame-1', b'frame-1', b'frame-2', b'frame-2']
+    assert device.events == ['screenshot', (200, 800, 200, 720, 300), 'screenshot']
+
+
+def test_agent_sdk_does_not_add_retries_after_shared_limit(monkeypatch):
+    from naruto_daily.multimodal import transport
+    waits = []
+    monkeypatch.setattr(transport.time, 'sleep', waits.append)
+    device = Device()
+    model = Model([{'http_status': 429}] * 4)
+    with pytest.raises(AgentError):
+        run(device, model)
+    assert len(model.requests) == 4
+    assert waits == [2, 2, 2]
+    assert device.events == ['screenshot']
