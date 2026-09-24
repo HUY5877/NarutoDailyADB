@@ -76,6 +76,18 @@ def _stamina(data):
     return stamina
 
 
+def _sweep_result(data):
+    require_page(data, 'sweep_result')
+    runs, stamina = data.get('completed_runs'), data.get('stamina')
+    if type(runs) is not int or not 1 <= runs <= 99999:
+        raise VisualError('扫荡结果未确认实际完成次数，未继续操作')
+    if type(stamina) is not int or not 0 <= stamina <= 99999:
+        raise VisualError('扫荡结果体力数值不明确')
+    if data.get('animation_finished') is not True:
+        raise VisualError('扫荡结果动画尚未确认结束')
+    return runs, stamina
+
+
 def _page(data):
     if not isinstance(data, dict) or data.get('page') not in (
             'equipment', 'material', 'material_info', 'sweep_setup', 'sweep_result'):
@@ -121,11 +133,14 @@ def _finish_material(flow, button):
         _close_layers(flow, 'material')
 
 
-def _dismiss_sweep_result(flow):
+def _dismiss_sweep_result(flow, stamina_before):
     deadline = flow.elapsed() + min(flow.action['sweep_timeout_seconds'], flow.remaining())
-    flow.button('sweep_done', click=False, timeout=deadline - flow.elapsed())
-    # 结果动画开始时按钮已出现，此时第一次空白点击可能被游戏忽略。
-    # 只有重新截图确认结果层消失后，才允许读取背景的合成按钮。
+    # 材料足够后可能根本没有“继续扫荡”，直接核验结果层本身。
+    runs, stamina_after = flow.read('扫荡完成结果核验', prompts.SWEEP_RESULT, _sweep_result,
+                                    timeout=deadline - flow.elapsed())
+    LOGGER.info('本次扫荡已完成%d次，体力读数 %d→%d', runs, stamina_before, stamina_after)
+    # “继续扫荡”会在滚动动画期间提前出现、在材料足够时消失。
+    # 必须确认前景回到材料详情，不能把按钮暂时消失当成结果层关闭。
     while flow.elapsed() < deadline:
         flow.tap(BLANK)
         center, _ = flow.images.match(flow.client.screenshot(), flow.action['sweep_done'])
@@ -133,9 +148,16 @@ def _dismiss_sweep_result(flow):
         if flow.elapsed() >= deadline:
             break
         if center is None:
-            return
+            page = flow.read('扫荡结果关闭检查', prompts.PAGE, _page,
+                             timeout=deadline - flow.elapsed())
+            if page == 'material':
+                return
+            if page != 'sweep_result':
+                raise VisualError('扫荡结果关闭后未回到材料详情，已停止')
         LOGGER.info('扫荡结果弹层仍在，等待动画后再次点击空白')
-        flow.images.sleep(min(1, deadline - flow.elapsed()))
+        delay = min(1, deadline - flow.elapsed())
+        if delay > 0:
+            flow.images.sleep(delay)
     raise VisualError('等待扫荡结果关闭超时，未继续操作装备')
 
 
@@ -144,7 +166,6 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
     flow = ModelWorkflow(client, action, model=model, template_matcher=template_matcher,
                          asset_root=asset_root, sleep=sleep)
     previous_advance = None
-    previous_sweep = None
     unchanged_material = None
     for round_number in range(1, action['max_rounds'] + 1):
         overview = flow.read('最低进阶装备识别', prompts.EQUIPMENT, _overview)
@@ -200,11 +221,8 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
             LOGGER.info('体力为%d，不大于5，结束装备任务并返回主界面', stamina)
             _close_layers(flow, 'sweep_setup')
             return
-        if previous_sweep is not None and stamina >= previous_sweep:
-            raise VisualError('扫荡后体力未减少，未重复启动扫荡')
-        previous_sweep = stamina
         flow.button('start_sweep')
-        _dismiss_sweep_result(flow)
+        _dismiss_sweep_result(flow, stamina)
         button = flow.read('扫荡后合成检查', prompts.MATERIAL, _material)
         _finish_material(flow, button)
         if button != 'sweep':

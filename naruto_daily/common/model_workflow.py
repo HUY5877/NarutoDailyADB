@@ -29,15 +29,25 @@ class ModelWorkflow:
             raise VisualError('日常页面处理超时，已停止点击')
         return remaining
 
-    def read(self, name, prompt, validate):
+    def read(self, name, prompt, validate, *, timeout=None):
+        deadline = None if timeout is None else self.elapsed() + min(timeout, self.remaining())
+
+        def remaining_budget():
+            remaining = self.remaining()
+            if deadline is not None:
+                remaining = min(remaining, deadline - self.elapsed())
+                if remaining <= 0:
+                    raise VisualError(f'{name}识别超时，已停止')
+            return remaining
+
         max_calls = self.action['multimodal']['max_calls']
         for attempt in range(1, max_calls + 1):
-            self.remaining()
+            remaining_budget()
             attempt_started = time.monotonic()
             try:
                 LOGGER.info('[%s 第%d/%d次] 开始截图', name, attempt, max_calls)
                 png = self.client.screenshot()
-                remaining = self.remaining()
+                remaining = remaining_budget()
                 configured_timeout = self.action['multimodal'].get('timeout_seconds')
                 call_timeout = (min(remaining, configured_timeout)
                                 if isinstance(configured_timeout, (int, float)) else remaining)
@@ -47,7 +57,7 @@ class ModelWorkflow:
                 result = self.model.complete_json(png, prompt, timeout_seconds=remaining)
                 LOGGER.info('[%s 第%d/%d次] 模型请求返回：耗时 %.2f 秒',
                             name, attempt, max_calls, time.monotonic() - request_started)
-                self.remaining()  # 迟到的模型响应不能触发后续点击。
+                remaining_budget()  # 迟到的模型响应不能触发后续点击。
                 parsed = validate(result)
                 LOGGER.info('[%s 第%d次] %s', name, attempt, parsed)
                 return parsed
@@ -61,7 +71,7 @@ class ModelWorkflow:
                             '将重新截图重试' if attempt < max_calls else '已达重试上限，停止识别')
                 if attempt == max_calls:
                     raise VisualError(f'{name}多次识别未确认，已停止：{exc}') from exc
-                self.images.sleep(min(1, self.remaining()))
+                self.images.sleep(min(1, remaining_budget()))
 
     def tap(self, point):
         self.remaining()

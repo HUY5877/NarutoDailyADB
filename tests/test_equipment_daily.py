@@ -71,6 +71,113 @@ def setup(stamina, auto_stop=True):
     return dict(page='sweep_setup', stamina=stamina, auto_stop=auto_stop)
 
 
+def sweep_result(stamina, runs=1, animation_finished=True):
+    return dict(page='sweep_result', stamina=stamina, completed_runs=runs,
+                animation_finished=animation_finished)
+
+
+@pytest.mark.parametrize('next_stamina', [330, 335])
+def test_completed_sweeps_do_not_require_stamina_to_decrease_between_rounds(next_stamina):
+    client, _ = run(
+        overview(), materials(), material('sweep'), setup(330),
+        sweep_result(325), dict(page='material'), material('sweep'), dict(page='equipment'),
+        overview(), materials(), material('sweep'), setup(next_stamina),
+        sweep_result(next_stamina - 5), dict(page='material'), material('sweep'), dict(page='equipment'),
+        overview(), materials(), material('sweep'), setup(4),
+        dict(page='material'), dict(page='equipment'),
+    )
+    assert client.taps.count(CENTERS['start_sweep']) == 2
+
+
+def test_zero_completed_runs_never_dismisses_or_restarts_sweep():
+    client = Client()
+    with pytest.raises(VisualError, match='实际完成'):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), materials(), material('sweep'), setup(330),
+            sweep_result(330, runs=0), sweep_result(330, runs=0)),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps[-1] == CENTERS['start_sweep']
+    assert client.taps.count(CENTERS['start_sweep']) == 1
+
+
+def test_animation_is_confirmed_finished_before_first_result_dismissal():
+    client = Client()
+    checks = []
+
+    class AnimationModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            answer = super().complete_json(png, prompt, **kwargs)
+            if isinstance(answer, dict) and 'animation_finished' in answer:
+                checks.append(client.taps.count((1600, 920)))
+            return answer
+
+    handle_equipment_upgrade(client, action(), model=AnimationModel(
+        overview(), materials(), material('sweep'), setup(330),
+        sweep_result(210, runs=24, animation_finished=False), sweep_result(210, runs=24),
+        dict(page='material'), material('sweep'), dict(page='equipment'),
+        overview(), materials(), material('sweep'), setup(4),
+        dict(page='material'), dict(page='equipment')),
+        template_matcher=matcher, sleep=lambda _: None)
+    assert checks == [0, 0]
+    assert client.taps.count(CENTERS['start_sweep']) == 1
+
+
+def test_hidden_continue_button_does_not_mean_result_layer_was_closed():
+    client = Client()
+
+    class ForegroundModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            answer = super().complete_json(png, prompt, **kwargs)
+            if isinstance(answer, dict) and answer.get('action') == 'synthesize':
+                assert client.taps.count((1600, 920)) == 2
+            return answer
+
+    handle_equipment_upgrade(client, action(), model=ForegroundModel(
+        overview(), materials(), material('sweep'), setup(330), sweep_result(210, runs=24),
+        dict(page='sweep_result'), dict(page='material'),
+        material('synthesize'), material('equip'), dict(page='equipment'),
+        overview(), materials(['filled'] * 5 + ['sweepable']), material('sweep'), setup(4),
+        dict(page='material'), dict(page='equipment')),
+        template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps.count(CENTERS['start_sweep']) == 1
+
+
+@pytest.mark.parametrize('bad', [
+    sweep_result(210, runs=True), sweep_result(210, runs=-1), sweep_result(210, runs='24'),
+    sweep_result(None), sweep_result(True), sweep_result(210, animation_finished=None),
+    sweep_result(210, animation_finished='true'), dict(page='material'),
+])
+def test_uncertain_sweep_result_cannot_trigger_close_or_material_click(bad):
+    client = Client()
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), materials(), material('sweep'), setup(330), bad, bad),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps[-1] == CENTERS['start_sweep']
+    assert client.taps.count(CENTERS['start_sweep']) == 1
+
+
+def test_late_sweep_result_does_not_dismiss_or_start_material_operations(monkeypatch):
+    from naruto_daily.common import model_workflow
+    now = [0]
+    monkeypatch.setattr(model_workflow.time, 'monotonic', lambda: now[0])
+    client = Client()
+
+    class LateResult(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            answer = super().complete_json(png, prompt, **kwargs)
+            if isinstance(answer, dict) and answer.get('page') == 'sweep_result':
+                assert kwargs['timeout_seconds'] <= action()['sweep_timeout_seconds']
+                now[0] = 150
+            return answer
+
+    with pytest.raises(VisualError, match='超时'):
+        handle_equipment_upgrade(client, action(), model=LateResult(
+            overview(), materials(), material('sweep'), setup(330), sweep_result(210, runs=24)),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps[-1] == CENTERS['start_sweep']
+
+
 def run(*answers, config=None, match=matcher):
     client = Client()
     result = handle_equipment_upgrade(client, config or action(), model=Model(*answers),
@@ -204,6 +311,7 @@ def test_low_stamina_dismisses_both_layers_without_starting(stamina, auto_stop):
 def test_sweep_synthesize_equip_reselect_then_stop():
     client, _ = run(
         overview(), materials(), material('sweep'), setup(6),
+        sweep_result(1), dict(page='material'),
         material('synthesize'), material('equip'), dict(page='equipment'),
         overview(), materials(['filled'] * 5 + ['sweepable']), material('sweep'), setup(1),
         dict(page='material'), dict(page='equipment'),
@@ -237,7 +345,8 @@ def test_unchecked_auto_stop_is_clicked_once_and_freshly_confirmed_before_sweep(
     client = RecordingClient()
     handle_equipment_upgrade(client, action(), model=RecordingModel(
         overview(), materials(), material('sweep'), setup(20, False),
-        setup(20, False), setup(18), material('sweep'), dict(page='equipment'),
+        setup(20, False), setup(18), sweep_result(13), dict(page='material'),
+        material('sweep'), dict(page='equipment'),
         overview(), materials(), material('sweep'), setup(4),
         dict(page='material'), dict(page='equipment')),
         template_matcher=matcher, sleep=lambda _: None)
@@ -300,14 +409,15 @@ def test_stamina_falling_to_limit_during_checkbox_recheck_closes_without_sweep(s
     assert client.taps[-2:] == [(1600, 920)] * 2
 
 
-def test_confirmed_stamina_is_saved_for_next_round_repeat_protection():
-    client = Client()
-    with pytest.raises(VisualError, match='体力未减少'):
-        handle_equipment_upgrade(client, action(), model=Model(
-            overview(), materials(), material('sweep'), setup(20, False), setup(10),
-            material('sweep'), dict(page='equipment'),
-            overview(), materials(), material('sweep'), setup(12)),
-            template_matcher=matcher, sleep=lambda _: None)
+def test_sweep_result_logs_stamina_from_checkbox_recheck(caplog):
+    caplog.set_level('INFO', logger='naruto_daily')
+    client, _ = run(
+        overview(), materials(), material('sweep'), setup(20, False), setup(10),
+        sweep_result(5), dict(page='material'), material('sweep'), dict(page='equipment'),
+        overview(), materials(), material('sweep'), setup(4),
+        dict(page='material'), dict(page='equipment'),
+    )
+    assert '体力读数 10→5' in caplog.text
     assert client.taps.count(AUTO_STOP) == 1
     assert client.taps.count(CENTERS['start_sweep']) == 1
 
@@ -315,8 +425,10 @@ def test_confirmed_stamina_is_saved_for_next_round_repeat_protection():
 def test_lower_stamina_on_checkbox_recheck_allows_next_sweep():
     client, _ = run(
         overview(), materials(), material('sweep'), setup(20),
+        sweep_result(15), dict(page='material'),
         material('sweep'), dict(page='equipment'),
         overview(), materials(), material('sweep'), setup(20, False), setup(10),
+        sweep_result(5), dict(page='material'),
         material('sweep'), dict(page='equipment'),
         overview(), materials(), material('sweep'), setup(4),
         dict(page='material'), dict(page='equipment'),
@@ -500,13 +612,26 @@ def test_uncertain_stamina_or_wrong_layer_never_starts_sweep(bad):
     assert AUTO_STOP not in client.taps
 
 
-def test_missing_completion_marker_times_out_without_dismissing_active_sweep():
+def test_missing_completion_marker_can_still_confirm_finished_result():
+    def missing_done(png, path, roi, threshold):
+        return (None, .1) if path.stem == 'sweep_done' else matcher(png, path, roi, threshold)
+    client, _ = run(
+        overview(), materials(), material('sweep'), setup(330),
+        sweep_result(210, runs=24), dict(page='material'),
+        material('synthesize'), material('equip'), dict(page='equipment'),
+        overview(), materials(['filled'] * 5 + ['sweepable']), material('sweep'), setup(4),
+        dict(page='material'), dict(page='equipment'), match=missing_done)
+    assert client.taps.count(CENTERS['start_sweep']) == 1
+
+
+def test_missing_result_never_dismisses_or_restarts_active_sweep():
     client = Client()
     def missing_done(png, path, roi, threshold):
         return (None, .1) if path.stem == 'sweep_done' else matcher(png, path, roi, threshold)
-    with pytest.raises(VisualError, match='sweep_done.*超时'):
+    with pytest.raises(VisualError, match='扫荡完成结果核验'):
         handle_equipment_upgrade(client, action(), model=Model(
-            overview(), materials(), material('sweep'), setup(10)),
+            overview(), materials(), material('sweep'), setup(10),
+            dict(page='unknown'), dict(page='unknown')),
             template_matcher=missing_done, sleep=lambda _: None)
     assert client.taps[-1] == CENTERS['start_sweep']
 
@@ -531,6 +656,7 @@ def test_takeout_unrecognized_page_does_not_click():
 
 def test_sweep_with_partial_materials_reopens_and_checks_stamina_again():
     client, _ = run(overview(), materials(), material('sweep'), setup(33),
+                    sweep_result(5, runs=6), dict(page='material'),
                     material('sweep'), dict(page='equipment'),
                     overview(), materials(), material('sweep'), setup(4),
                     dict(page='material'), dict(page='equipment'))
@@ -550,7 +676,8 @@ def test_ignored_result_dismiss_is_retried_before_reading_material():
                 assert client.taps.count((1600, 920)) >= 2, '扫荡结果弹层仍未关闭'
             return super().complete_json(png, prompt, **kwargs)
     handle_equipment_upgrade(client, action(), model=GuardModel(
-        overview(), materials(), material('sweep'), setup(6), material('sweep'), dict(page='equipment'),
+        overview(), materials(), material('sweep'), setup(6), sweep_result(1), dict(page='material'),
+        material('sweep'), dict(page='equipment'),
         overview(), materials(), material('sweep'), setup(4), dict(page='material'), dict(page='equipment')),
         template_matcher=delayed_dismiss, sleep=lambda _: None)
 

@@ -16,6 +16,7 @@ MATERIALS = BASE + '''确认前景是装备总览，无弹层。读取当前发�
 filled=已装好的完整彩色成品，且没有可扫荡、加号或待添加提示；unknown=无法判断。
 equipable必须有该成品格自身的加号、“可装备”或待添加标记。完整彩色图标且无这些标记应为filled。
 成品的金色边框、图标颜色、绿色属性数字和全局“一键添加”按钮都不能作为某格equipable的依据。
+灰色占位图不是已装备；若界面尚未加载出加号或“可扫荡”等标记，该格返回unknown，不能猜filled。
 右下角明确显示可用的“进阶”按钮时can_advance=true，否则false。不要把上方“升级”当作进阶。
 '''
 
@@ -23,6 +24,8 @@ MATERIAL = BASE + '''判断前景是否是装备成品/材料详情面板（左�
 返回{"page":"material","action":"sweep|synthesize|equip|unknown"}。
 根据左面板底部实际可用按钮文字：一键扫荡=sweep；合成=synthesize；装备=equip。
 灰色不可用按钮、钱不够、看不清文字都返回unknown；不要读取背景的升级、进阶或一键添加。
+如果前景还有扫荡次数、奖励列表、材料已足够、继续扫荡或“扫荡完成”动画，返回{"page":"sweep_result"}，
+即使背景的“一键扫荡”“合成”已经可见，也不能返回material或读取其action。
 '''
 
 MATERIAL_ENTRY = MATERIAL + '''点击成品格也可能打开只读的成品信息卡，这种情况返回{"page":"material_info"}。
@@ -39,8 +42,17 @@ auto_stop只读取最前方弹层底部“材料足够后自动停止”文字�
 不要把背景材料列表里的绿色勾当成这个复选框，不要省略auto_stop或用字符串代替布尔值。无法读取体力时stamina返回null。
 已经在扫荡或按钮为继续扫荡不是设置页。'''
 
+SWEEP_RESULT = BASE + '''只读取最前方的扫荡结果层，不能读取背景材料详情的按钮。
+返回{"page":"sweep_result","completed_runs":6,"stamina":5,"animation_finished":true}。
+completed_runs读取左上“扫荡N次”的N；stamina读取右上体力碗旁分数的分子。
+animation_finished仅在最后一条已显示的“第N次”和左上总次数一致，且没有覆盖画面的“扫荡完成”动画时为true。
+例如左上扫荡24次，列表只播放到第1次/第2次，此时为false；播放到第23次/第24次且无完成动画才为true。
+“继续扫荡”按钮可能在动画期间提前出现，也可能在材料足够后消失，不能仅凭按钮判断结束。
+看不清的字段返回null；不是扫荡结果层返回{"page":"unknown"}。'''
+
 PAGE = BASE + '''只判断当前前景页面，返回{"page":"equipment|material|material_info|sweep_setup|sweep_result|unknown"}。
 equipment=无遮挡的装备总览；material=左侧合成树及右侧获取途径的材料详情；
 material_info=居中的单张成品说明卡，仅有物品说明和增加属性，没有合成树或操作按钮；
-sweep_setup=含开始扫荡按钮的设置弹层；sweep_result=已经结束且含继续扫荡按钮的结果层。
-仍在扫荡、动画、其它弹窗或不确定返回unknown。'''
+sweep_setup=含开始扫荡按钮的设置弹层；sweep_result=显示扫荡次数、奖励列表或“扫荡完成”动画的结果层，
+即使“继续扫荡”按钮消失、背景合成按钮露出，也仍是sweep_result，不能判成material。
+其它弹窗或不确定返回unknown。'''

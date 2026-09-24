@@ -132,3 +132,21 @@ def test_late_response_is_logged_but_never_validated(monkeypatch, caplog):
     assert validated == sleeps == []
     assert client.screenshots == len(model.calls) == 1
     assert model.calls[0][2] == 2
+
+
+def test_local_read_deadline_limits_request_even_with_long_action_budget(monkeypatch, caplog):
+    flow, client, model, sleeps = workflow(monkeypatch, caplog, {}, max_calls=1)
+    validated = []
+    with pytest.raises(VisualError, match='结果核验识别超时'):
+        flow.read('结果核验', 'private-prompt', validated.append, timeout=5)
+    assert model.calls[0][2] == 3
+    assert validated == sleeps == []
+    assert client.screenshots == len(model.calls) == 1
+
+
+def test_expired_local_read_deadline_does_not_screenshot_or_call_model(monkeypatch, caplog):
+    flow, client, model, sleeps = workflow(monkeypatch, caplog)
+    with pytest.raises(VisualError, match='结果核验识别超时'):
+        flow.read('结果核验', 'private-prompt', lambda value: value, timeout=0)
+    assert client.screenshots == 0
+    assert model.calls == sleeps == []
