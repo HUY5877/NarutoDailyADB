@@ -115,7 +115,7 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 | `mock_emulator.py` | 每个任务单独启动的 Python 工作进程，生成模拟二维码 |
 | `ldplayer.py` / `ldplayer_worker.py` | 固定实例分配、持久绑定、启动和隔离工作进程 |
 | `daily.py` | 在任务绑定的 ADB 设备上复用原登录收尾和 `ActionRunner` 日常流程 |
-| `qr_navigation.py` / `templates/` | 页面识别、ADB 点击和真实二维码裁剪，不调用多模态 API |
+| `qr_navigation.py` / `templates/` | 页面识别、ADB 点击和真实二维码裁剪；QQ 安卓登录、切换账号、开始游戏三张模板复用项目 `assets/`，其余模板放在本模块 `templates/`；不调用多模态 API |
 | `pool_admin.py` | 查看实例占用，按任务 ID 显式释放实例 |
 | `storage.py` | 本地与阿里云 OSS 存储适配 |
 

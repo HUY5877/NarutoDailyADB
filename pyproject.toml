@@ -17,10 +17,11 @@ login-service-test = ["pytest>=8", "httpx>=0.28,<1", "fakeredis[lua]>=2,<3"]
 naruto-daily = "naruto_daily.cli:main"
 naruto-login-service = "naruto_daily.login_service.__main__:main"
 
-[tool.setuptools.packages.find]
-include = ["naruto_daily*"]
+[tool.setuptools.package-dir]
+"naruto_daily.assets" = "assets"
 
 [tool.setuptools.package-data]
+"naruto_daily.assets" = ["qq_android_button.png", "qq_account_switch_account.png", "start_game_button.png"]
 "naruto_daily.multimodal.agent" = ["README.md"]
 "naruto_daily.login_service" = ["README.md", ".env.example", "templates/*.png"]
 

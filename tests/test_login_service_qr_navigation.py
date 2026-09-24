@@ -13,11 +13,18 @@ from naruto_daily.login_service.qr_navigation import (
 
 
 ASSETS = Path(__file__).parents[1] / "naruto_daily/login_service/templates"
+SHARED_ASSETS = Path(__file__).parents[1] / "assets"
+SHARED_TEMPLATES = {
+    "qq_android": "qq_android_button.png",
+    "switch_account": "qq_account_switch_account.png",
+    "start_game": "start_game_button.png",
+}
 
 
 def frame_with(name, x, y):
     frame = np.full((1080, 1920, 3), 255, np.uint8)
-    template = cv2.imdecode(np.frombuffer((ASSETS / f"{name}.png").read_bytes(), np.uint8), 1)
+    path = SHARED_ASSETS / SHARED_TEMPLATES[name] if name in SHARED_TEMPLATES else ASSETS / f"{name}.png"
+    template = cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), 1)
     h, w = template.shape[:2]
     frame[y:y+h, x:x+w] = template
     return frame
@@ -77,6 +84,27 @@ def test_checked_game_agreement_is_green_and_must_not_be_toggled_off():
     assert choose_action(frame, "").name == "game_agreement"
     cv2.polylines(frame, [np.array([(143,916),(156,932),(179,905)])], False, (100,235,45), 6)
     assert choose_action(frame, "").name == "qq_android"
+
+
+def test_shared_templates_work_outside_project_directory(monkeypatch, tmp_path):
+    from naruto_daily.login_service.qr_navigation import _template
+
+    monkeypatch.chdir(tmp_path)
+    _template.cache_clear()
+    try:
+        frame = frame_with("switch_account", 820, 900)
+        assert choose_action(frame, "").name == "switch_account"
+
+        frame = frame_with("start_game", 780, 820)
+        back = frame_with("game_back", 1680, 30)
+        frame[:170, 1650:1850] = back[:170, 1650:1850]
+        assert choose_action(frame, "").name == "game_back"
+
+        frame = frame_with("qq_android", 1400, 770)
+        frame[910:942, 142:176] = (100, 235, 45)
+        assert choose_action(frame, "").name == "qq_android"
+    finally:
+        _template.cache_clear()
 
 
 def test_android_game_anr_chooses_wait_only_for_confirmed_game_dialog():
