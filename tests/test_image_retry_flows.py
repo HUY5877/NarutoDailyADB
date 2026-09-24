@@ -93,6 +93,8 @@ def test_recruit_retry_never_combines_button_and_guard_from_different_frames(mon
     def matcher(png, path, roi, threshold):
         if path.name == "advanced_recruit_tab.png":
             return (120, 250), .99
+        if path.name == "ordinary_recruit_tab.png":
+            return (120, 900), .99
         if path.name == "recruit_red_dot.png":
             return ((218, 230), .99) if roi[1] < 400 and int(png) < 9 else (None, .4)
         raise AssertionError("免费按钮不应调用 OpenCV")
