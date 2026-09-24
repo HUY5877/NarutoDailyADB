@@ -6,7 +6,7 @@
 
 客户端前后端位于 [NarutoLoginClient](https://github.com/HUY5877/NarutoLoginClient)，仍使用 TSX + TypeScript。网站/Vercel 后端投递 Redis 任务、查询状态并读取 OSS；Python worker 不开放 HTTP 端口，网站无需连接本机 Python。两边必须使用相同的 Redis 数据库、队列和 OSS 配置；默认队列为 `naruto:login:tasks`，OSS 前缀为 `login`。
 
-在本项目根目录执行 `python -m pip install -e ".[login-service]"`，在服务专用 `naruto_daily/login_service/.env` 中设置 `REDIS_URL` 并保留已有 OSS 配置，再执行 `python -m naruto_daily.login_service`。本机可直接运行 `.\.venv-login-service\Scripts\python.exe -m naruto_daily.login_service`。进程会持续消费任务，断线自动重连，按 `Ctrl+C` 优雅停止；强制终止后已取出的任务可能需要重新申请。未配置 `REDIS_URL` 时仍保留默认监听 `127.0.0.1:4320` 的旧 HTTP 本地演示，详见模块文档。
+在本项目根目录执行 `python -m pip install -e ".[login-service]"`，在服务专用 `naruto_daily/login_service/.env` 中设置 `REDIS_URL` 并保留已有 OSS 配置，再执行 `python -m naruto_daily.login_service`。本机可直接运行 `.\.venv-login-service\Scripts\python.exe -m naruto_daily.login_service`。进程会持续消费任务，断线自动重连，按 `Ctrl+C` 优雅停止；强制终止后已取出的任务可能需要重新申请。`REDIS_URL` 为必填项，未配置或为空时会明确报错并以退出码 1 结束，不启动本地 Web 服务，详见模块文档。
 
 ---
 

@@ -1,6 +1,6 @@
 # Python 扫码登录 worker
 
-本模块位于现有 `NarutoDailyADB` Python 项目中，与日常自动化独立运行。配置 `REDIS_URL` 后，启动命令会运行常驻 Redis worker，**不开放 HTTP 端口**。
+本模块位于现有 `NarutoDailyADB` Python 项目中，与日常自动化独立运行。启动命令仅运行常驻 Redis worker，`REDIS_URL` 为必填项；未配置或为空时会明确报错并以退出码 1 结束，**不开放 HTTP 端口**。
 
 网站或 Vercel 上的 `NarutoLoginClient` TypeScript 后端生成 UUID 和独立访问凭证，将登录任务写入 Redis。Python 从同一个 Redis 队列消费任务，为每项任务启动独立 Python 子进程。`mock` 驱动生成模拟二维码；`ldplayer` 驱动从固定实例池分配一个雷电实例、打开游戏并导航到二维码登录，把真实二维码 PNG 写入 OSS，再将阶段状态回写 Redis。客户端后端查询 Redis 状态并读取 OSS，浏览器通过客户端后端显示图片；网站无需通过 HTTP 连接本机 Python。留空实例池并配置模板时，仍兼容原有的复制实例模式。
 
@@ -38,7 +38,7 @@ REDIS_URL=redis://127.0.0.1:6379/0
 
 | 变量 | 默认值与用途 |
 | --- | --- |
-| `REDIS_URL` | 未设置时使用下方的旧 HTTP 本地演示；设置后启动 Redis worker |
+| `REDIS_URL` | 必填；未设置、为空或仅包含空白时，启动命令报错退出 |
 | `REDIS_QUEUE_KEY` | `naruto:login:tasks`，必须与客户端相同 |
 | `WORKER_CONCURRENCY` | `2`，同时运行的任务子进程数 |
 | `STORAGE_DRIVER` | `local`；网站/Vercel 链路使用 `oss` |
@@ -80,11 +80,9 @@ TypeScript 后端通过 `LPUSH` 投递，Python 通过 `BRPOP` 按 FIFO 顺序�
 
 按 `Ctrl+C` 优雅停止时，worker 回收子进程并将未完成任务重新入队；已完成的二维码保留至过期。队列使用直接 `BRPOP`，没有消息确认与崩溃恢复机制：进程被强制终止或机器崩溃后，已取出的任务可能无法恢复，此时需要在网站重新申请。Redis 断线期间尚未完成的操作也受任务有效期限制。
 
-## 旧 HTTP 本地演示兼容
+## 保留的 HTTP 接口代码
 
-未配置 `REDIS_URL` 时，仍保留原有 HTTP 演示模式，默认监听 `127.0.0.1:4320`。此模式的队列和任务状态保存在内存中，重启后丢失，不参与真实 Redis 队列消费。
-
-配合支持旧 HTTP 模式的本地客户端时，在 `E:\code\NarutoLoginClient` 执行 `npm ci`、`npm run dev`，打开 `http://127.0.0.1:4300`。客户端页面与 API 共用该端口，Python 独立监听 `4320`。客户端 `LOGIN_SERVICE_URL` 仅用于这条旧链路。
+`app.py` 中保留原有 HTTP 演示接口，供独立接口测试使用。命令行入口不再启动此模式，缺少 `REDIS_URL` 时直接报错退出。以下接口的队列和任务状态保存在内存中，重启后丢失，不参与真实 Redis 队列消费。
 
 全部 `/internal/*` 接口要求 `X-Service-Token`，由两边的 `SERVICE_TOKEN` 配置。它是服务间共享凭证，与每次申请的独立访问凭证不同。默认值 `local-development-token` 只允许本机回环地址，无需写入 `.env`；改为非回环监听时，必须为客户端后端与任务服务配置相同的强随机值。
 
@@ -104,7 +102,7 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 
 | 文件 | 职责 |
 | --- | --- |
-| `__main__.py` | 根据 `REDIS_URL` 选择常驻 worker 或 HTTP 演示入口 |
+| `__main__.py` | 校验必填的 `REDIS_URL` 并启动常驻 worker |
 | `app.py` | 旧 HTTP 演示的 FastAPI 接口与生命周期 |
 | `config.py` / `models.py` | 配置、有效期与任务校验 |
 | `queue.py` / `runtime.py` | Redis 队列与内存演示队列、并发消费、状态回写和清理 |

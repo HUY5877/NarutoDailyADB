@@ -1,0 +1,110 @@
+"""The command-line entrypoint must require Redis and never start a web demo."""
+
+import logging
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from naruto_daily.login_service import __main__ as entrypoint
+from naruto_daily.login_service import config as service_config
+
+
+@pytest.fixture(autouse=True)
+def isolated_entrypoint(monkeypatch):
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setattr(entrypoint, "load_dotenv", lambda *args, **kwargs: None)
+
+    def unexpected_web_start(*args, **kwargs):
+        pytest.fail("The worker entrypoint must never initialize a local web service")
+
+    monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=unexpected_web_start))
+    monkeypatch.setitem(
+        sys.modules,
+        "naruto_daily.login_service.app",
+        SimpleNamespace(create_app=unexpected_web_start),
+    )
+
+
+@pytest.mark.parametrize("redis_url", [None, "", " \t\n"])
+def test_missing_redis_fails_before_loading_config_or_starting_worker(
+    monkeypatch, caplog, redis_url
+):
+    if redis_url is not None:
+        monkeypatch.setenv("REDIS_URL", redis_url)
+
+    def unexpected_initialization(*args, **kwargs):
+        pytest.fail("Missing REDIS_URL must fail before initializing the worker")
+
+    monkeypatch.setattr(service_config, "load_config", unexpected_initialization)
+    monkeypatch.setattr(entrypoint, "run_worker", unexpected_initialization)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as error:
+        entrypoint.main([])
+
+    assert error.value.code == 1
+    assert "REDIS_URL" in caplog.text
+
+
+@pytest.mark.parametrize("source", ["environment", "env_file"])
+def test_configured_redis_runs_worker(monkeypatch, source):
+    redis_url = "redis://localhost:6379/0"
+    config = SimpleNamespace(redis_url=redis_url)
+    calls = []
+    env_file = Path("entrypoint-test.env")
+
+    def fake_load_dotenv(path, *, override):
+        assert path == env_file
+        assert override is False
+        if source == "env_file":
+            monkeypatch.setenv("REDIS_URL", redis_url)
+
+    async def fake_run_worker(actual_config):
+        calls.append(actual_config)
+
+    if source == "environment":
+        monkeypatch.setenv("REDIS_URL", redis_url)
+    monkeypatch.setattr(entrypoint, "load_dotenv", fake_load_dotenv)
+    monkeypatch.setattr(service_config, "load_config", lambda: config)
+    monkeypatch.setattr(entrypoint, "run_worker", fake_run_worker)
+
+    entrypoint.main(["--env-file", str(env_file)])
+
+    assert calls == [config]
+
+
+def test_keyboard_interrupt_stops_worker_normally(monkeypatch, caplog):
+    config = SimpleNamespace(redis_url="redis://localhost:6379/0")
+    monkeypatch.setenv("REDIS_URL", config.redis_url)
+    monkeypatch.setattr(service_config, "load_config", lambda: config)
+
+    async def interrupted_worker(actual_config):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(entrypoint, "run_worker", interrupted_worker)
+
+    with caplog.at_level(logging.INFO):
+        entrypoint.main([])
+
+    assert "stopped" in caplog.text
+
+
+def test_worker_failure_exits_without_logging_credentials(monkeypatch, caplog):
+    redis_url = "redis://worker:entrypoint-test-secret@localhost:6379/0"
+    config = SimpleNamespace(redis_url=redis_url)
+    monkeypatch.setenv("REDIS_URL", redis_url)
+    monkeypatch.setattr(service_config, "load_config", lambda: config)
+
+    async def failing_worker(actual_config):
+        raise RuntimeError(f"Could not connect to {actual_config.redis_url}")
+
+    monkeypatch.setattr(entrypoint, "run_worker", failing_worker)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as error:
+        entrypoint.main([])
+
+    assert error.value.code == 1
+    assert "RuntimeError" in caplog.text
+    assert "entrypoint-test-secret" not in caplog.text
+    assert redis_url not in caplog.text

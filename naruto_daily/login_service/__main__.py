@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+import os
 from pathlib import Path
 import signal
 from urllib.parse import urlsplit
@@ -45,29 +46,24 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     load_dotenv(args.env_file, override=False)
-    from .config import load_config
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if not os.environ.get("REDIS_URL", "").strip():
+        logging.error("REDIS_URL is required; configure it in %s or in the environment", args.env_file)
+        raise SystemExit(1)
+
+    from .config import load_config
+
     try:
         config = load_config()
-        if config.redis_url:
-            try:
-                asyncio.run(run_worker(config))
-            except KeyboardInterrupt:
-                logging.info("Redis login worker stopped")
-            return
+        try:
+            asyncio.run(run_worker(config))
+        except KeyboardInterrupt:
+            logging.info("Redis login worker stopped")
     except Exception as error:
         # SDK exceptions and connection URLs can contain credentials.
         logging.error("Login worker could not start or continue (%s); check Redis/OSS configuration", type(error).__name__)
         raise SystemExit(1) from None
-
-    import uvicorn
-
-    from .app import create_app
-
-    logging.info("REDIS_URL is not configured; starting the legacy local HTTP demo")
-    # The mock queue lives in this process; multiple ASGI workers cannot share it.
-    uvicorn.run(create_app(config=config), host=config.host, port=config.port, workers=1)
 
 
 if __name__ == "__main__":
