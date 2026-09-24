@@ -44,6 +44,7 @@ def action():
 
 CENTERS = {'one_click_sweep': (650, 840), 'start_sweep': (1300, 780),
            'sweep_done': (1300, 900), 'advance': (1750, 830)}
+AUTO_STOP = (1110, 785)
 
 
 def matcher(png, path, roi, threshold):
@@ -66,8 +67,8 @@ def material(button):
     return dict(page='material', action=button)
 
 
-def setup(stamina):
-    return dict(page='sweep_setup', stamina=stamina, auto_stop=True)
+def setup(stamina, auto_stop=True):
+    return dict(page='sweep_setup', stamina=stamina, auto_stop=auto_stop)
 
 
 def run(*answers, config=None, match=matcher):
@@ -191,10 +192,12 @@ def test_material_info_after_synthesis_does_not_trigger_entry_recovery():
 
 
 @pytest.mark.parametrize('stamina', [0, 4, 5])
-def test_low_stamina_dismisses_both_layers_without_starting(stamina):
-    client, _ = run(overview(), materials(), material('sweep'), setup(stamina),
+@pytest.mark.parametrize('auto_stop', [False, True])
+def test_low_stamina_dismisses_both_layers_without_starting(stamina, auto_stop):
+    client, _ = run(overview(), materials(), material('sweep'), setup(stamina, auto_stop),
                     dict(page='material'), dict(page='equipment'))
     assert CENTERS['start_sweep'] not in client.taps
+    assert AUTO_STOP not in client.taps
     assert client.taps[-2:] == [(1600, 920)] * 2
 
 
@@ -209,6 +212,154 @@ def test_sweep_synthesize_equip_reselect_then_stop():
     assert client.taps.count((525, 610)) == 2
     assert client.taps.count((650, 840)) == 4  # 两次打开扫荡、合成、装备
     assert CENTERS['sweep_done'] not in client.taps  # 继续扫荡只作完成标记
+    assert AUTO_STOP not in client.taps  # 已勾选时不得再次切换
+
+
+def test_unchecked_auto_stop_is_clicked_once_and_freshly_confirmed_before_sweep():
+    events = []
+
+    class RecordingClient(Client):
+        def screenshot(self):
+            png = super().screenshot()
+            events.append(('screenshot', png))
+            return png
+
+        def tap(self, x, y):
+            events.append(('tap', (x, y)))
+            super().tap(x, y)
+
+    class RecordingModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            answer = super().complete_json(png, prompt, **kwargs)
+            events.append(('answer', answer))
+            return answer
+
+    client = RecordingClient()
+    handle_equipment_upgrade(client, action(), model=RecordingModel(
+        overview(), materials(), material('sweep'), setup(20, False),
+        setup(20, False), setup(18), material('sweep'), dict(page='equipment'),
+        overview(), materials(), material('sweep'), setup(4),
+        dict(page='material'), dict(page='equipment')),
+        template_matcher=matcher, sleep=lambda _: None)
+
+    assert client.taps.count(AUTO_STOP) == 1
+    assert client.taps.count(CENTERS['start_sweep']) == 1
+    checkbox_click = events.index(('tap', AUTO_STOP))
+    sweep_click = events.index(('tap', CENTERS['start_sweep']))
+    between = events[checkbox_click + 1:sweep_click]
+    assert [event[1] for event in between if event[0] == 'answer'] == [setup(20, False), setup(18)]
+    assert sum(event == ('screenshot', repr(AUTO_STOP).encode()) for event in between) >= 2
+    assert not any(event[0] == 'tap' for event in between)
+
+
+@pytest.mark.parametrize('max_calls', [1, 2, 3])
+def test_persistently_unchecked_auto_stop_stops_without_repeating_checkbox(max_calls):
+    client = Client()
+    recheck_frames = []
+
+    class RecordingModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            if AUTO_STOP in client.taps:
+                recheck_frames.append(png)
+            return super().complete_json(png, prompt, **kwargs)
+
+    config = dict(action(), multimodal=dict(max_calls=max_calls))
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, config, model=RecordingModel(
+            overview(), materials(), material('sweep'), setup(20, False),
+            *[setup(20, False)] * max_calls), template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps.count(AUTO_STOP) == 1
+    assert CENTERS['start_sweep'] not in client.taps
+    assert recheck_frames == [repr(AUTO_STOP).encode()] * max_calls
+
+
+@pytest.mark.parametrize('bad', [
+    dict(page='material', stamina=20, auto_stop=True), setup(None),
+    setup(20, None), setup(20, 'true'),
+])
+def test_uncertain_auto_stop_recheck_never_starts_or_repeats_checkbox(bad):
+    client = Client()
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), materials(), material('sweep'), setup(20, False), bad, bad),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps.count(AUTO_STOP) == 1
+    assert client.taps[-1] == AUTO_STOP
+    assert CENTERS['start_sweep'] not in client.taps
+
+
+@pytest.mark.parametrize('stamina', [0, 5])
+@pytest.mark.parametrize('auto_stop', [False, True])
+def test_stamina_falling_to_limit_during_checkbox_recheck_closes_without_sweep(stamina, auto_stop):
+    client, _ = run(
+        overview(), materials(), material('sweep'), setup(20, False), setup(stamina, auto_stop),
+        dict(page='material'), dict(page='equipment'),
+    )
+    assert client.taps.count(AUTO_STOP) == 1
+    assert CENTERS['start_sweep'] not in client.taps
+    assert client.taps[-2:] == [(1600, 920)] * 2
+
+
+def test_confirmed_stamina_is_saved_for_next_round_repeat_protection():
+    client = Client()
+    with pytest.raises(VisualError, match='体力未减少'):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), materials(), material('sweep'), setup(20, False), setup(10),
+            material('sweep'), dict(page='equipment'),
+            overview(), materials(), material('sweep'), setup(12)),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps.count(AUTO_STOP) == 1
+    assert client.taps.count(CENTERS['start_sweep']) == 1
+
+
+def test_lower_stamina_on_checkbox_recheck_allows_next_sweep():
+    client, _ = run(
+        overview(), materials(), material('sweep'), setup(20),
+        material('sweep'), dict(page='equipment'),
+        overview(), materials(), material('sweep'), setup(20, False), setup(10),
+        material('sweep'), dict(page='equipment'),
+        overview(), materials(), material('sweep'), setup(4),
+        dict(page='material'), dict(page='equipment'),
+    )
+    assert client.taps.count(AUTO_STOP) == 1
+    assert client.taps.count(CENTERS['start_sweep']) == 2
+
+
+def test_late_auto_stop_confirmation_cannot_start_sweep(monkeypatch):
+    from naruto_daily.common import model_workflow
+    now = [0]
+    monkeypatch.setattr(model_workflow.time, 'monotonic', lambda: now[0])
+    client = Client()
+    rechecks = []
+
+    class LateModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            if AUTO_STOP in client.taps:
+                rechecks.append(png)
+                now[0] = 2000
+            return super().complete_json(png, prompt, **kwargs)
+
+    with pytest.raises(VisualError, match='超时'):
+        handle_equipment_upgrade(client, action(), model=LateModel(
+            overview(), materials(), material('sweep'), setup(20, False), setup(20)),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert rechecks == [repr(AUTO_STOP).encode()]
+    assert client.taps.count(AUTO_STOP) == 1
+    assert client.taps[-1] == AUTO_STOP
+    assert CENTERS['start_sweep'] not in client.taps
+
+
+def test_checkbox_click_wait_exhausting_timeout_stops_before_recheck_or_sweep():
+    client = Client()
+    # 前三次点击各等1秒，勾选后最后0.5秒耗尽剩余时间。
+    config = dict(action(), timeout_seconds=3.5)
+    with pytest.raises(VisualError, match='超时'):
+        handle_equipment_upgrade(client, config, model=Model(
+            overview(), materials(), material('sweep'), setup(20, False)),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps.count(AUTO_STOP) == 1
+    assert client.taps[-1] == AUTO_STOP
+    assert CENTERS['start_sweep'] not in client.taps
 
 
 def test_delayed_synthesis_result_is_rechecked_without_repeating_click():
@@ -337,7 +488,8 @@ def test_advance_without_change_does_not_repeat_click():
 
 
 @pytest.mark.parametrize('bad', [dict(page='material', stamina=200, auto_stop=True),
-                               setup(True), setup(None), dict(page='sweep_setup', stamina=200, auto_stop=False)])
+                               setup(True), setup(None), setup(200, None), setup(200, 'true'),
+                               setup(200, 0), setup(200, 1), dict(page='sweep_setup', stamina=200)])
 def test_uncertain_stamina_or_wrong_layer_never_starts_sweep(bad):
     client = Client()
     with pytest.raises(VisualError):
@@ -345,6 +497,7 @@ def test_uncertain_stamina_or_wrong_layer_never_starts_sweep(bad):
             overview(), materials(), material('sweep'), bad, bad),
             template_matcher=matcher, sleep=lambda _: None)
     assert CENTERS['start_sweep'] not in client.taps
+    assert AUTO_STOP not in client.taps
 
 
 def test_missing_completion_marker_times_out_without_dismissing_active_sweep():

@@ -34,7 +34,9 @@ MATERIAL_ENTRY = MATERIAL + '''点击成品格也可能打开只读的成品信�
 STAMINA = BASE + '''确认最前方是开始扫荡前的设置弹层：显示体力碗图标、当前体力/上限、可能掉落和“开始扫荡”。
 返回{"page":"sweep_setup","stamina":200,"auto_stop":true}。
 stamina只读取碗旁边分数的分子（200/200读取200；4/200读取4），不要读取材料还差几个或体力上限。
-auto_stop为“材料足够后自动停止”的绿色勾是否已经选中。未勾选返回false；无法读取体力返回null。
+auto_stop只读取最前方弹层底部“材料足够后自动停止”文字右侧、“开始扫荡”按钮左侧的复选框。
+明确看到该框内的绿色勾返回布尔值true；明确看到空框、未勾选才返回布尔值false；遮挡或看不清返回null。
+不要把背景材料列表里的绿色勾当成这个复选框，不要省略auto_stop或用字符串代替布尔值。无法读取体力时stamina返回null。
 已经在扫荡或按钮为继续扫荡不是设置页。'''
 
 PAGE = BASE + '''只判断当前前景页面，返回{"page":"equipment|material|material_info|sweep_setup|sweep_result|unknown"}。

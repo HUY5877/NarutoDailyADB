@@ -12,6 +12,8 @@ EQUIPMENT_POINTS = ((275, 360), (525, 360), (780, 360), (275, 610), (525, 610), 
 MATERIAL_POINTS = tuple((x, 690) for x in (1106, 1244, 1380, 1518, 1656, 1792))
 BLANK = (1600, 920)
 MATERIAL_BUTTON = (650, 840)
+# 1920×1080 扫荡设置弹层：提示文字右侧、开始扫荡按钮左侧的复选框。
+AUTO_STOP = (1110, 785)
 
 
 def lowest_equipment(data):
@@ -56,12 +58,20 @@ def _material_entry(data):
     return _material(data)
 
 
-def _stamina(data):
+def _sweep_setup(data):
     require_page(data, 'sweep_setup')
     stamina = data.get('stamina')
     if type(stamina) is not int or not 0 <= stamina <= 99999:
         raise VisualError('扫荡前体力数值不明确')
-    if data.get('auto_stop') is not True:
+    auto_stop = data.get('auto_stop')
+    if type(auto_stop) is not bool:
+        raise VisualError('材料足够后自动停止的勾选状态不明确')
+    return stamina, auto_stop
+
+
+def _stamina(data):
+    stamina, auto_stop = _sweep_setup(data)
+    if stamina > 5 and not auto_stop:
         raise VisualError('未确认材料足够后自动停止已勾选')
     return stamina
 
@@ -180,7 +190,12 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
             unchanged_material = signature
             continue
         flow.button('one_click_sweep')
-        stamina = flow.read('开始扫荡前体力检查', prompts.STAMINA, _stamina)
+        stamina, auto_stop = flow.read('开始扫荡前体力检查', prompts.STAMINA, _sweep_setup)
+        if stamina > 5 and not auto_stop:
+            LOGGER.info('材料足够后自动停止未勾选，点击复选框后重新截图确认')
+            flow.tap(AUTO_STOP)
+            # 只点一次；点击后仅重新识别，避免延迟或误识别时把勾取消。
+            stamina = flow.read('材料足够后自动停止勾选复查', prompts.STAMINA, _stamina)
         if stamina <= 5:
             LOGGER.info('体力为%d，不大于5，结束装备任务并返回主界面', stamina)
             _close_layers(flow, 'sweep_setup')
