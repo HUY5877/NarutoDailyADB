@@ -214,13 +214,20 @@ def main(
         if daily_session is not None:
             phase = "login"
             with redirect_stdout(sys.stderr):
-                daily_session.wait_for_login(deadline)
+                daily_session.wait_for_authorization(deadline)
+            if clock() >= deadline:
+                raise TimeoutError
+            _send(output_stream, {"type": "authorized"})
+
+            phase = "login_finish"
+            deadline = clock() + daily_options[1]
+            with redirect_stdout(sys.stderr):
+                daily_session.finish_login(deadline)
             if clock() >= deadline:
                 raise TimeoutError
             _send(output_stream, {"type": "logged_in"})
 
             phase = "daily"
-            deadline = clock() + daily_options[1]
             with redirect_stdout(sys.stderr):
                 action_count = daily_session.run_daily(deadline)
             if clock() >= deadline:
@@ -234,6 +241,8 @@ def main(
             code = "configuration_error"
         elif phase == "login":
             code = "login_timeout" if _is_timeout(error, deadline, clock) else "login_failed"
+        elif phase == "login_finish":
+            code = "login_finish_timeout" if _is_timeout(error, deadline, clock) else "login_finish_failed"
         elif phase == "daily":
             code = "daily_timeout" if _is_timeout(error, deadline, clock) else "daily_failed"
         elif _is_timeout(error, deadline, clock):

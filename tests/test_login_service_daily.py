@@ -124,6 +124,29 @@ def test_daily_does_not_run_before_confirmed_login(tmp_path):
     assert calls == []
 
 
+def test_authorized_login_cleanup_can_outlive_qr_deadline(tmp_path):
+    session, clock, calls = session_for(tmp_path)
+    qr_deadline = clock() + 10
+    session.wait_for_authorization(qr_deadline)
+    assert clock() < qr_deadline
+    with pytest.raises(RuntimeError, match="先完成扫码登录"):
+        session.run_daily(clock() + 300)
+
+    script_deadline = clock() + 300
+    session.finish_login(script_deadline)
+    assert clock() > qr_deadline
+    assert session.run_daily(script_deadline) == len(TASK_ORDER) - 1
+    assert all(command[:3] == ["current-adb.exe", "-s", "emulator-5580"]
+               for command, _ in calls)
+
+
+def test_login_cleanup_cannot_start_before_authorization(tmp_path):
+    session, clock, calls = session_for(tmp_path)
+    with pytest.raises(RuntimeError, match="先完成扫码授权"):
+        session.finish_login(clock() + 300)
+    assert calls == []
+
+
 def test_login_wait_extends_past_old_40_second_authorization_timeout(tmp_path):
     state = {}
 

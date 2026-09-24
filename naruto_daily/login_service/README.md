@@ -64,7 +64,7 @@ REDIS_URL=redis://127.0.0.1:6379/0
 
 客户端在其自己的环境中启动或部署。Python worker 所在机器需要能够连接 Redis 和 OSS，并在网站处理登录申请期间保持运行。网站/Vercel 和 Python 使用同一 Redis、数据库、队列、OSS Bucket、地域及对象前缀；客户端不需要配置指向本机 Python 的 `LOGIN_SERVICE_URL`。
 
-真实雷电冷启动、游戏启动和等待扫码可能超过客户端默认的 120 秒。TypeScript 客户端建议设置 `SESSION_TTL_MS=600000`（10 分钟）；该值同时受本服务任务最大有效期 10 分钟限制。会话到期时仍未确认进入主界面，会停止子进程并释放实例；已经开始的日常任务使用独立超时继续运行，二维码和客户端会话仍按原 TTL 过期，不续期。
+真实雷电冷启动、游戏启动和等待扫码可能超过客户端默认的 120 秒。TypeScript 客户端建议设置 `SESSION_TTL_MS=600000`（10 分钟）；该值同时受本服务任务最大有效期 10 分钟限制。会话到期时仍未完成扫码授权，会停止子进程并释放实例。确认授权并点击开始游戏后，子进程发送 `authorized`，父进程立即切换到 `DAILY_TIMEOUT_SECONDS` 的独立预算，后续加载、清弹窗、确认主界面和日常任务共享这份预算，不再受二维码期限限制。二维码和客户端会话仍按原 TTL 过期，不续期。
 
 ## Redis 消息和状态
 
@@ -88,7 +88,7 @@ TypeScript 后端通过 `LPUSH` 投递，Python 通过 `BRPOP` 按 FIFO 顺序�
 
 领取时校验失败且能与现有排队会话核对的任务，会直接写入 `failed`、安全错误码及中文原因，并同步保存失败执行记录和一条 ERROR 日志，不启动模拟器。时间校验失败时会参考 Redis 时间区分执行服务器时钟不同步与任务时间字段异常；例如执行服务器落后导致创建时间超出允许范围，客户端会提示同步执行服务器系统时间后重新申请。失败记录沿用执行日志的独立保留时间，二维码会话到期后仍可查看。无法确认归属的坏消息仅记录本地警告；不会根据不可信消息覆盖已被其他 worker 领取的任务，也不会重建已过期会话。
 
-日常状态不写入原客户端的 `status` 白名单，独立保存在 `${LDPLAYER_STATE_DIR}/runs/<任务UUID>.json`，并将执行快照和日志同步到 Redis。`status` 依次为 `preparing_qr`、`waiting_scan`、`running_daily`、`completed`，失败为 `failed`，服务停止为 `interrupted`；本地记录包含开始时间、截止时间、完成动作数或安全错误码，不含凭据。
+日常状态不写入原客户端的 `status` 白名单，独立保存在 `${LDPLAYER_STATE_DIR}/runs/<任务UUID>.json`，并将执行快照和日志同步到 Redis。二维码生成后依次为 `waiting_scan`、`finishing_login`、`running_daily`、`completed`，失败为 `failed`，服务停止为 `interrupted`。`finishing_login` 表示扫码授权完成、正在进入游戏；`authorizedAt` 保存授权完成时间，`startedAt` 保存确认主界面后开始日常的时间，后续终态保留这两个时间。客户端收到对应任务的授权完成状态后收起二维码并停止倒计时。进入游戏失败与等待扫码失败使用不同错误码。
 
 ### 用户执行记录
 

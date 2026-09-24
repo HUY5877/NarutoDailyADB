@@ -301,7 +301,7 @@ def daily_dependencies(calls):
     return Manager, DriverError, Device, fetch
 
 
-def test_daily_worker_publishes_qr_before_login_then_reuses_session_and_resets_deadline(
+def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_login_finish(
     monkeypatch, tmp_path,
 ):
     now = 1_800_000_000.0
@@ -324,17 +324,26 @@ def test_daily_worker_publishes_qr_before_login_then_reuses_session_and_resets_d
             }
             self.logged_in = False
 
-        def wait_for_login(self, deadline):
-            calls.append("login")
+        def wait_for_authorization(self, deadline):
+            calls.append("authorize")
             assert deadline == now + 300
             assert json.loads(output.flushed.splitlines()[-1])["type"] == "qr"
             clock[0] = now + 299
+
+        def finish_login(self, deadline):
+            calls.append("finish_login")
+            assert deadline == now + 359
+            assert json.loads(output.flushed.splitlines()[-1]) == {"type": "authorized"}
+            assert not any(json.loads(line)["type"] == "logged_in"
+                           for line in output.flushed.splitlines())
+            # Clearing post-login popups is allowed to cross the original QR expiry.
+            clock[0] = now + 330
             self.logged_in = True
 
         def run_daily(self, deadline):
             calls.append("daily")
             assert self.logged_in
-            assert deadline == now + 359
+            assert deadline == now + 359  # Finishing login consumed the same budget.
             assert json.loads(output.flushed.splitlines()[-1]) == {"type": "logged_in"}
             clock[0] = now + 340  # Original login expiry must no longer stop daily work.
             return 12
@@ -348,9 +357,9 @@ def test_daily_worker_publishes_qr_before_login_then_reuses_session_and_resets_d
     )
     events = [json.loads(line) for line in output.getvalue().splitlines()]
     assert code == 0
-    assert calls == ["allocate", "start", "configure", "launch", "qr", "login", "daily"]
+    assert calls == ["allocate", "start", "configure", "launch", "qr", "authorize", "finish_login", "daily"]
     assert [event["type"] for event in events] == [
-        "stage", "stage", "stage", "qr", "logged_in", "daily_completed",
+        "stage", "stage", "stage", "qr", "authorized", "logged_in", "daily_completed",
     ]
     assert events[-1] == {"type": "daily_completed", "actionCount": 12}
 
@@ -360,6 +369,8 @@ def test_daily_worker_publishes_qr_before_login_then_reuses_session_and_resets_d
     ("configure", TimeoutError("private config detail"), "configuration_error"),
     ("login", RuntimeError("private login detail"), "login_failed"),
     ("login", TimeoutError("private login detail"), "login_timeout"),
+    ("login_finish", RuntimeError("private finish detail"), "login_finish_failed"),
+    ("login_finish", TimeoutError("private finish detail"), "login_finish_timeout"),
     ("daily", RuntimeError("private daily detail"), "daily_failed"),
     ("daily", TimeoutError("private daily detail"), "daily_timeout"),
 ])
@@ -371,11 +382,16 @@ def test_daily_worker_maps_failures_without_leaking_details(monkeypatch, tmp_pat
             if phase == "configure":
                 raise error
 
-        def wait_for_login(self, deadline):
+        def wait_for_authorization(self, deadline):
             if phase == "login":
                 raise error
 
+        def finish_login(self, deadline):
+            if phase == "login_finish":
+                raise error
+
         def run_daily(self, deadline):
+            calls.append("daily")
             raise error
 
     monkeypatch.setattr(ldplayer_worker, "_load_daily_session", lambda: DailySession)
@@ -390,11 +406,15 @@ def test_daily_worker_maps_failures_without_leaking_details(monkeypatch, tmp_pat
     assert not any(event["type"] == "daily_completed" for event in events)
     if phase == "configure":
         assert calls == ["allocate", "start"]
-    elif phase == "login":
+    elif phase in {"login", "login_finish"}:
         assert not any(event["type"] == "logged_in" for event in events)
+        assert "daily" not in calls
+        assert any(event["type"] == "authorized" for event in events) == (phase == "login_finish")
 
 
-@pytest.mark.parametrize("phase,expected", [("login", "login_timeout"), ("daily", "daily_timeout")])
+@pytest.mark.parametrize("phase,expected", [
+    ("login", "login_timeout"), ("login_finish", "login_finish_timeout"), ("daily", "daily_timeout"),
+])
 def test_daily_worker_rejects_success_returned_after_deadline(monkeypatch, tmp_path, phase, expected):
     now = 1_800_000_000.0
     clock = [now]
@@ -403,8 +423,12 @@ def test_daily_worker_rejects_success_returned_after_deadline(monkeypatch, tmp_p
         def __init__(self, **kwargs):
             pass
 
-        def wait_for_login(self, deadline):
+        def wait_for_authorization(self, deadline):
             if phase == "login":
+                clock[0] = deadline
+
+        def finish_login(self, deadline):
+            if phase == "login_finish":
                 clock[0] = deadline
 
         def run_daily(self, deadline):
@@ -422,6 +446,8 @@ def test_daily_worker_rejects_success_returned_after_deadline(monkeypatch, tmp_p
     events = [json.loads(line) for line in output.getvalue().splitlines()]
     assert code == 1
     assert events[-1] == {"type": "error", "code": expected}
+    if phase in {"login", "login_finish"}:
+        assert not any(event["type"] in {"logged_in", "daily_completed"} for event in events)
 
 
 def test_daily_legacy_prints_cannot_corrupt_stdout_protocol(monkeypatch, tmp_path, capsys):
@@ -429,8 +455,11 @@ def test_daily_legacy_prints_cannot_corrupt_stdout_protocol(monkeypatch, tmp_pat
         def __init__(self, **kwargs):
             print("construct daily session")
 
-        def wait_for_login(self, deadline):
-            print("wait for login")
+        def wait_for_authorization(self, deadline):
+            print("wait for authorization")
+
+        def finish_login(self, deadline):
+            print("finish login")
 
         def run_daily(self, deadline):
             print("run daily tasks")
@@ -452,7 +481,7 @@ def test_daily_legacy_prints_cannot_corrupt_stdout_protocol(monkeypatch, tmp_pat
     assert code == 0
     assert events[-1] == {"type": "daily_completed", "actionCount": 1}
     assert captured.err.splitlines() == [
-        "import legacy tasks", "construct daily session", "wait for login", "run daily tasks",
+        "import legacy tasks", "construct daily session", "wait for authorization", "finish login", "run daily tasks",
     ]
 
 
@@ -486,7 +515,10 @@ def test_daily_timeout_accepts_bounds_and_fractional_seconds(monkeypatch, tmp_pa
         def __init__(self, **kwargs):
             pass
 
-        def wait_for_login(self, deadline):
+        def wait_for_authorization(self, deadline):
+            pass
+
+        def finish_login(self, deadline):
             pass
 
         def run_daily(self, deadline):
@@ -507,7 +539,10 @@ def test_daily_completion_requires_a_nonnegative_integer_count(monkeypatch, tmp_
         def __init__(self, **kwargs):
             pass
 
-        def wait_for_login(self, deadline):
+        def wait_for_authorization(self, deadline):
+            pass
+
+        def finish_login(self, deadline):
             pass
 
         def run_daily(self, deadline):

@@ -11,7 +11,7 @@ import logging
 import time
 
 from .models import TaskRecord
-from .queue import SAFE_REJECTION_ERRORS
+from .queue import SAFE_DRIVER_ERRORS, SAFE_REJECTION_ERRORS
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ STAGE_MESSAGES = {
     "opening_game": "正在打开游戏",
     "preparing_qr": "正在准备登录二维码",
     "waiting_scan": "二维码已生成，请扫码登录",
+    "finishing_login": "扫码授权已完成，正在进入游戏",
     "running_daily": "登录成功，开始执行日常任务",
     "completed": "任务执行完成",
     "failed": "任务执行失败",
@@ -37,6 +38,8 @@ SAFE_RUN_ERRORS = {
     "unexpected_error": "执行任务时发生异常，请重新申请；若仍失败，请联系管理员。",
     "login_timeout": "等待扫码登录超时，请重新申请并及时扫码。",
     "login_failed": "未能确认游戏登录成功，请重新申请。",
+    "login_finish_timeout": SAFE_DRIVER_ERRORS["login_finish_timeout"],
+    "login_finish_failed": SAFE_DRIVER_ERRORS["login_finish_failed"],
     "daily_timeout": "日常任务执行超时，本次任务已停止。",
     "daily_failed": "日常任务执行失败，本次任务已停止。",
     "protocol_error": "执行进程返回的数据异常，任务已停止，请联系管理员。",
@@ -145,6 +148,8 @@ class RedisRunReporter:
             state.pop("errorCode", None)
         if record.daily_started_at is not None:
             state["startedAt"] = iso_time(record.daily_started_at)
+        if record.authorized_at is not None:
+            state["authorizedAt"] = iso_time(record.authorized_at)
         if error_code is not None:
             state["errorCode"] = error_code
         if action_index is not None and action_total is not None:

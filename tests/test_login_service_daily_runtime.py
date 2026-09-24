@@ -20,6 +20,7 @@ from naruto_daily.login_service.runtime import LoginRuntime
 
 PNG = b"\x89PNG\r\n\x1a\nfixture"
 QR = {"type": "qr", "png": base64.b64encode(PNG).decode("ascii")}
+AUTHORIZED = {"type": "authorized"}
 LOGGED_IN = {"type": "logged_in"}
 COMPLETED = {"type": "daily_completed", "actionCount": 3}
 
@@ -355,6 +356,101 @@ def test_unscanned_qr_expires_and_releases_instance_without_requeue(monkeypatch,
     asyncio.run(scenario())
 
 
+def test_authorized_login_cleanup_can_cross_qr_expiry_without_killing_the_child(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl(1.0)
+        login_gate, finish_gate = tmp_path / "enter-game", tmp_path / "finish-daily"
+        runtime, storage, queue, pool = make_runtime(tmp_path, monkeypatch, record, [
+            emit(QR), emit(AUTHORIZED), gate(login_gate), emit(LOGGED_IN),
+            gate(finish_gate), emit(COMPLETED),
+        ], daily_timeout=5)
+        work = start_processing(runtime, record)
+        try:
+            await eventually(lambda: record.daily_status == "finishing_login")
+            assert record.authorized_at is not None and record.daily_started_at is None
+            child = runtime._children[record.id]
+            original_deadline = run_report(runtime, record)["deadline"]
+            assert original_deadline == record.authorized_at + 5
+            assert run_report(runtime, record)["authorizedAt"] == record.authorized_at
+            await eventually(lambda: time.time() * 1000 > record.expires_at_ms + 50)
+            assert runtime._lookup(record.id) is record  # Lookup expiry must also preserve the authorized child.
+            await runtime._sweep()
+            assert record.status == "expired" and record.id not in storage.objects
+            assert child.poll() is None and not work.done()
+            assert record.daily_status == "finishing_login"
+            login_gate.touch()
+            await eventually(lambda: record.daily_status == "running_daily")
+            assert record.daily_started_at * 1000 > record.expires_at_ms
+            assert run_report(runtime, record)["deadline"] == original_deadline
+            finish_gate.touch()
+            await asyncio.wait_for(work, 3)
+            assert record.daily_status == "completed"
+            assert run_report(runtime, record)["authorizedAt"] == record.authorized_at
+            assert pool.closed == [record.id] and not queue.requeued
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
+def test_authorized_login_finishing_has_its_own_timeout_reason(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl(5)
+        runtime, _, queue, pool = make_runtime(tmp_path, monkeypatch, record, [
+            emit(QR), emit(AUTHORIZED), gate(tmp_path / "never-enter-game"),
+        ], daily_timeout=0.2)
+        work = start_processing(runtime, record)
+        try:
+            await asyncio.wait_for(work, 3)
+            assert record.authorized_at is not None and record.daily_started_at is None
+            assert record.daily_error_code == "login_finish_timeout"
+            assert run_report(runtime, record)["errorCode"] == "login_finish_timeout"
+            assert record.expires_at_ms > time.time() * 1000
+            assert pool.closed == [record.id] and not queue.requeued
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
+def test_logged_in_after_authorization_does_not_extend_the_execution_budget(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl(5)
+        login_gate = tmp_path / "login-gate"
+        runtime, _, _, _ = make_runtime(tmp_path, monkeypatch, record, [
+            emit(QR), emit(AUTHORIZED), gate(login_gate), emit(LOGGED_IN), gate(tmp_path / "never-finish"),
+        ], daily_timeout=0.8)
+        work = start_processing(runtime, record)
+        try:
+            await eventually(lambda: record.authorized_at is not None)
+            await eventually(lambda: time.time() >= record.authorized_at + 0.45)
+            login_gate.touch()
+            await eventually(lambda: record.daily_started_at is not None)
+            # A second budget at logged_in would leave ~0.8s; only ~0.35s should remain.
+            await asyncio.wait_for(asyncio.shield(work), 0.6)
+            assert record.daily_error_code == "daily_timeout"
+            assert run_report(runtime, record)["deadline"] == record.authorized_at + 0.8
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
+def test_authorized_login_failure_keeps_safe_child_reason(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl()
+        runtime, _, _, _ = make_runtime(tmp_path, monkeypatch, record, [
+            emit(QR), emit(AUTHORIZED), emit({"type": "error", "code": "login_finish_failed",
+                                            "message": "private child detail"}),
+        ])
+        work = start_processing(runtime, record)
+        try:
+            await asyncio.wait_for(work, 3)
+            assert record.daily_error_code == "login_finish_failed"
+            assert run_report(runtime, record)["errorCode"] == "login_finish_failed"
+            assert "private" not in json.dumps(run_report(runtime, record))
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("logged_in", [False, True])
 def test_shutdown_after_qr_cleans_up_without_replaying_a_scanned_account(monkeypatch, tmp_path, logged_in):
     async def scenario():
@@ -405,7 +501,12 @@ def test_shutdown_before_qr_preserves_existing_retry_behavior(monkeypatch, tmp_p
     [QR, LOGGED_IN, COMPLETED, COMPLETED],
     [QR, LOGGED_IN, {"type": "daily_completed", "actionCount": -1}],
     [QR, LOGGED_IN, {"type": "daily_completed", "actionCount": True}],
-], ids=["qr-only", "login-before-qr", "done-before-login", "duplicate-qr", "duplicate-login", "duplicate-done", "negative-count", "boolean-count"])
+    [AUTHORIZED, QR, LOGGED_IN, COMPLETED],
+    [QR, AUTHORIZED, AUTHORIZED, LOGGED_IN, COMPLETED],
+    [QR, LOGGED_IN, AUTHORIZED, COMPLETED],
+    [QR, AUTHORIZED, COMPLETED],
+], ids=["qr-only", "login-before-qr", "done-before-login", "duplicate-qr", "duplicate-login", "duplicate-done", "negative-count", "boolean-count",
+        "authorized-before-qr", "duplicate-authorized", "authorized-after-logged-in", "done-before-login-finishes"])
 def test_incomplete_or_out_of_order_daily_protocol_cannot_succeed(monkeypatch, tmp_path, events):
     async def scenario():
         record = record_with_ttl()

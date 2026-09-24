@@ -209,9 +209,13 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
         def __init__(self, **kwargs):
             pass
 
-        def wait_for_login(self, deadline):
+        def wait_for_authorization(self, deadline):
             assert json.loads(output.getvalue().splitlines()[-1])["type"] == "qr"
             logger.info("wait for scan")
+
+        def finish_login(self, deadline):
+            assert json.loads(output.getvalue().splitlines()[-1])["type"] == "authorized"
+            logger.info("finish login")
 
         def run_daily(self, deadline):
             from naruto_daily.runner import ActionRunner
@@ -236,7 +240,7 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
     assert result == 0
     events = [json.loads(line) for line in output.getvalue().splitlines()]
     assert [event["type"] for event in events if event["type"] != "log"] == [
-        "stage", "stage", "stage", "qr", "logged_in", "daily_completed",
+        "stage", "stage", "stage", "qr", "authorized", "logged_in", "daily_completed",
     ]
     assert [event["message"] for event in events if event["type"] == "log"][:6] == [
         "import dependencies", "initialize manager", "allocate emulator", "launch game",

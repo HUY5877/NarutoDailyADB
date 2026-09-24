@@ -144,6 +144,14 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
         try:
             run_key, stream_key, session_key = keys(cfg, record)
             before = await client.pttl(session_key)
+            record.authorized_at = datetime.now(timezone.utc).timestamp()
+            reporter.emit(record, status="finishing_login")
+            await drain(reporter)
+            authorized = json.loads(await client.get(run_key))
+            assert authorized["status"] == "finishing_login"
+            assert authorized["authorizedAt"] == iso_time(record.authorized_at)
+            assert authorized["startedAt"] is None
+            assert (await entries(client, stream_key))[-1][1]["message"] == "扫码授权已完成，正在进入游戏"
             record.daily_started_at = datetime.now(timezone.utc).timestamp()
             reporter.emit(record, status="running_daily")
             await drain(reporter)
@@ -157,6 +165,7 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
             await drain(reporter)
             state = json.loads(await client.get(run_key))
             assert state["status"] == "completed"
+            assert state["authorizedAt"] == iso_time(record.authorized_at)
             assert state["startedAt"] == iso_time(record.daily_started_at)
             assert state["finishedAt"] is not None
             assert 118 <= await client.ttl(run_key) <= 120

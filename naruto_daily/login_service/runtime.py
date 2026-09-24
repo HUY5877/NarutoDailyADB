@@ -185,11 +185,12 @@ class LoginRuntime:
             return
         record.status = "expired"
         record.error = None
-        if (self._run_reporter is not None and record.id not in self._children and record.daily_started_at is None
+        if (self._run_reporter is not None and record.id not in self._children
+                and record.authorized_at is None and record.daily_started_at is None
                 and record.daily_status not in {"failed", "interrupted", "completed"}):
             self._run_reporter.emit(record, status="expired", level="WARNING")
         child = self._children.get(record.id)
-        if child is not None and record.daily_started_at is None:
+        if child is not None and record.authorized_at is None and record.daily_started_at is None:
             self._kill(child)
         self._queue.remove(lambda task_id: task_id == record.id)
         self._pending_deletes.add(record.id)
@@ -275,12 +276,22 @@ class LoginRuntime:
                                 self._set_daily_status(record, "waiting_scan")
                         elif daily:
                             raise ValueError("Invalid QR image")
+                    elif daily and event.get("type") == "authorized":
+                        if (not record.qr_published or record.authorized_at is not None
+                                or record.daily_started_at is not None
+                                or record.expires_at_ms <= time.time() * 1000):
+                            raise ValueError("Unexpected authorization confirmation")
+                        record.authorized_at = time.time()
+                        timeout.reschedule(asyncio.get_running_loop().time() + self.config.daily_timeout_seconds)
+                        self._set_daily_status(record, "finishing_login")
                     elif daily and event.get("type") == "logged_in":
                         if (not record.qr_published or record.daily_started_at is not None
-                                or record.expires_at_ms <= time.time() * 1000):
+                                or record.authorized_at is None and record.expires_at_ms <= time.time() * 1000):
                             raise ValueError("Unexpected login confirmation")
                         record.daily_started_at = time.time()
-                        timeout.reschedule(asyncio.get_running_loop().time() + self.config.daily_timeout_seconds)
+                        if record.authorized_at is None:
+                            # Older children combine authorization and final login.
+                            timeout.reschedule(asyncio.get_running_loop().time() + self.config.daily_timeout_seconds)
                         self._set_daily_status(record, "running_daily")
                     elif daily and event.get("type") == "daily_completed":
                         count = event.get("actionCount")
@@ -382,8 +393,10 @@ class LoginRuntime:
         directory = self.config.ldplayer_state_dir / "runs"
         result = {
             "taskId": record.id, "status": status, "updatedAt": time.time(),
-            "startedAt": record.daily_started_at,
-            "deadline": (record.daily_started_at + self.config.daily_timeout_seconds
+            "startedAt": record.daily_started_at, "authorizedAt": record.authorized_at,
+            "deadline": (record.authorized_at + self.config.daily_timeout_seconds
+                         if record.authorized_at is not None else
+                         record.daily_started_at + self.config.daily_timeout_seconds
                          if record.daily_started_at is not None else record.expires_at_ms / 1000),
         }
         if error_code is not None:
@@ -585,10 +598,12 @@ class LoginRuntime:
                 if self._stopping:
                     status, code = "interrupted", "worker_stopped"
                 elif isinstance(error, TimeoutError) or (
-                    record.daily_started_at is None and record.expires_at_ms <= time.time() * 1000
+                    record.authorized_at is None and record.daily_started_at is None
+                    and record.expires_at_ms <= time.time() * 1000
                 ):
                     status = "failed"
-                    code = "daily_timeout" if record.daily_started_at is not None else "login_timeout"
+                    code = ("daily_timeout" if record.daily_started_at is not None else
+                            "login_finish_timeout" if record.authorized_at is not None else "login_timeout")
                 else:
                     status = "failed"
                     code = error.code if isinstance(error, _WorkerError) else "protocol_error"

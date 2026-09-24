@@ -61,6 +61,7 @@ class DailySession:
         self._template_matcher = template_matcher
         self._command_timeout = float(command_timeout)
         self._deadline: float | None = None
+        self._authorized = False
         self._logged_in = False
         self.client = AdbClient(Path(adb_path), serial=serial,
                                 run_command=self._run_text, run_binary=self._run_binary)
@@ -113,19 +114,37 @@ class DailySession:
         return ActionRunner(self.client, sleep=self._sleep, template_matcher=self._match,
                             asset_root=self.asset_root)
 
-    def wait_for_login(self, deadline: float) -> None:
-        """等待扫码授权、开始游戏、清弹窗，确认同一设备已进入主界面。"""
+    def wait_for_authorization(self, deadline: float) -> None:
+        """仅等待扫码和可选二次授权，确认并点击开始游戏。"""
+        self._authorized = False
         self._logged_in = False
         self._set_deadline(deadline)
-        actions = deepcopy(self._login_actions)
+        actions = deepcopy(self._login_actions[:1])
+        if not actions or actions[0]["type"] != "finish_login_authorization":
+            raise ConfigError("扫码登录必须先确认授权并开始游戏")
         actions[0]["timeout_seconds"] = self._remaining()
         self._runner().run(actions)
+        self._remaining()
+        self._authorized = True
+
+    def finish_login(self, deadline: float) -> None:
+        """授权后使用独立预算等待加载、清弹窗并确认主界面。"""
+        if not self._authorized:
+            raise RuntimeError("必须先完成扫码授权")
+        self._logged_in = False
+        self._set_deadline(deadline)
+        self._runner().run(deepcopy(self._login_actions[1:]))
         images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
         center, _ = images.find(self._main_marker)
         if center is None:
             raise VisualError("扫码登录后未能确认游戏主界面")
         self._remaining()
         self._logged_in = True
+
+    def wait_for_login(self, deadline: float) -> None:
+        """兼容原调用者，在同一预算内完成授权和登录收尾。"""
+        self.wait_for_authorization(deadline)
+        self.finish_login(deadline)
 
     def run_daily(self, deadline: float) -> int:
         """复用原 run all 的日常顺序，始终操作已经完成扫码的同一设备。"""
