@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import logging
 import os
 import re
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterable, Iterator, TextIO
 
 
 MAX_LOG_MESSAGE_LENGTH = 1_000
@@ -25,7 +25,8 @@ _SECRET_FIELD = re.compile(
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
-def sanitize_log_message(message: str, *, secrets: Iterable[str] = ()) -> str:
+def sanitize_log_message(message: str, *, secrets: Iterable[str] = (),
+                         max_length: int | None = MAX_LOG_MESSAGE_LENGTH) -> str:
     """Remove known credentials before truncation or whitespace normalization."""
     for secret in sorted(set(secrets), key=len, reverse=True):
         if secret:
@@ -37,9 +38,31 @@ def sanitize_log_message(message: str, *, secrets: Iterable[str] = ()) -> str:
     message = _SECRET_FIELD.sub(r"\1" + _REDACTED, message)
     message = _CONTROL_CHARACTERS.sub("", message)
     message = " ".join(message.split())
-    if len(message) > MAX_LOG_MESSAGE_LENGTH:
-        message = message[:MAX_LOG_MESSAGE_LENGTH - 1] + "…"
+    if max_length is not None and len(message) > max_length:
+        message = message[:max_length - 1] + "…"
     return message
+
+
+class DiagnosticLogHandler(logging.StreamHandler):
+    """Keep full local diagnostics and traceback lines outside the web protocol."""
+
+    def __init__(self, stream: TextIO, *, secrets: Iterable[str] = ()) -> None:
+        super().__init__(stream)
+        self.setLevel(logging.INFO)
+        self.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        self._secrets = tuple(secrets) + (os.environ.get("MULTIMODAL_API_KEY", ""),)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            secrets = (*self._secrets, os.environ.get("MULTIMODAL_API_KEY", ""))
+            for line in self.format(record).splitlines():
+                indent = line[:len(line) - len(line.lstrip())]
+                message = sanitize_log_message(line, secrets=secrets, max_length=None)
+                self.stream.write(indent + message + "\n")
+            self.flush()
+        except Exception:
+            # A closed terminal must not replace the original game error.
+            pass
 
 
 class ProtocolLogHandler(logging.Handler):
@@ -90,6 +113,7 @@ class ProtocolLogHandler(logging.Handler):
 @contextmanager
 def forward_task_logs(
     send_event: Callable[[dict[str, object]], None], *, secrets: Iterable[str] = (),
+    diagnostic_stream: TextIO | None = None,
 ) -> Iterator[None]:
     """Temporarily route this task's namespace to one isolated protocol handler."""
     logger = logging.getLogger("naruto_daily")
@@ -101,7 +125,9 @@ def forward_task_logs(
         (candidate, candidate.level, candidate.disabled, candidate.propagate, candidate.handlers[:])
         for candidate in namespace
     ]
+    secrets = tuple(secrets)
     handler = ProtocolLogHandler(send_event, secrets=secrets)
+    diagnostic_handler = DiagnosticLogHandler(diagnostic_stream, secrets=secrets) if diagnostic_stream is not None else None
     try:
         for candidate in namespace:
             candidate.setLevel(logging.INFO)
@@ -109,6 +135,8 @@ def forward_task_logs(
             candidate.handlers = []
             candidate.propagate = candidate is not logger
         logger.addHandler(handler)
+        if diagnostic_handler is not None:
+            logger.addHandler(diagnostic_handler)
         yield
     finally:
         for candidate, level, disabled, propagate, handlers in saved:
@@ -117,3 +145,5 @@ def forward_task_logs(
             candidate.propagate = propagate
             candidate.handlers = handlers
         handler.close()
+        if diagnostic_handler is not None:
+            diagnostic_handler.close()

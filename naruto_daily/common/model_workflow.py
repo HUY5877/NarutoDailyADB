@@ -30,19 +30,34 @@ class ModelWorkflow:
         return remaining
 
     def read(self, name, prompt, validate):
-        for attempt in range(1, self.action['multimodal']['max_calls'] + 1):
+        max_calls = self.action['multimodal']['max_calls']
+        for attempt in range(1, max_calls + 1):
             self.remaining()
+            attempt_started = time.monotonic()
             try:
-                result = self.model.complete_json(self.client.screenshot(), prompt,
-                                                   timeout_seconds=self.remaining())
+                LOGGER.info('[%s 第%d/%d次] 开始截图', name, attempt, max_calls)
+                png = self.client.screenshot()
+                remaining = self.remaining()
+                configured_timeout = self.action['multimodal'].get('timeout_seconds')
+                call_timeout = (min(remaining, configured_timeout)
+                                if isinstance(configured_timeout, (int, float)) else remaining)
+                LOGGER.info('[%s 第%d/%d次] 模型请求开始：阶段剩余 %.2f 秒，调用超时 %.2f 秒',
+                            name, attempt, max_calls, remaining, call_timeout)
+                request_started = time.monotonic()
+                result = self.model.complete_json(png, prompt, timeout_seconds=remaining)
+                LOGGER.info('[%s 第%d/%d次] 模型请求返回：耗时 %.2f 秒',
+                            name, attempt, max_calls, time.monotonic() - request_started)
                 self.remaining()  # 迟到的模型响应不能触发后续点击。
                 parsed = validate(result)
                 LOGGER.info('[%s 第%d次] %s', name, attempt, parsed)
                 return parsed
             except VisualError as exc:
-                LOGGER.info('%s识别未确认：%s', name, exc)
-                if attempt == self.action['multimodal']['max_calls']:
-                    raise VisualError(f'{name}多次识别未确认，已停止：{exc}') from None
+                LOGGER.info('[%s 第%d/%d次] 识别未确认：%s：%s；本次耗时 %.2f 秒；%s',
+                            name, attempt, max_calls, type(exc).__name__, exc,
+                            time.monotonic() - attempt_started,
+                            '将重新截图重试' if attempt < max_calls else '已达重试上限，停止识别')
+                if attempt == max_calls:
+                    raise VisualError(f'{name}多次识别未确认，已停止：{exc}') from exc
                 self.images.sleep(min(1, self.remaining()))
 
     def tap(self, point):

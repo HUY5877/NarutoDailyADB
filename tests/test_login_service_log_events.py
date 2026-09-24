@@ -85,6 +85,32 @@ def test_log_event_keeps_only_safe_fields_and_normalizes_level_and_time():
     }]
 
 
+def test_local_diagnostics_keep_long_messages_and_exception_chain_out_of_web_logs():
+    events, terminal = [], StringIO()
+    secret = "local-diagnostic-test-secret"
+    long_message = "识别进度" * 400
+    with forward_task_logs(events.append, diagnostic_stream=terminal, secrets=[secret]):
+        logger = logging.getLogger("naruto_daily")
+        logger.info(long_message)
+        try:
+            try:
+                raise ValueError("模型网络异常 " + secret)
+            except ValueError as error:
+                raise RuntimeError("一乐外卖多次识别失败") from error
+        except RuntimeError:
+            logger.exception("执行阶段 daily 失败")
+    output = terminal.getvalue()
+    assert long_message in output
+    assert "Traceback (most recent call last)" in output
+    assert "ValueError: 模型网络异常 [REDACTED]" in output
+    assert "RuntimeError: 一乐外卖多次识别失败" in output
+    assert secret not in output
+    assert len(events[0]["message"]) == 1000
+    assert events[-1]["message"] == "执行阶段 daily 失败"
+    assert "Traceback" not in json.dumps(events)
+    assert "模型网络异常" not in json.dumps(events, ensure_ascii=False)
+
+
 @pytest.mark.parametrize("index,total", [(True, 5), (1, True), (-1, 5), (6, 5), ("1", 5), (1, None)])
 def test_malformed_progress_is_omitted(index, total):
     events = []
@@ -247,7 +273,11 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
         "fetch qr", "wait for scan",
     ]
     assert any(event.get("actionIndex") == 1 and event.get("actionTotal") == 1 for event in events)
-    assert capsys.readouterr().err.splitlines() == ["legacy dependency print", "legacy allocate print"]
+    terminal = capsys.readouterr().err
+    assert "legacy dependency print" in terminal and "legacy allocate print" in terminal
+    assert "INFO import dependencies" in terminal
+    assert "INFO fetch qr" in terminal and "INFO finish login" in terminal
+    assert "INFO 动作 1/1：返回" in terminal
 
 
 def test_log_and_stage_events_share_an_atomic_output_writer():

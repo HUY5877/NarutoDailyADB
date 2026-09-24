@@ -6,6 +6,7 @@ import base64
 from contextlib import ExitStack, redirect_stdout
 from datetime import datetime
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -170,7 +171,9 @@ def main(
         # Capture ordinary prints across imports, navigation and daily execution;
         # structured logs retain the original protocol stream captured above.
         log_context.enter_context(redirect_stdout(sys.stderr))
-        log_context.enter_context(forward_task_logs(lambda event: _send(output_stream, event)))
+        log_context.enter_context(forward_task_logs(
+            lambda event: _send(output_stream, event), diagnostic_stream=sys.stderr,
+        ))
         Manager, DriverError, LoginDevice, fetch_login_qr = _load_dependencies()
         manager_options = dict(
             console_path=console_path,
@@ -237,6 +240,9 @@ def main(
             _send(output_stream, {"type": "daily_completed", "actionCount": action_count})
         return 0
     except Exception as error:
+        # Full traceback stays in the task's local stderr stream. The browser
+        # never receives traceback frames or the raw exception text.
+        logging.getLogger("naruto_daily").exception("执行阶段 %s 失败", phase)
         if phase == "configuration":
             code = "configuration_error"
         elif phase == "login":

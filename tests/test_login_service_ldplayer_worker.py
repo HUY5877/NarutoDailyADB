@@ -374,7 +374,7 @@ def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_l
     ("daily", RuntimeError("private daily detail"), "daily_failed"),
     ("daily", TimeoutError("private daily detail"), "daily_timeout"),
 ])
-def test_daily_worker_maps_failures_without_leaking_details(monkeypatch, tmp_path, phase, error, expected):
+def test_daily_worker_maps_failures_without_leaking_details(monkeypatch, tmp_path, capsys, phase, error, expected):
     calls = []
 
     class DailySession:
@@ -403,6 +403,9 @@ def test_daily_worker_maps_failures_without_leaking_details(monkeypatch, tmp_pat
     assert code == 1
     assert events[-1] == {"type": "error", "code": expected}
     assert "private" not in json.dumps(events)
+    terminal = capsys.readouterr().err
+    assert "Traceback (most recent call last)" in terminal
+    assert f"{type(error).__name__}: {error}" in terminal
     assert not any(event["type"] == "daily_completed" for event in events)
     if phase == "configure":
         assert calls == ["allocate", "start"]

@@ -225,18 +225,24 @@ class LoginRuntime:
             key: value for key, value in os.environ.items()
             if key.upper() in _CHILD_ENV_ALLOWLIST
         }
+        child_env["PYTHONIOENCODING"] = "utf-8"
         if daily:
             for name in ("MULTIMODAL_BASE_URL", "MULTIMODAL_MODEL", "MULTIMODAL_API_KEY"):
                 if name in os.environ:
                     child_env[name] = os.environ[name]
         child = subprocess.Popen(
             command,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=child_env,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         self._children[record.id] = child
         assert child.stdin is not None and child.stdout is not None
+        stderr = getattr(child, "stderr", None)
+        stderr_task = (
+            asyncio.create_task(self._relay_child_stderr(record, stderr), name=f"login-stderr:{record.id}")
+            if stderr is not None else None
+        )
         png: bytes | None = None
         action_count: int | None = None
         try:
@@ -313,9 +319,51 @@ class LoginRuntime:
                 return png
         finally:
             self._kill(child)
-            await asyncio.to_thread(child.wait)
-            child.stdin.close()
-            child.stdout.close()
+            try:
+                await asyncio.to_thread(child.wait)
+                if stderr_task is not None:
+                    # The child has closed its writer; drain buffered diagnostics
+                    # before closing our pipe, but do not hold shutdown indefinitely.
+                    try:
+                        await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2)
+                    except TimeoutError:
+                        logger.warning("Task %s: stderr drain timed out during shutdown", record.id)
+            finally:
+                if stderr_task is not None and not stderr_task.done():
+                    stderr_task.cancel()
+                    await asyncio.gather(stderr_task, return_exceptions=True)
+                child.stdin.close()
+                child.stdout.close()
+                if stderr is not None:
+                    stderr.close()
+
+    async def _relay_child_stderr(self, record: TaskRecord, stream) -> None:
+        """Show full diagnostics locally without publishing them to Redis."""
+        from .log_events import sanitize_log_message
+
+        known_secrets = (
+            os.environ.get("MULTIMODAL_API_KEY", ""), self.config.oss_access_key_id,
+            self.config.oss_access_key_secret, self.config.oss_sts_token or "",
+            self.config.service_token, record.access_token,
+        )
+        try:
+            while True:
+                raw = await asyncio.to_thread(stream.readline)
+                if not raw:
+                    return
+                message = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+                level = logging.INFO
+                for prefix, candidate in (("INFO ", logging.INFO), ("WARNING ", logging.WARNING), ("ERROR ", logging.ERROR)):
+                    if message.startswith(prefix):
+                        level, message = candidate, message[len(prefix):]
+                        break
+                indentation = message[:len(message) - len(message.lstrip(" \t"))].replace("\t", "    ")
+                message = sanitize_log_message(message, secrets=known_secrets, max_length=None)
+                if message:
+                    logger.log(level, "Task %s | %s%s", record.id, indentation, message)
+        except (OSError, ValueError):
+            # Pipe errors must not hide the worker's actual protocol outcome.
+            logger.warning("Task %s: could not read child stderr", record.id)
 
     def _accept_log(self, record: TaskRecord, event: dict) -> None:
         message, timestamp, level = event.get("message"), event.get("time"), event.get("level")
