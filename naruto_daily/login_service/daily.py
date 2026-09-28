@@ -135,7 +135,7 @@ class DailySession:
             self._remaining()
             png = self.client.screenshot()
             for index, target in enumerate(targets):
-                center, _ = images.match(png, target)
+                center, _ = images.match(png, target, timeout_seconds=self._remaining())
                 if center is not None:
                     self._remaining()
                     self._authorized = True
@@ -157,7 +157,7 @@ class DailySession:
             actions[0]["timeout_seconds"] = self._remaining()
         self._runner().run(actions)
         images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
-        center, _ = images.find(self._main_marker)
+        center, _ = images.find(self._main_marker, deadline=images.elapsed + self._remaining())
         if center is None:
             raise VisualError("扫码登录后未能确认游戏主界面")
         self._remaining()

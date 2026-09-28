@@ -136,16 +136,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -167,16 +165,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -198,18 +194,19 @@
         "seconds": 1
       },
       {
-        "type": "required_template_tap",
+        "type": "main_menu_tap",
         "name": "活动入口",
-        "template": "assets/activities_entry.png",
-        "left": 1720,
-        "top": 0,
-        "right": 1920,
-        "bottom": 220,
-        "threshold": 0.9,
-        "timeout_seconds": 20,
+        "timeout_seconds": 60,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 1
+        "post_click_wait_seconds": 1,
+        "main_menu": "activities",
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
       },
       {
         "type": "required_template_tap",
@@ -244,16 +241,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -275,16 +270,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -306,32 +299,34 @@
         "seconds": 1
       },
       {
-        "type": "required_template_tap",
+        "type": "main_menu_tap",
         "name": "主界面装备",
-        "template": "assets/equipment_entry.png",
-        "left": 310,
-        "top": 910,
-        "right": 540,
-        "bottom": 1080,
-        "threshold": 0.9,
-        "timeout_seconds": 20,
+        "timeout_seconds": 60,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 1
+        "post_click_wait_seconds": 1,
+        "main_menu": "equipment",
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
       },
       {
-        "type": "required_template_tap",
+        "type": "main_menu_tap",
         "name": "二级菜单装备",
-        "template": "assets/equipment_submenu.png",
-        "left": 50,
-        "top": 750,
-        "right": 215,
-        "bottom": 920,
-        "threshold": 0.9,
-        "timeout_seconds": 20,
+        "timeout_seconds": 60,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 1
+        "post_click_wait_seconds": 1,
+        "main_menu": "equipment_submenu",
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
       },
       {
         "type": "handle_equipment_upgrade",
@@ -355,16 +350,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -379,18 +372,19 @@
     ],
     "organization_pray": [
       {
-        "type": "required_template_tap",
+        "type": "main_menu_tap",
         "name": "奖励入口",
-        "template": "assets/reward_entry.png",
-        "left": 1700,
-        "top": 400,
-        "right": 1920,
-        "bottom": 700,
-        "threshold": 0.85,
-        "timeout_seconds": 20,
+        "timeout_seconds": 60,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 1
+        "post_click_wait_seconds": 1,
+        "main_menu": "rewards",
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
       },
       {
         "type": "find_card_and_click",
@@ -468,16 +462,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -490,18 +482,19 @@
         }
       },
       {
-        "type": "required_template_tap",
+        "type": "main_menu_tap",
         "name": "奖励入口",
-        "template": "assets/reward_entry.png",
-        "left": 1700,
-        "top": 400,
-        "right": 1920,
-        "bottom": 700,
-        "threshold": 0.85,
-        "timeout_seconds": 20,
+        "timeout_seconds": 60,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 1
+        "post_click_wait_seconds": 1,
+        "main_menu": "rewards",
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
       },
       {
         "type": "find_card_and_click",
@@ -553,16 +546,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -575,18 +566,19 @@
         }
       },
       {
-        "type": "required_template_tap",
+        "type": "main_menu_tap",
         "name": "奖励入口",
-        "template": "assets/reward_entry.png",
-        "left": 1700,
-        "top": 400,
-        "right": 1920,
-        "bottom": 700,
-        "threshold": 0.85,
-        "timeout_seconds": 20,
+        "timeout_seconds": 60,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 1
+        "post_click_wait_seconds": 1,
+        "main_menu": "rewards",
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
       },
       {
         "type": "find_card_and_click",
@@ -686,16 +678,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -708,18 +698,19 @@
         }
       },
       {
-        "type": "required_template_tap",
+        "type": "main_menu_tap",
         "name": "奖励入口",
-        "template": "assets/reward_entry.png",
-        "left": 1700,
-        "top": 400,
-        "right": 1920,
-        "bottom": 700,
-        "threshold": 0.85,
-        "timeout_seconds": 20,
+        "timeout_seconds": 60,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 1
+        "post_click_wait_seconds": 1,
+        "main_menu": "rewards",
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
       },
       {
         "type": "find_card_and_click",
@@ -822,16 +813,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -856,16 +845,14 @@
           "pre_click_wait_seconds": 1,
           "post_click_wait_seconds": 5,
           "main_page_marker": {
-            "name": "主界面奖励文字",
-            "template": "assets/main_reward_label.png",
-            "left": 1700,
-            "top": 400,
-            "right": 1920,
-            "bottom": 700,
-            "threshold": 0.9,
-            "alternate_templates": [
-              "assets/main_reward_label_red_dot.png"
-            ]
+            "name": "游戏主界面",
+            "main_menu": "home",
+            "multimodal": {
+              "base_url": "${MULTIMODAL_BASE_URL}",
+              "model": "${MULTIMODAL_MODEL}",
+              "timeout_seconds": 30,
+              "max_calls": 3
+            }
           },
           "close_target": {
             "name": "通用关闭按钮",
@@ -878,18 +865,19 @@
           }
         },
         "reward_button": {
-          "type": "required_template_tap",
+          "type": "main_menu_tap",
           "name": "奖励入口",
-          "template": "assets/reward_entry.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.85,
-          "timeout_seconds": 20,
+          "timeout_seconds": 60,
           "poll_seconds": 1,
           "pre_click_wait_seconds": 1,
-          "post_click_wait_seconds": 3
+          "post_click_wait_seconds": 3,
+          "main_menu": "rewards",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "card": {
           "type": "find_card_and_click",
@@ -1045,16 +1033,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 5,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -1079,16 +1065,14 @@
           "pre_click_wait_seconds": 1,
           "post_click_wait_seconds": 5,
           "main_page_marker": {
-            "name": "主界面奖励文字",
-            "template": "assets/main_reward_label.png",
-            "left": 1700,
-            "top": 400,
-            "right": 1920,
-            "bottom": 700,
-            "threshold": 0.9,
-            "alternate_templates": [
-              "assets/main_reward_label_red_dot.png"
-            ]
+            "name": "游戏主界面",
+            "main_menu": "home",
+            "multimodal": {
+              "base_url": "${MULTIMODAL_BASE_URL}",
+              "model": "${MULTIMODAL_MODEL}",
+              "timeout_seconds": 30,
+              "max_calls": 3
+            }
           },
           "close_target": {
             "name": "通用关闭按钮",
@@ -1129,16 +1113,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",
@@ -1151,18 +1133,19 @@
         }
       },
       {
-        "type": "required_template_tap",
+        "type": "main_menu_tap",
         "name": "奖励入口",
-        "template": "assets/reward_entry.png",
-        "left": 1700,
-        "top": 400,
-        "right": 1920,
-        "bottom": 700,
-        "threshold": 0.85,
-        "timeout_seconds": 20,
+        "timeout_seconds": 60,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 1,
-        "post_click_wait_seconds": 1
+        "post_click_wait_seconds": 1,
+        "main_menu": "rewards",
+        "multimodal": {
+          "base_url": "${MULTIMODAL_BASE_URL}",
+          "model": "${MULTIMODAL_MODEL}",
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
       },
       {
         "type": "find_card_and_click",
@@ -1280,16 +1263,14 @@
         "pre_click_wait_seconds": 1,
         "post_click_wait_seconds": 1,
         "main_page_marker": {
-          "name": "主界面奖励文字",
-          "template": "assets/main_reward_label.png",
-          "left": 1700,
-          "top": 400,
-          "right": 1920,
-          "bottom": 700,
-          "threshold": 0.9,
-          "alternate_templates": [
-            "assets/main_reward_label_red_dot.png"
-          ]
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "base_url": "${MULTIMODAL_BASE_URL}",
+            "model": "${MULTIMODAL_MODEL}",
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
         },
         "close_target": {
           "name": "通用关闭按钮",

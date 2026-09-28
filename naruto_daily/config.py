@@ -34,6 +34,8 @@ class Settings:
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
 TASK_NAMES = {"login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "secret_realm", "secret_realm_farm"}
 ACTION_KEYS = {
+    "main_menu_tap": {"type", "name", "main_menu", "multimodal", "timeout_seconds",
+                      "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds"},
     "handle_ichiraku_takeout": {"type", "timeout_seconds", "post_click_wait_seconds", "multimodal"},
     "handle_equipment_upgrade": {"type", "timeout_seconds", "post_click_wait_seconds", "multimodal",
                                   "max_rounds", "poll_seconds", "sweep_timeout_seconds",
@@ -176,6 +178,17 @@ def _validate_multimodal_config(model: Any, context: str) -> None:
         raise ConfigError(f'{context}.max_calls 必须在 2 到 10 之间')
 
 
+def _validate_main_target(target, context, *, marker=False):
+    from naruto_daily.common.main_screen import MAIN_TARGETS
+    _require_exact_keys(target, {'name', 'main_menu', 'multimodal'}, context)
+    if not isinstance(target['name'], str) or not target['name'].strip():
+        raise ConfigError(f'{context}.name 必须是非空字符串')
+    menu = target['main_menu']
+    if not isinstance(menu, str) or menu not in MAIN_TARGETS or (menu == 'home') != marker:
+        raise ConfigError(f'{context}.main_menu 必须指定有效的主界面' + ('确认目标' if marker else '按钮'))
+    _validate_multimodal_config(target['multimodal'], f'{context}.multimodal')
+
+
 def _validate_battle(battle: Any, width: int, height: int, context: str, max_timeout=180) -> None:
     if not isinstance(battle, dict):
         raise ConfigError(f"{context}.battle 必须是对象")
@@ -298,7 +311,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         _require_exact_keys(action, keys, context)
         for key, expected_type in nested.items():
             child = action[key]
-            if not isinstance(child, dict) or child.get("type") != expected_type:
+            allowed = {expected_type, 'main_menu_tap'} if key == 'reward_button' else {expected_type}
+            if not isinstance(child, dict) or child.get("type") not in allowed:
                 raise ConfigError(f"{context}.{key} 必须是 {expected_type} 动作")
             _validate_action(child, width, height, f"{context}.{key}")
         if method == "ninja_challenge":
@@ -312,7 +326,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
                 raise ConfigError(f"{context} 的主界面滑动必须向左")
         return
     if action_type in {
-            "required_template_tap", "finish_login_authorization", "return_to_main",
+            "required_template_tap", "main_menu_tap", "finish_login_authorization", "return_to_main",
             "handle_coin_fortune", "popup_cleanup", "handle_organization_prayer",
             "handle_free_recruit", "handle_abundance", "authorize_account", "handle_secret_realm",
             "handle_survival_challenge",
@@ -379,22 +393,16 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
         _validate_click_waits(action, context)
         main_page_marker = action["main_page_marker"]
-        _validate_template_target(
-            main_page_marker,
-            width,
-            height,
-            f"{context}.main_page_marker",
-            require_name=True,
-        )
-        if not (
-            main_page_marker["left"] >= 1500
-            and main_page_marker["top"] >= 300
-            and main_page_marker["right"] <= width
-            and main_page_marker["bottom"] <= 800
-        ):
-            raise ConfigError(f"{context} 的主界面标记搜索区域必须限制在右侧奖励区域")
-        if main_page_marker["threshold"] < 0.90:
-            raise ConfigError(f"{context} 的主界面标记阈值不能低于 0.90")
+        if isinstance(main_page_marker, dict) and 'main_menu' in main_page_marker:
+            _validate_main_target(main_page_marker, f'{context}.main_page_marker', marker=True)
+        else:
+            _validate_template_target(main_page_marker, width, height,
+                                      f"{context}.main_page_marker", require_name=True)
+            if not (main_page_marker["left"] >= 1500 and main_page_marker["top"] >= 300
+                    and main_page_marker["right"] <= width and main_page_marker["bottom"] <= 800):
+                raise ConfigError(f"{context} 的主界面标记搜索区域必须限制在右侧奖励区域")
+            if main_page_marker["threshold"] < 0.90:
+                raise ConfigError(f"{context} 的主界面标记阈值不能低于 0.90")
         close_target = action["close_target"]
         _validate_template_target(close_target, width, height, f"{context}.close_target", require_name=True)
         if not (
@@ -407,10 +415,13 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         if close_target["threshold"] < 0.95:
             raise ConfigError(f"{context} 的关闭按钮阈值不能低于 0.95")
         return
-    elif action_type == "required_template_tap":
-        target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
-        target = {key: action[key] for key in target_keys}
-        _validate_template_target(target, width, height, context, require_name=True)
+    elif action_type in {"required_template_tap", "main_menu_tap"}:
+        if action_type == 'main_menu_tap':
+            _validate_main_target({k: action[k] for k in ('name', 'main_menu', 'multimodal')}, context)
+        else:
+            target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
+            target = {key: action[key] for key in target_keys}
+            _validate_template_target(target, width, height, context, require_name=True)
         timeout_seconds = action["timeout_seconds"]
         poll_seconds = action["poll_seconds"]
         if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or not 1 <= timeout_seconds <= 60:

@@ -33,6 +33,12 @@ def config_file(tmp_path, *, change=None):
                   for index, name in enumerate(TASK_ORDER) if name != "login"},
     }
     payload["tasks"]["login"] = deepcopy(original["tasks"]["login"])
+    # 此组测试保留旧模板配置的兼容性；模型扫码交接另有集成测试。
+    payload['tasks']['login'][-1]['main_page_marker'] = dict(
+        name='主界面奖励文字', template='assets/main_reward_label.png',
+        alternate_templates=['assets/main_reward_label_red_dot.png'],
+        left=1700, top=400, right=1920, bottom=700, threshold=.9,
+    )
     if change:
         change(payload)
     path = tmp_path / "daily.json"

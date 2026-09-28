@@ -13,6 +13,18 @@ from naruto_daily.common.visual import find_template_in_png
 ROOT = Path(__file__).parents[1]
 
 
+@pytest.fixture(autouse=True)
+def main_model(monkeypatch):
+    """主界面用确定的模型响应回放；固定页面继续使用真实模板。"""
+    from naruto_daily.common import main_screen
+    home = (ROOT / 'tests/fixtures/main_page_reward_dot.png').read_bytes()
+    class Model:
+        def __init__(self, *a): pass
+        def match(self, png, target, timeout):
+            return ((1800, 500), 1) if png in (home, b'screen') else (None, 0)
+    monkeypatch.setattr(main_screen, 'MainScreenRecognition', Model)
+
+
 def test_real_screens_follow_abundance_from_main_page_through_result_and_back(monkeypatch):
     from naruto_daily.abundance import handler
     from naruto_daily.battle import run_battle

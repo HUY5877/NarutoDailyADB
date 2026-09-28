@@ -26,6 +26,7 @@ from .equipment import handle_equipment_upgrade
 
 LOGGER = logging.getLogger("naruto_daily")
 ACTION_NAMES = {
+    "main_menu_tap": "大模型识别主界面入口后点击",
     "handle_ichiraku_takeout": "判断并领取一乐外卖",
     "handle_equipment_upgrade": "优先最低装备扫荡材料、合成和进阶",
     "enter_secret_realm": "进入秘境探险",
@@ -130,7 +131,7 @@ class ActionRunner:
                     asset_root=self.asset_root,
                     sleep=self.sleep,
                 )
-            elif action_type == "required_template_tap":
+            elif action_type in {"required_template_tap", "main_menu_tap"}:
                 required_template_tap(self.client, action, template_matcher=self.template_matcher,
                                       asset_root=self.asset_root, sleep=self.sleep)
             elif action_type == "authorize_account":

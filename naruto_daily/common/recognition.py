@@ -21,13 +21,36 @@ class ImageRecognition:
         self.asset_root = Path(asset_root)
         self._sleep = sleep
         self.elapsed = 0.0
+        self._started = time.monotonic()
+        self._use_wall_clock = False
+        self._main_models = {}
+        self.main_calls = 0
+        self.main_call_limit = None
+
+    @property
+    def elapsed(self):
+        return max(self._elapsed, time.monotonic() - self._started) if self._use_wall_clock else self._elapsed
+
+    @elapsed.setter
+    def elapsed(self, value):
+        self._elapsed = value
 
     def sleep(self, seconds: float) -> None:
         self._sleep(seconds)
-        self.elapsed += seconds
+        self._elapsed += seconds
 
-    def match(self, screenshot: bytes, target: dict):
+    def match(self, screenshot: bytes, target: dict, *, timeout_seconds=None):
         """只匹配传入的同一帧；刷新和重试由 check 统一负责。"""
+        if 'main_menu' in target:
+            from .main_screen import MainScreenRecognition
+            self._use_wall_clock = True
+            if self.main_call_limit is not None and self.main_calls >= self.main_call_limit:
+                raise VisualError(f"{target['name']}已达到模型调用上限，未继续点击")
+            key = tuple(sorted(target['multimodal'].items()))
+            if key not in self._main_models:
+                self._main_models[key] = MainScreenRecognition(target['multimodal'], self.asset_root)
+            self.main_calls += 1
+            return self._main_models[key].match(screenshot, target, timeout_seconds)
         roi = tuple(target[key] for key in ("left", "top", "right", "bottom"))
         best = (None, -1.0)
         for template in [target["template"], *target.get("alternate_templates", [])]:
@@ -50,21 +73,24 @@ class ImageRecognition:
         return result
 
     def find(self, target: dict, *, deadline: float = float("inf")):
-        return self.check(lambda png: self.match(png, target), lambda result: result[0] is not None,
-                          target.get("name", target["template"]), deadline=deadline)
+        self._use_wall_clock |= 'main_menu' in target
+        return self.check(lambda png: self.match(png, target, timeout_seconds=deadline-self.elapsed),
+                          lambda result: result[0] is not None,
+                          target.get("name", target.get("template", "主界面")), deadline=deadline)
 
     def either(self, targets: list[dict], *, deadline: float = float("inf")):
         """互斥页面在同一帧依次判断；都未发现才补查整组。"""
+        self._use_wall_clock |= any('main_menu' in target for target in targets)
         def probe(png):
             results = []
             for target in targets:
-                result = self.match(png, target)
+                result = self.match(png, target, timeout_seconds=deadline-self.elapsed)
                 results.append(result)
                 if result[0] is not None:
                     return len(results) - 1, results
             return None, results
         return self.check(probe, lambda result: result[0] is not None,
-                          " / ".join(t.get("name", t["template"]) for t in targets), deadline=deadline)
+                          " / ".join(t.get("name", t.get("template", "主界面")) for t in targets), deadline=deadline)
 
     def wait_for(self, target: dict, *, timeout_seconds: float, poll_seconds: float):
         deadline = self.elapsed + timeout_seconds

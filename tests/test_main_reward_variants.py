@@ -56,7 +56,7 @@ def test_return_to_main_accepts_red_dot_variant_without_clicking_close(caplog):
     from naruto_daily.return_to_main import return_to_main
     config = next(a for a in load_settings(ROOT/'config.example.json').tasks['login']
                   if a['type'] == 'return_to_main')
-    assert config['main_page_marker']['alternate_templates'] == target()['alternate_templates']
+    assert config['main_page_marker']['main_menu'] == 'home'
     config['main_page_marker'] = target()
     png = (ROOT/'tests/fixtures/reward_icon_red_dot_variant.png').read_bytes()
     class Client:
@@ -76,7 +76,7 @@ def test_invalid_alternative_template_configuration_is_rejected(tmp_path, altern
     from naruto_daily.config import load_settings, ConfigError
     data = json.loads((ROOT/'config.example.json').read_text(encoding='utf-8'))
     config = next(a for a in data['tasks']['login'] if a['type'] == 'return_to_main')
-    config['main_page_marker']['alternate_templates'] = alternatives
+    config['main_page_marker'] = dict(target(), alternate_templates=alternatives)
     path = tmp_path/'config.json'
     path.write_text(json.dumps(data), encoding='utf-8')
     with pytest.raises(ConfigError):

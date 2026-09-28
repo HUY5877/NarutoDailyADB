@@ -173,8 +173,11 @@ def navigate_to_card(
 
 def required_template_tap(client, action, *, template_matcher=find_template_in_png,
                           asset_root=Path("."), sleep=time.sleep):
-    """等待、复查并点击必需按钮，供任务执行器和入口流程共用。"""
+    """等待、复查并点击必需按钮；主界面目标通过 ImageRecognition 使用模型。"""
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
+    is_main = 'main_menu' in action
+    if is_main:
+        images.main_call_limit = action['multimodal']['max_calls']
     timeout_seconds = float(action["timeout_seconds"])
     poll_seconds = float(action["poll_seconds"])
     pre_click_wait_seconds = float(action.get("pre_click_wait_seconds", 1))
@@ -187,22 +190,21 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
                     action['name'], round_number, max(0, deadline - images.elapsed))
         center, score = images.find(action, deadline=deadline)
         if center is not None:
-            LOGGER.info(
-                "发现%s，相似度 %.3f，点击前等待 %.2f 秒",
-                action["name"], score, pre_click_wait_seconds,
-            )
+            if is_main:
+                LOGGER.info('模型已确认%s，点击前等待 %.2f 秒', action['name'], pre_click_wait_seconds)
+            else:
+                LOGGER.info("发现%s，相似度 %.3f，点击前等待 %.2f 秒",
+                            action["name"], score, pre_click_wait_seconds)
             images.sleep(pre_click_wait_seconds)
             confirmed_center, confirmed_score = images.find(action, deadline=deadline)
             if confirmed_center is None:
-                LOGGER.info(
-                    "等待后%s已消失，相似度 %.3f，继续识别",
-                    action["name"], confirmed_score,
-                )
+                LOGGER.info('等待后未确认%s，本轮不点击旧坐标', action['name'])
             else:
-                LOGGER.info(
-                    "再次确认%s，相似度 %.3f，点击坐标 (%d, %d)",
-                    action["name"], confirmed_score, confirmed_center[0], confirmed_center[1],
-                )
+                if is_main:
+                    LOGGER.info('模型复查确认%s，点击坐标 %s', action['name'], confirmed_center)
+                else:
+                    LOGGER.info("再次确认%s，相似度 %.3f，点击坐标 (%d, %d)",
+                                action["name"], confirmed_score, confirmed_center[0], confirmed_center[1])
                 client.tap(*confirmed_center)
                 LOGGER.info(
                     "点击完成，等待 %.2f 秒让页面响应",
@@ -211,10 +213,12 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
                 images.sleep(post_click_wait_seconds)
                 break
         if images.elapsed >= deadline:
+            if is_main:
+                raise VisualError(f"等待模型确认{action['name']}超时，未继续点击")
             raise VisualError(f"等待{action['name']}超时，最后相似度 {score:.3f}")
         delay = min(poll_seconds, deadline - images.elapsed)
-        LOGGER.info(
-            "等待%s，当前相似度 %.3f，%.2f 秒后重试",
-            action["name"], score, delay,
-        )
+        if is_main:
+            LOGGER.info('模型尚未确认%s，%.2f 秒后重试', action['name'], delay)
+        else:
+            LOGGER.info("等待%s，当前相似度 %.3f，%.2f 秒后重试", action["name"], score, delay)
         images.sleep(delay)

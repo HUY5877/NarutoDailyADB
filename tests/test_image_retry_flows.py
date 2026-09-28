@@ -71,7 +71,13 @@ def test_card_becoming_completed_during_retry_does_not_click():
     assert waits == [1, 1]
 
 
-def test_main_page_appears_during_close_retry_cancels_click():
+def test_main_page_appears_during_close_retry_cancels_click(monkeypatch):
+    from naruto_daily.common import main_screen
+    class Model:
+        def __init__(self, *a): pass
+        def match(self, png, target, timeout):
+            return ((1800, 500), 1) if int(png) == 3 else (None, 0)
+    monkeypatch.setattr(main_screen, 'MainScreenRecognition', Model)
     client, waits = ScreenClient(), []
     def matcher(png, path, roi, threshold):
         frame = int(png)
