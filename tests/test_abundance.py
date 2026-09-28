@@ -172,6 +172,8 @@ def test_abundance_passes_shared_model_to_result_handler(monkeypatch):
     monkeypatch.setattr(handler, 'MultimodalClient', lambda *a, **kw: model)
     def battle(*args, **kwargs):
         assert kwargs.get('model') is model
+        assert kwargs['pause_every_seconds'] == 30
+        assert kwargs['pause_seconds'] == 5
         return BattleSummary(4, 'multimodal')
     def finish(*args, **kwargs):
         assert kwargs.get('model') is model
