@@ -1,4 +1,4 @@
-"""视觉导航公共类型；生产会话由 Claude Agent SDK 驱动。"""
+"""通过 OpenAI 兼容 SDK 直连模型网关的视觉导航。"""
 import asyncio
 import logging
 import math
@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass, replace
 from typing import Annotated, Callable, Literal
 
-from httpx2 import AsyncClient
 from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_ai import Agent, BinaryContent, ModelRetry, ToolOutput, ToolReturn
@@ -19,7 +18,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
 
 from naruto_daily.common.visual import VisualError
-from naruto_daily.multimodal.transport import model_api_connection
+from naruto_daily.multimodal.transport import ModelAsyncClient
 from .completion_watch import CompletionDetected, CompletionWatch
 
 LOGGER = logging.getLogger('naruto_daily')
@@ -211,49 +210,48 @@ def run_agent(
 
     async def navigate():
         # HTTP 客户端与 SDK 同进程运行；退出、异常和取消均关闭连接。
-        with model_api_connection(connection) as api_connection:
-            async with AsyncClient(follow_redirects=False, trust_env=False) as http:
-                async with AsyncOpenAI(base_url=api_connection['base_url'], api_key=api_connection['api_key'],
-                                       timeout=api_connection['timeout_seconds'], max_retries=0, http_client=http) as api:
-                    agent = Agent(
-                        OpenAIChatModel(connection['model'], provider=OpenAIProvider(openai_client=api),
-                                        profile=OpenAIModelProfile(openai_chat_supports_max_completion_tokens=False)),
-                        system_prompt=SYSTEM_PROMPT + ('\n\n业务观察和完成条件：\n' + instructions if instructions else ''),
-                        output_type=ToolOutput(finish, name='finish', max_retries=COMPLETION_RETRIES),
-                        retries=0, capabilities=[hooks],
-                        model_settings={'max_tokens': 4096, 'parallel_tool_calls': False,
-                                        'openai_reasoning_effort': 'low'},
+        async with ModelAsyncClient(request_timeout=timeout) as http:
+            async with AsyncOpenAI(base_url=connection['base_url'], api_key=connection['api_key'],
+                                   timeout=timeout, max_retries=0, http_client=http) as api:
+                agent = Agent(
+                    OpenAIChatModel(connection['model'], provider=OpenAIProvider(openai_client=api),
+                                    profile=OpenAIModelProfile(openai_chat_supports_max_completion_tokens=False)),
+                    system_prompt=SYSTEM_PROMPT + ('\n\n业务观察和完成条件：\n' + instructions if instructions else ''),
+                    output_type=ToolOutput(finish, name='finish', max_retries=COMPLETION_RETRIES),
+                    retries=0, capabilities=[hooks],
+                    model_settings={'max_tokens': 4096, 'parallel_tool_calls': False,
+                                    'openai_reasoning_effort': 'low'},
+                )
+
+                @agent.tool_plain(sequential=True, retries=0)
+                async def move(evidence: move_evidence_type) -> ToolReturn:
+                    """沿一个方向短距离移动一次，并获取移动后的新截图。"""
+                    watch.check_fresh()
+                    state = state_of(evidence)
+                    if state == 'reached':
+                        raise _NavigationDone(result(True, evidence.observation))
+                    if len(history) >= max_steps:
+                        raise _NavigationDone(result(False, evidence.observation))
+                    direction = evidence.direction
+                    joystick.move(client, direction)
+                    history.append(AgentStep(evidence.observation, direction))
+                    LOGGER.info('[导航 %d/%d] 方向=%s；移动后重新截图', len(history), max_steps, direction)
+                    sleep(settle_seconds)
+                    png = client.screenshot()
+                    watch.check(png)
+                    return ToolReturn(
+                        return_value=f'已移动 {len(history)}/{max_steps} 步，剩余 {max_steps - len(history)} 步。',
+                        content=['请观察移动后的新截图，再判断是否到达。',
+                                 BinaryContent(data=png, media_type='image/png')],
                     )
 
-                    @agent.tool_plain(sequential=True, retries=0)
-                    async def move(evidence: move_evidence_type) -> ToolReturn:
-                        """沿一个方向短距离移动一次，并获取移动后的新截图。"""
-                        watch.check_fresh()
-                        state = state_of(evidence)
-                        if state == 'reached':
-                            raise _NavigationDone(result(True, evidence.observation))
-                        if len(history) >= max_steps:
-                            raise _NavigationDone(result(False, evidence.observation))
-                        direction = evidence.direction
-                        joystick.move(client, direction)
-                        history.append(AgentStep(evidence.observation, direction))
-                        LOGGER.info('[导航 %d/%d] 方向=%s；移动后重新截图', len(history), max_steps, direction)
-                        sleep(settle_seconds)
-                        png = client.screenshot()
-                        watch.check(png)
-                        return ToolReturn(
-                            return_value=f'已移动 {len(history)}/{max_steps} 步，剩余 {max_steps - len(history)} 步。',
-                            content=['请观察移动后的新截图，再判断是否到达。',
-                                     BinaryContent(data=png, media_type='image/png')],
-                        )
-
-                    run = await agent.run(
-                        [f'目标：{goal.strip()}\n最多移动 {max_steps} 步。先观察当前截图。',
-                         BinaryContent(data=initial_png, media_type='image/png')],
-                        usage_limits=UsageLimits(request_limit=max_steps + 1 + COMPLETION_RETRIES,
-                                                 tool_calls_limit=max_steps + 1),
-                    )
-                    return run.output
+                run = await agent.run(
+                    [f'目标：{goal.strip()}\n最多移动 {max_steps} 步。先观察当前截图。',
+                     BinaryContent(data=initial_png, media_type='image/png')],
+                    usage_limits=UsageLimits(request_limit=max_steps + 1 + COMPLETION_RETRIES,
+                                             tool_calls_limit=max_steps + 1),
+                )
+                return run.output
 
     try:
         watch.check(initial_png)
@@ -267,7 +265,7 @@ def run_agent(
         raise AgentError('导航模型请求或工具参数异常，已停止') from None
 
 
-# Test-only OpenAI-compatible protocol adapter. Production dispatch never imports it.
+# 与统一导航入口共享公共类型。
 from .runner import AgentError as AgentError
 from .runner import AgentResult as AgentResult
 from .runner import AgentStep as AgentStep

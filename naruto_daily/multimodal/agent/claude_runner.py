@@ -21,7 +21,7 @@ from claude_agent_sdk import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from naruto_daily.common.visual import VisualError
-from naruto_daily.multimodal.transport import model_api_connection
+from naruto_daily.multimodal.transport import MAX_REQUEST_RETRIES, request_budget
 from .completion_watch import CompletionDetected, CompletionWatch
 
 Observation = str
@@ -195,14 +195,12 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
             tools=[],
             allowed_tools=['mcp__navigation__move', 'mcp__navigation__finish'],
             permission_mode='dontAsk',
-            env={'ANTHROPIC_AUTH_TOKEN': api_connection['api_key'],
-                 'ANTHROPIC_BASE_URL': api_connection['base_url'],
+            env={'ANTHROPIC_AUTH_TOKEN': connection['api_key'],
+                 'ANTHROPIC_BASE_URL': base_url,
                  'ANTHROPIC_MODEL': connection['model'],
                  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1',
-                 'CLAUDE_CODE_MAX_RETRIES': '0',
-                 'NO_PROXY': '127.0.0.1,localhost',
-                 'no_proxy': '127.0.0.1,localhost',
-                 'API_TIMEOUT_MS': str(int(api_connection['timeout_seconds'] * 1000))},
+                 'CLAUDE_CODE_MAX_RETRIES': str(MAX_REQUEST_RETRIES),
+                 'API_TIMEOUT_MS': str(int(timeout * 1000))},
             cli_path=None,
             cwd='.',
         )
@@ -229,9 +227,8 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
         base_url = base_url[:-3].rstrip('/')
     try:
         watch.check(initial_png)
-        with model_api_connection({**connection, 'base_url': base_url}) as api_connection:
-            return asyncio.run(asyncio.wait_for(
-                watch.run(session()), timeout=api_connection['timeout_seconds'] * (max_steps + 1 + COMPLETION_RETRIES)))
+        return asyncio.run(asyncio.wait_for(
+            watch.run(session()), timeout=request_budget(timeout) * (max_steps + 1 + COMPLETION_RETRIES)))
     except CompletionDetected as exc:
         return result(True, exc.reason)
     except AgentError:

@@ -1,6 +1,5 @@
 import asyncio
 import time
-from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -39,8 +38,6 @@ def probe(png):
 def local_only(monkeypatch):
     monkeypatch.setattr(completion_watch, 'POLL_SECONDS', 0.01)
     monkeypatch.setattr(completion_watch, 'CLEANUP_GRACE_SECONDS', 0.05)
-    for backend in (compat_runner, claude_runner):
-        monkeypatch.setattr(backend, 'model_api_connection', lambda connection: nullcontext(connection))
 
 
 def install_sdk(monkeypatch, backend, behavior, *, on_exit=None, process=None):
@@ -110,7 +107,7 @@ def test_initial_boss_returns_without_starting_sdk(monkeypatch, backend):
     def forbidden(*args, **kwargs):
         raise AssertionError('已开战不应启动模型连接')
 
-    monkeypatch.setattr(backend, 'model_api_connection', forbidden)
+    monkeypatch.setattr(backend, 'ModelAsyncClient' if backend is compat_runner else 'ClaudeSDKClient', forbidden)
     result = run(backend, device)
     assert result.reached and result.steps == 0
     assert not device.moves and device.screenshots == 1

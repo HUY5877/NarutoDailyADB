@@ -1,18 +1,15 @@
-"""所有模型入口共用的 HTTP 重试；SDK 通过临时本机转发复用同一路径。"""
+"""模型直连 HTTP 客户端及重试策略，不启动本地转发服务。"""
 from __future__ import annotations
 
-from contextlib import contextmanager
+import asyncio
 from dataclasses import dataclass
 from http.client import HTTPException
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
 import logging
-import secrets
-import threading
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+import httpx2 as httpx
 
 from naruto_daily.common.visual import VisualError
 
@@ -108,72 +105,39 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
             check_cancelled()
 
 
-@contextmanager
-def model_api_connection(connection):
-    """SDK 只访问带临时令牌的本机端口；上游密钥仅由共用 HTTP 层发送。"""
-    upstream = str(connection['base_url']).rstrip('/')
-    prefix = urlsplit(upstream).path.rstrip('/')
-    token = secrets.token_urlsafe(32)
-    timeout = float(connection['timeout_seconds'])
-    cancel_event = threading.Event()
+class ModelAsyncClient(httpx.AsyncClient):
+    """SDK 直接请求配置的网关；仅在当前 HTTP 请求内部重试。"""
 
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
+    def __init__(self, *, request_timeout, **kwargs):
+        super().__init__(timeout=request_timeout, follow_redirects=False, trust_env=False, **kwargs)
+        self.request_timeout = float(request_timeout)
 
-        def do_POST(self):
-            if cancel_event.is_set():
-                return
-            auth = self.headers.get('Authorization', '')
-            key = self.headers.get('x-api-key', '')
-            if not (secrets.compare_digest(auth, 'Bearer ' + token) or secrets.compare_digest(key, token)):
-                self.send_error(403)
-                return
-            parsed = urlsplit(self.path)
-            if parsed.netloc or parsed.scheme or not parsed.path.startswith(prefix + '/'):
-                self.send_error(404)
-                return
+    async def send(self, request, **kwargs):
+        await request.aread()  # JSON 请求体可重发，不重跑 SDK 工具或设备动作。
+        deadline = time.monotonic() + request_budget(self.request_timeout)
+        for attempt in range(MAX_REQUEST_RETRIES + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise httpx.ReadTimeout('多模态请求已超过重试预算', request=request)
+            response = None
             try:
-                length = int(self.headers.get('Content-Length', '-1'))
-            except ValueError:
-                length = -1
-            if not 0 <= length <= 16_777_216:
-                self.send_error(413)
-                return
-            headers = {name: self.headers[name] for name in
-                       ('Content-Type', 'Accept', 'anthropic-version', 'anthropic-beta') if name in self.headers}
-            # 不转发 SDK 的临时令牌；真实密钥只交给配置指定的上游。
-            headers['Authorization'] = 'Bearer ' + connection['api_key']
-            request = Request(upstream + self.path[len(prefix):],
-                              data=self.rfile.read(length), headers=headers)
-            try:
-                # 完整读取当前响应再交给 SDK，避免重试半截流导致工具重复执行。
-                result = request_with_retry(request, request_timeout=timeout, max_response_bytes=16_777_216,
-                                            cancel_event=cancel_event)
-            except MultimodalRequestError as exc:
-                body = json.dumps({'error': {'type': 'api_error', 'message': str(exc)}}).encode()
-                result = ModelResponse(exc.status_code or 502, 'application/json', body)
-            if cancel_event.is_set():
-                return  # 会话已结束，不发布迟到响应，也不再发起上游重试。
-            try:
-                self.send_response(result.status)
-                self.send_header('Content-Type', result.content_type)
-                self.send_header('Content-Length', str(len(result.body)))
-                self.end_headers()
-                self.wfile.write(result.body)
-            except OSError:
-                pass  # SDK 已取消，不重试已经返回的响应。
-
-    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-    server.daemon_threads = True
-    server.block_on_close = False
-    thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .05}, daemon=True)
-    thread.start()
-    try:
-        yield {**connection, 'base_url': f'http://127.0.0.1:{server.server_port}{prefix}',
-               'api_key': token, 'timeout_seconds': request_budget(timeout)}
-    finally:
-        cancel_event.set()
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=1)
+                async with asyncio.timeout(min(self.request_timeout, remaining)):
+                    response = await super().send(request, **kwargs)
+                    await response.aread()
+                if (response.status_code not in RETRYABLE_HTTP_STATUS
+                        or attempt == MAX_REQUEST_RETRIES):
+                    return response
+                message = f'多模态 API 请求失败（HTTP {response.status_code}）'
+            except (httpx.TransportError, TimeoutError):
+                if attempt == MAX_REQUEST_RETRIES:
+                    raise httpx.ReadTimeout('多模态 API 网络异常或请求超时；已重试3次',
+                                            request=request) from None
+                message = '多模态 API 网络异常或请求超时'
+            finally:
+                if response is not None:
+                    await response.aclose()
+            if deadline - time.monotonic() <= REQUEST_RETRY_SECONDS:
+                raise httpx.ReadTimeout('多模态请求剩余时间不足，停止重试', request=request)
+            LOGGER.warning('%s；%d秒后进行第%d/%d次接口重试',
+                           message, REQUEST_RETRY_SECONDS, attempt + 1, MAX_REQUEST_RETRIES)
+            await asyncio.sleep(REQUEST_RETRY_SECONDS)

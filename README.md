@@ -1,6 +1,6 @@
 # NarutoDailyADB
 
-所有大模型 HTTP 请求共用 `naruto_daily/multimodal/transport.py`：普通 JSON 图片识别、OpenAI 兼容导航和 Claude 导航均在网络异常、HTTP 408/429/500/502/503/504 时最多重试 **3 次**，HTTP 429 限流每次等待 **10 秒**，其他可重试错误等待 **3 秒**，连同首次请求最多 **4 次**。401/403 等不可重试错误立即停止；等待和请求均计入已有阶段时限，剩余时间不足以等待时停止重试。默认请求预算及 SDK 超时包含三次10秒的限流等待。SDK 自带请求重试已关闭，接口重试耗尽后也不会被外层识别流程再次重试。重试只重发当前模型请求，不重跑游戏点击或移动。
+所有模型请求直接访问配置的 API 地址。默认鱼玩网关的导航 SDK 直接请求 `https://llm-proxy.yuwan-game.com/v1/chat/completions`。普通 JSON 图片识别与 OpenAI 兼容导航使用 `naruto_daily/multimodal/transport.py` 中的重试策略：网络异常、HTTP 408/429/500/502/503/504 最多重试 **3 次**，每次等待 **10 秒**，连同首次请求最多 **4 次**；401/403 等不可重试错误立即停止。等待和请求计入请求预算，普通识别还受调用方阶段时限约束；取消导航会中断当前请求或重试等待。OpenAI SDK 自带重试关闭，重试只重发当前请求，不重跑游戏点击或移动。Claude Messages 导航也直连配置地址，由 Claude SDK 处理最多3次请求重试及退避间隔。
 
 ## 扫码登录 worker（Python）
 
@@ -70,14 +70,14 @@ Copy-Item config.example.json config.local.json
 Copy-Item .env.example .env
 ```
 
-导航使用官方 Python `claude-agent-sdk`（锁定 0.2.152），随上述 pip 安装一起完成。秘境任务会在代码中通过 Claude Agent SDK 的进程内工具自动调用 agent。阶跃 Messages API 地址使用 `https://api.stepfun.com/step_plan`（不要带结尾 `/v1`）。
+导航依赖随上述 pip 安装一起完成。默认网关使用 OpenAI 兼容接口，秘境任务通过 Pydantic AI 自动调用视觉导航 agent；Claude Messages 接口仍由 `claude-agent-sdk`（锁定 0.2.152）支持。
 
 编辑 `.env`，填写以下配置；已有 `.env` 时直接编辑，不要用示例覆盖：
 
 ```dotenv
 MULTIMODAL_API_KEY=你的API密钥
-MULTIMODAL_BASE_URL=https://api.stepfun.com/step_plan/v1
-MULTIMODAL_MODEL=step-3.7-flash
+MULTIMODAL_BASE_URL=https://llm-proxy.yuwan-game.com/v1
+MULTIMODAL_MODEL=deepseek-v4.1-flash
 LOGIN_ACCOUNT_NAME="你要登录的完整昵称"
 ```
 
@@ -109,7 +109,7 @@ LOGIN_ACCOUNT_NAME="你要登录的完整昵称"
 
 通用导航位于 `naruto_daily/multimodal/agent/`，使用 Pydantic AI 的 `Agent` 管理会话和工具循环，移动工具负责截图和 ADB。`secret_realm/pre_battle.py` 在通用 `battle.run_battle()` 之前执行检查：阴阳秘境退出；毒风秘境由 `secret_realm/navigation.py` 传入目标和完成条件。agent 每一步在同一次工具调用中读取页面、提示文字和 BOSS/交战证据，再决定移动或结束；待解封提示明确消失且有 BOSS 或实际交战证据时，才进入战斗。不会在 agent 结束后再调用模型复核。最多移动 50 步，步数用尽仍未解封则退出；识别到失败/结算或页面不确定则停止。退出后回房间重新读券，不计为通关；无需额外传命令行参数。详见 [agent 使用说明](naruto_daily/multimodal/agent/README.md)。
 
-默认使用 ModelLink 中国大陆接入点：`.env` 中设置 `MULTIMODAL_BASE_URL=https://api.qnaigc.com/v1`、`MULTIMODAL_MODEL=deepseek/deepseek-v4.1-flash`，并将 `MULTIMODAL_API_KEY` 替换为自己的 ModelLink 密钥。 OpenAI 兼容地址带 `/v1`，Anthropic 兼容地址使用同一域名但去掉 `/v1`；程序会根据 Base URL 自动选择对应客户端。接入点说明见 [ModelLink 文档](https://docs.modelink.ai/api-endpoints/overview#mainland-china-endpoint)。
+默认使用 [鱼玩 LLM 网关](https://llm-proxy.yuwan-game.com/)：`.env` 中设置 `MULTIMODAL_BASE_URL=https://llm-proxy.yuwan-game.com/v1`、`MULTIMODAL_MODEL=deepseek-v4.1-flash`，并将 `MULTIMODAL_API_KEY` 填为该网关的有效密钥。基础地址保留 `/v1`，程序会拼接 `/chat/completions`，视觉导航也使用 OpenAI 兼容客户端。若扫码服务的 `naruto_daily/login_service/.env` 或进程环境配置了同名变量，也需保持一致，因为服务会将这些值传给日常子进程并覆盖日常 `.env`。
 
 JSON 中的 `account_name`、`multimodal.base_url` 和 `multimodal.model` 分别使用 `${LOGIN_ACCOUNT_NAME}`、`${MULTIMODAL_BASE_URL}` 和 `${MULTIMODAL_MODEL}` 引用环境配置。`naruto_daily/common/environment.py` 统一读取和解析环境变量，多模态客户端调用前单独读取 `MULTIMODAL_API_KEY`，密钥不会放进任务动作列表。旧的 `api_key_file` 配置已移除。授权截图会发送至配置的模型服务。默认单次请求上限 20 秒，每次授权最多 6 次调用；网络耗时计入 40 秒阶段预算。昵称未能读取时仍使用统一的等待 1 秒重新截图补查逻辑。
 

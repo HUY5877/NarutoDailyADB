@@ -286,20 +286,11 @@ def test_invalid_evidence_type_fails_before_device_read(evidence_type):
 def retry_waits(monkeypatch):
     from naruto_daily.multimodal import transport
     waits = []
-    original = transport.request_with_retry
 
-    def request(*args, cancel_event, **kwargs):
-        class ImmediateWait:
-            def is_set(self):
-                return cancel_event.is_set()
+    async def wait(seconds):
+        waits.append(seconds)
 
-            def wait(self, seconds):
-                waits.append(seconds)
-                return cancel_event.is_set()
-
-        return original(*args, cancel_event=ImmediateWait(), **kwargs)
-
-    monkeypatch.setattr(transport, 'request_with_retry', request)
+    monkeypatch.setattr(transport.asyncio, 'sleep', wait)
     return waits
 
 

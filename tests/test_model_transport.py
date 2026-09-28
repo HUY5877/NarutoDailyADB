@@ -1,10 +1,8 @@
 import io
-import json
 import logging
 import threading
-import time
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import pytest
 
@@ -189,40 +187,6 @@ def test_workflow_does_not_multiply_exhausted_http_retries(tmp_path):
     assert clock.sleeps == [10, 10, 10]
 
 
-@pytest.mark.parametrize('base_path,route', [('/v1', '/v1/chat/completions'), ('', '/v1/messages')])
-def test_sdk_relay_uses_shared_transport_and_replaces_only_authorization(monkeypatch, base_path, route):
-    calls = []
-
-    def request(request, **kwargs):
-        calls.append((request, kwargs))
-        return transport.ModelResponse(200, 'application/json', b'{"ok":true}')
-
-    monkeypatch.setattr(transport, 'request_with_retry', request)
-    connection = dict(base_url='https://example.test' + base_path, api_key='upstream-private-key',
-                      model='offline', timeout_seconds=30)
-    with transport.model_api_connection(connection) as sdk:
-        assert sdk['timeout_seconds'] == 150
-        assert sdk['api_key'] != connection['api_key']
-        address = sdk['base_url'] + route[len(base_path):]
-        payload = b'{"model":"offline","stream":true}'
-        req = Request(address, data=payload, headers={
-            'Authorization': 'Bearer ' + sdk['api_key'], 'anthropic-version': '2023-06-01',
-        })
-        with urlopen(req, timeout=2) as result:
-            assert json.load(result) == {'ok': True}
-        with pytest.raises(HTTPError) as caught:
-            urlopen(Request(address, data=payload), timeout=2)
-        assert caught.value.code == 403
-    assert len(calls) == 1
-    upstream, kwargs = calls[0]
-    assert upstream.full_url == 'https://example.test' + route
-    assert upstream.data == payload
-    assert upstream.get_header('Authorization') == 'Bearer upstream-private-key'
-    assert upstream.get_header('Anthropic-version') == '2023-06-01'
-    assert kwargs['request_timeout'] == 30
-    assert kwargs['cancel_event'].is_set()
-
-
 def test_cancelled_request_does_not_start_upstream():
     cancelled = threading.Event()
     cancelled.set()
@@ -287,54 +251,3 @@ def test_cancellation_interrupts_ten_second_retry_wait():
     finally:
         cancelled.set()
         thread.join(timeout=2)
-
-
-@pytest.mark.parametrize('late_result', ['success', 'timeout'])
-def test_relay_shutdown_does_not_wait_for_upstream_or_send_late_response(monkeypatch, late_result):
-    entered = threading.Event()
-    release = threading.Event()
-    calls = []
-    responses = []
-    client_errors = []
-
-    def upstream(*args, **kwargs):
-        calls.append(1)
-        entered.set()
-        assert release.wait(5)
-        if late_result == 'timeout':
-            raise TimeoutError()
-        return io.BytesIO(b'late success')
-
-    class Opener:
-        open = staticmethod(upstream)
-
-    monkeypatch.setattr(transport, 'build_opener', lambda *a: Opener())
-    connection = dict(base_url='https://example.test/v1', api_key='offline-key',
-                      model='offline', timeout_seconds=30)
-    client = None
-    try:
-        with transport.model_api_connection(connection) as sdk:
-            req = Request(sdk['base_url'] + '/chat/completions', data=b'{}',
-                          headers={'Authorization': 'Bearer ' + sdk['api_key']})
-
-            def read():
-                try:
-                    with urlopen(req, timeout=4) as response:
-                        responses.append(response.read())
-                except Exception as exc:
-                    client_errors.append(exc)
-
-            client = threading.Thread(target=read, daemon=True)
-            client.start()
-            assert entered.wait(2)
-            shutdown_started = time.monotonic()
-        assert time.monotonic() - shutdown_started < 1
-        assert not release.is_set()  # 上游仍然阻塞，但会话已经退出。
-        release.set()
-        client.join(timeout=2)
-        assert not client.is_alive()
-        assert calls == [1] and responses == [] and len(client_errors) == 1
-    finally:
-        release.set()
-        if client is not None:
-            client.join(timeout=2)
