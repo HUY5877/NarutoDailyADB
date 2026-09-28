@@ -11,6 +11,18 @@ from naruto_daily.common.visual import VisualError, find_template_in_png
 
 
 LOGGER = logging.getLogger("naruto_daily")
+# 1920×1080 奖励页统一参数，所有任务的常规查找和卡片补齐共用。
+REWARD_CARD_SWIPE = (1450, 550, 1000, 550, 600)
+REWARD_CARD_WAIT_SECONDS = 2
+REWARD_CARD_MAX_SWIPES = 10
+
+
+def _swipe_reward_cards(client, sleep):
+    x1, y1, x2, y2, duration = REWARD_CARD_SWIPE
+    LOGGER.info('奖励卡片统一左滑：(%d, %d)→(%d, %d)，持续%d毫秒，滑后等待%d秒',
+                x1, y1, x2, y2, duration, REWARD_CARD_WAIT_SECONDS)
+    client.swipe(*REWARD_CARD_SWIPE)
+    sleep(REWARD_CARD_WAIT_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -33,7 +45,7 @@ def navigate_to_card(
 
     name = action["name"]
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
-    max_swipes = action["max_swipes"]
+    max_swipes = action.get("max_swipes", REWARD_CARD_MAX_SWIPES)
 
     def scan_card(png):
         center, score = images.match(png, action)
@@ -87,16 +99,9 @@ def navigate_to_card(
                         "找到%s文字，但按钮和已完成标记都不完整，额外左滑一次后重新判断",
                         name,
                     )
-                    client.swipe(
-                        action["swipe_x1"],
-                        action["swipe_y1"],
-                        action["swipe_x2"],
-                        action["swipe_y2"],
-                        action["swipe_duration_ms"],
-                    )
+                    _swipe_reward_cards(client, sleep)
                     swipe_count += 1
                     alignment_swipe_used = True
-                    sleep(float(action["wait_seconds"]))
                     continue
                 if action.get("completed_skip_type"):
                     LOGGER.info(
@@ -162,15 +167,8 @@ def navigate_to_card(
             swipe_count + 1,
             max_swipes,
         )
-        client.swipe(
-            action["swipe_x1"],
-            action["swipe_y1"],
-            action["swipe_x2"],
-            action["swipe_y2"],
-            action["swipe_duration_ms"],
-        )
+        _swipe_reward_cards(client, sleep)
         swipe_count += 1
-        sleep(float(action["wait_seconds"]))
 
 
 def required_template_tap(client, action, *, template_matcher=find_template_in_png,

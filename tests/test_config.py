@@ -391,7 +391,8 @@ def test_coin_fortune_rejects_paid_button_risk(tmp_path, mutate, message):
         load_settings(write_config(tmp_path, payload))
 
 
-def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
+@pytest.mark.parametrize('legacy_swipe_settings', [False, True])
+def test_find_card_and_click_accepts_shared_navigation_and_legacy_settings(tmp_path, legacy_swipe_settings):
     payload = valid_payload()
     payload["screen"] = {"width": 1920, "height": 1080}
     payload["tasks"]["organization_pray"] = [{
@@ -418,6 +419,10 @@ def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
         "completed_skip_type": "handle_organization_prayer",
     }]
 
+    if not legacy_swipe_settings:
+        for key in ('max_swipes', 'swipe_x1', 'swipe_x2', 'swipe_y1', 'swipe_y2',
+                    'swipe_duration_ms', 'wait_seconds'):
+            payload['tasks']['organization_pray'][0].pop(key)
     settings = load_settings(write_config(tmp_path, payload))
 
     assert settings.tasks["organization_pray"][0]["button_template"] == "assets/go_now_button.png"

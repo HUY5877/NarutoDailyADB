@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -43,6 +44,57 @@ def card_action():
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 3,
     }
+
+
+def reward_card_actions():
+    payload = json.loads((Path(__file__).parents[1] / 'config.example.json').read_text(encoding='utf-8'))
+
+    def walk(value):
+        if isinstance(value, dict):
+            if value.get('type') == 'find_card_and_click':
+                yield value
+            for child in value.values():
+                yield from walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from walk(child)
+
+    return list(walk(payload['tasks']))
+
+
+@pytest.mark.parametrize('action', reward_card_actions(), ids=lambda a: a['name'])
+@pytest.mark.parametrize('alignment', [False, True])
+def test_every_reward_task_uses_same_swipe_for_search_and_alignment(action, alignment):
+    assert not {'swipe_x1', 'swipe_x2', 'swipe_y1', 'swipe_y2',
+                'swipe_duration_ms', 'wait_seconds', 'max_swipes'} & action.keys()
+    client, waits = NavigationClient(), []
+
+    def matcher(png, path, roi, threshold):
+        if not client.swipes:
+            if alignment and path.name == Path(action['template']).name:
+                return (1823, 400), .99
+            return None, .1
+        if path.name == Path(action['template']).name:
+            return (562, 400), .99
+        if path.name == Path(action['completed_template']).name:
+            return (562, 580), .99
+        raise AssertionError('已完成任务不应查询前往按钮')
+
+    summary = navigate_to_card(client, action, template_matcher=matcher, sleep=waits.append)
+    assert client.swipes == [(1450, 550, 1000, 550, 600)]
+    assert waits == [1, 2]  # 未命中补查1秒，共用滑后等待2秒。
+    assert summary.completed and summary.swipes == 1
+    assert client.taps == []
+
+
+def test_reward_search_default_limit_is_shared_by_all_tasks():
+    assert len(reward_card_actions()) == 6
+    for action in reward_card_actions():
+        client = NavigationClient()
+        summary = navigate_to_card(client, action, template_matcher=lambda *args: (None, .1),
+                                   sleep=lambda _: None)
+        assert summary.completed and summary.swipes == 10
+        assert client.swipes == [(1450, 550, 1000, 550, 600)] * 10
 
 
 def test_card_visible_now_clicks_corresponding_button_without_swiping(caplog):
@@ -106,8 +158,8 @@ def test_card_after_two_pages_swipes_then_clicks():
         sleep=waits.append,
     )
 
-    assert client.swipes == [(1650, 550, 350, 550, 500)] * 2
-    assert waits == [1.0, 1.0, 1.0, 1.0, 3.0, 3.0]
+    assert client.swipes == [(1450, 550, 1000, 550, 600)] * 2
+    assert waits == [1.0, 2.0, 1.0, 2.0, 3.0, 3.0]
     assert client.taps == [(561, 581)]
     assert summary.swipes == 2
 
@@ -153,7 +205,7 @@ def test_card_label_without_corresponding_button_raises_without_clicking():
         )
 
     assert client.taps == []
-    assert client.swipes == [(1650, 550, 350, 550, 500)]
+    assert client.swipes == [(1450, 550, 1000, 550, 600)]
 
 
 def test_optional_card_partially_visible_gets_only_one_extra_swipe_then_detects_completed(caplog):
@@ -180,7 +232,7 @@ def test_optional_card_partially_visible_gets_only_one_extra_swipe_then_detects_
         )
 
     assert client.taps == []
-    assert client.swipes == [(1650, 550, 350, 550, 500)]
+    assert client.swipes == [(1450, 550, 1000, 550, 600)]
     assert summary.swipes == 1
     assert summary.completed is True
     assert "额外左滑一次" in caplog.text
@@ -215,7 +267,7 @@ def test_optional_card_still_unusable_after_one_extra_swipe_is_skipped(caplog):
         )
 
     assert client.taps == []
-    assert client.swipes == [(1650, 550, 350, 550, 500)]
+    assert client.swipes == [(1450, 550, 1000, 550, 600)]
     assert summary.completed is True
     assert "额外左滑后仍未找到可执行按钮" in caplog.text
 
@@ -283,7 +335,7 @@ def test_completed_card_after_two_pages_stops_without_clicking(caplog):
             sleep=lambda _: None,
         )
 
-    assert client.swipes == [(1650, 550, 350, 550, 500)] * 2
+    assert client.swipes == [(1450, 550, 1000, 550, 600)] * 2
     assert client.taps == []
     assert summary.swipes == 2
     assert summary.completed is True

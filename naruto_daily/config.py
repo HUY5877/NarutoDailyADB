@@ -319,7 +319,9 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
     }:
         optional_keys = CLICK_WAIT_KEYS
     elif action_type == "find_card_and_click":
-        optional_keys = {"completed_skip_type"} | CLICK_WAIT_KEYS
+        # 奖励页滑动参数已统一；保留旧字段以便现有配置继续加载。
+        optional_keys = {"completed_skip_type", "max_swipes", "swipe_x1", "swipe_y1",
+                         "swipe_x2", "swipe_y2", "swipe_duration_ms", "wait_seconds"} | CLICK_WAIT_KEYS
     else:
         optional_keys = set()
     if action_type == "handle_abundance":
@@ -462,6 +464,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         _validate_template_target(start_game, width, height, f"{context}.start_game", require_name=True)
         return
     elif action_type == "find_card_and_click":
+        if (width, height) != (1920, 1080):
+            raise ConfigError(f"{context} 的奖励卡片统一导航只支持 1920×1080 安卓画面")
         target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
         target = {key: action[key] for key in target_keys}
         _validate_template_target(target, width, height, context, require_name=True)
@@ -492,20 +496,24 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             raise ConfigError(f"{context} 的按钮搜索区域左右范围无效")
         if action["button_top_offset"] >= action["button_bottom_offset"]:
             raise ConfigError(f"{context} 的按钮搜索区域上下范围无效")
-        max_swipes = action["max_swipes"]
-        if not isinstance(max_swipes, int) or isinstance(max_swipes, bool) or not 0 <= max_swipes <= 10:
-            raise ConfigError(f"{context} 的 max_swipes 必须在 0 到 10 之间")
+        if "max_swipes" in action:
+            max_swipes = action["max_swipes"]
+            if not isinstance(max_swipes, int) or isinstance(max_swipes, bool) or not 0 <= max_swipes <= 10:
+                raise ConfigError(f"{context} 的 max_swipes 必须在 0 到 10 之间")
         for key, limit in (
             ("swipe_x1", width), ("swipe_x2", width),
             ("swipe_y1", height), ("swipe_y2", height),
         ):
-            _coordinate(action[key], limit, f"{context}.{key}")
-        duration = action["swipe_duration_ms"]
-        if not isinstance(duration, int) or isinstance(duration, bool) or not 1 <= duration <= 10_000:
-            raise ConfigError(f"{context} 的 swipe_duration_ms 必须在 1 到 10000 之间")
-        wait_seconds = action["wait_seconds"]
-        if not isinstance(wait_seconds, (int, float)) or isinstance(wait_seconds, bool) or not 0 <= wait_seconds <= 10:
-            raise ConfigError(f"{context} 的 wait_seconds 必须在 0 到 10 之间")
+            if key in action:
+                _coordinate(action[key], limit, f"{context}.{key}")
+        if "swipe_duration_ms" in action:
+            duration = action["swipe_duration_ms"]
+            if not isinstance(duration, int) or isinstance(duration, bool) or not 1 <= duration <= 10_000:
+                raise ConfigError(f"{context} 的 swipe_duration_ms 必须在 1 到 10000 之间")
+        if "wait_seconds" in action:
+            wait_seconds = action["wait_seconds"]
+            if not isinstance(wait_seconds, (int, float)) or isinstance(wait_seconds, bool) or not 0 <= wait_seconds <= 10:
+                raise ConfigError(f"{context} 的 wait_seconds 必须在 0 到 10 之间")
         _validate_click_waits(action, context)
         completed_skip_type = action.get("completed_skip_type", "handle_organization_prayer")
         if completed_skip_type not in {
