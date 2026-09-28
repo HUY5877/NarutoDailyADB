@@ -123,7 +123,9 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
         wait_after_deploy(images, action, confirmed_tickets=confirmed.tickets)
         skipped = prepare_secret_battle(images, model, action)
         if not skipped:
-            run_battle(client, action['battle'], template_matcher=template_matcher, asset_root=asset_root, sleep=sleep, model=model)
+            # 秘境结算仅停留约20秒，缩短连点窗口以便回房间前识别结束。
+            run_battle(client, action['battle'], template_matcher=template_matcher,
+                       asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18)
         finish_secret_result(client, images, action, exited_battle=skipped)
         if skipped:
             LOGGER.info('已主动退出本次秘境；回房间重新读券后继续')

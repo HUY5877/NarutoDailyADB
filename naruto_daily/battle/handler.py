@@ -1,7 +1,8 @@
-"""公共战斗节奏：并发连点 30 秒，停止点击后暂停至少 5 秒并检查结算。"""
+"""公共战斗节奏：按调用方周期连点，仅在结算检查期间停止点击。"""
 from __future__ import annotations
 
 import logging
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -15,8 +16,8 @@ from naruto_daily.multimodal.prompts import BATTLE_COMPLETION
 
 
 LOGGER = logging.getLogger('naruto_daily')
-# 丰饶和秘境共用一组节奏参数：（连续点击秒数，含结算检查的暂停秒数）。
-BATTLE_CYCLE_SECONDS = (30.0, 5.0)
+# 默认连续点击30秒后检查；秘境调用时缩短为18秒。
+BATTLE_CHECK_INTERVAL_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -30,12 +31,16 @@ def run_battle(
     asset_root: Path = Path('.'), sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     model: MultimodalClient | None = None,
+    check_interval_seconds: float = BATTLE_CHECK_INTERVAL_SECONDS,
 ) -> BattleSummary:
+    if (isinstance(check_interval_seconds, bool) or not isinstance(check_interval_seconds, (int, float))
+            or not math.isfinite(check_interval_seconds) or check_interval_seconds <= 0):
+        raise ValueError('战斗检查间隔必须是正数')
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     # 调用方已经完成加载等待；一批四个输入完成后再开始下一批。
-    tap_seconds, pause_seconds = BATTLE_CYCLE_SECONDS
-    LOGGER.info('开始战斗模块，四个战斗按钮并发连点 %g 秒后停止点击，暂停至少 %g 秒并检查一次结算',
-                tap_seconds, pause_seconds)
+    tap_seconds = float(check_interval_seconds)
+    LOGGER.info('开始战斗模块，四个战斗按钮并发连点 %g 秒后停止点击并检查结算，确认仍在战斗后立即恢复',
+                tap_seconds)
     started, waited = clock(), images.elapsed
     timeout = float(battle['timeout_seconds'])
     interval = float(battle['tap_interval_seconds'])
@@ -43,7 +48,7 @@ def run_battle(
     taps = 0
 
     def elapsed():
-        # ADB、截图、模型请求和暂停均计入总时限；注入的 sleep 同样有效。
+        # ADB、截图、模型请求和点击间隔均计入总时限；注入的 sleep 同样有效。
         return max(clock() - started, images.elapsed - waited)
 
     def remaining():
@@ -64,11 +69,10 @@ def run_battle(
         while remaining() > 0:
             if elapsed() >= next_check:
                 # 前一批四个输入均已返回，先停止全部点击，再截图/调用模型。
-                paused_at = elapsed()
                 initial_check = round_number == 0
                 round_number += 1
                 LOGGER.info('[战斗检查 第%d轮] %s；检查结算，本阶段上限 %g 秒',
-                            round_number, '进入战斗前检查' if initial_check else '已停止全部连点，开始暂停', timeout)
+                            round_number, '进入战斗前检查' if initial_check else '已停止全部连点', timeout)
                 screenshot = client.screenshot()
                 if remaining() <= 0:
                     break
@@ -98,12 +102,6 @@ def run_battle(
                                 model_calls, page, finished, reason)
                     if finished or page != 'battle':
                         return BattleSummary(taps, 'multimodal')
-                if not initial_check:
-                    # 检查与暂停重叠；检查不足 5 秒才补足，超过则不额外等待。
-                    delay = min(pause_seconds - (elapsed() - paused_at), remaining())
-                    if delay > 0:
-                        LOGGER.info('战斗尚未结束，保持停止点击，再暂停 %.2f 秒', delay)
-                        images.sleep(delay)
                 next_check = elapsed() + tap_seconds
                 if remaining() > 0:
                     LOGGER.info('开始下一段 %g 秒战斗连点', tap_seconds)
