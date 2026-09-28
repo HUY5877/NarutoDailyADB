@@ -19,6 +19,7 @@ from naruto_daily.common.visual import VisualError
 LOGGER = logging.getLogger('naruto_daily')
 MAX_REQUEST_RETRIES = 3
 REQUEST_RETRY_SECONDS = 3
+RATE_LIMIT_RETRY_SECONDS = 10
 RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 
@@ -47,7 +48,9 @@ class ModelResponse:
 
 
 def request_budget(timeout):
-    return float(timeout) * (MAX_REQUEST_RETRIES + 1) + REQUEST_RETRY_SECONDS * MAX_REQUEST_RETRIES
+    # 默认预算和 SDK 超时需容纳全部限流等待；调用方的阶段截止时间仍优先。
+    retry_seconds = max(REQUEST_RETRY_SECONDS, RATE_LIMIT_RETRY_SECONDS)
+    return float(timeout) * (MAX_REQUEST_RETRIES + 1) + retry_seconds * MAX_REQUEST_RETRIES
 
 
 def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_request=None,
@@ -87,12 +90,13 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
         if attempt == MAX_REQUEST_RETRIES:
             raise MultimodalRequestError(f'{message}；已重试{MAX_REQUEST_RETRIES}次，停止请求',
                                          status_code=status_code) from None
-        if deadline - clock() <= REQUEST_RETRY_SECONDS:
+        retry_seconds = RATE_LIMIT_RETRY_SECONDS if status_code == 429 else REQUEST_RETRY_SECONDS
+        if deadline - clock() <= retry_seconds:
             raise MultimodalRequestError(f'{message}；本阶段剩余时间不足，停止重试',
                                          status_code=status_code) from None
         LOGGER.warning('%s；%d秒后进行第%d/%d次接口重试',
-                       message, REQUEST_RETRY_SECONDS, attempt + 1, MAX_REQUEST_RETRIES)
-        sleep(REQUEST_RETRY_SECONDS)
+                       message, retry_seconds, attempt + 1, MAX_REQUEST_RETRIES)
+        sleep(retry_seconds)
 
 
 @contextmanager

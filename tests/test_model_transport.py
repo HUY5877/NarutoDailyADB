@@ -28,8 +28,8 @@ def failure(status=429):
     return HTTPError('https://private.invalid/v1', status, 'private-key', {}, io.BytesIO(b'private-key'))
 
 
-@pytest.mark.parametrize('status', [408, 429, 500, 502, 503, 504])
-def test_transient_http_errors_retry_three_times_at_three_seconds(status, caplog):
+@pytest.mark.parametrize('status,delay', [(408, 3), (429, 10), (500, 3), (502, 3), (503, 3), (504, 3)])
+def test_transient_http_errors_retry_with_status_specific_delay(status, delay, caplog):
     clock = Clock()
     calls = []
     caplog.set_level(logging.WARNING, logger='naruto_daily')
@@ -41,11 +41,45 @@ def test_transient_http_errors_retry_three_times_at_three_seconds(status, caplog
     with pytest.raises(transport.MultimodalRequestError, match='已重试3次') as caught:
         transport.request_with_retry(Request('https://private.invalid'), request_timeout=30,
                                      open_request=request, sleep=clock.sleep, clock=clock)
-    assert calls == [0, 3, 6, 9]
-    assert clock.sleeps == [3, 3, 3]
+    assert calls == [0, delay, delay * 2, delay * 3]
+    assert clock.sleeps == [delay] * 3
+    assert f'{delay}秒后进行第1/3次接口重试' in caplog.text
     assert caught.value.status_code == status
     assert 'private-key' not in caplog.text + str(caught.value)
     assert 'private.invalid' not in caplog.text + str(caught.value)
+
+
+def test_retry_delay_tracks_each_error_in_a_mixed_sequence():
+    clock = Clock()
+    calls = []
+    errors = [failure(429), failure(503), URLError('temporary network error')]
+
+    def request(*args, **kwargs):
+        calls.append(clock.now)
+        if errors:
+            raise errors.pop(0)
+        return io.BytesIO(b'success')
+
+    result = transport.request_with_retry(Request('https://example.test'), request_timeout=30,
+                                          open_request=request, sleep=clock.sleep, clock=clock)
+    assert result.body == b'success'
+    assert calls == [0, 10, 13, 16] and clock.sleeps == [10, 3, 3]
+
+
+@pytest.mark.parametrize('budget,expected_calls', [(5, [0]), (10, [0]), (25, [0, 10, 20])])
+def test_rate_limit_wait_respects_remaining_phase_budget(budget, expected_calls):
+    clock = Clock()
+    calls = []
+
+    def request(*args, **kwargs):
+        calls.append(clock.now)
+        raise failure(429)
+
+    with pytest.raises(transport.MultimodalRequestError, match='剩余时间不足'):
+        transport.request_with_retry(Request('https://example.test'), request_timeout=30, timeout_seconds=budget,
+                                     open_request=request, sleep=clock.sleep, clock=clock)
+    assert calls == expected_calls
+    assert clock.sleeps == [10] * (len(expected_calls) - 1)
 
 
 def test_last_retry_can_succeed_without_another_wait():
@@ -106,9 +140,10 @@ def test_sleep_overrunning_deadline_does_not_send_another_request():
         clock.sleep(seconds + 10)
 
     with pytest.raises(transport.MultimodalRequestError, match='剩余时间'):
-        transport.request_with_retry(Request('https://example.test'), request_timeout=30, timeout_seconds=5,
+        transport.request_with_retry(Request('https://example.test'), request_timeout=30, timeout_seconds=15,
                                      open_request=request, sleep=sleep, clock=clock)
     assert calls == [1]
+    assert clock.sleeps == [20]
 
 
 def test_late_response_is_rejected():
@@ -147,7 +182,7 @@ def test_workflow_does_not_multiply_exhausted_http_retries(tmp_path):
     with pytest.raises(transport.MultimodalRequestError, match='已重试3次'):
         flow.read('装备材料详情', 'prompt', lambda value: value)
     assert len(requests) == 4 and len(screenshots) == 1
-    assert clock.sleeps == [3, 3, 3]
+    assert clock.sleeps == [10, 10, 10]
 
 
 @pytest.mark.parametrize('base_path,route', [('/v1', '/v1/chat/completions'), ('', '/v1/messages')])
@@ -162,7 +197,7 @@ def test_sdk_relay_uses_shared_transport_and_replaces_only_authorization(monkeyp
     connection = dict(base_url='https://example.test' + base_path, api_key='upstream-private-key',
                       model='offline', timeout_seconds=30)
     with transport.model_api_connection(connection) as sdk:
-        assert sdk['timeout_seconds'] == 129
+        assert sdk['timeout_seconds'] == 150
         assert sdk['api_key'] != connection['api_key']
         address = sdk['base_url'] + route[len(base_path):]
         payload = b'{"model":"offline","stream":true}'
