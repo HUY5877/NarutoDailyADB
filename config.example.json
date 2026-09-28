@@ -345,42 +345,6 @@
           "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
-        },
-        "one_click_sweep": {
-          "name": "一键扫荡",
-          "template": "assets/equipment_one_click_sweep.png",
-          "left": 400,
-          "top": 730,
-          "right": 900,
-          "bottom": 945,
-          "threshold": 0.9
-        },
-        "start_sweep": {
-          "name": "开始扫荡",
-          "template": "assets/equipment_start_sweep.png",
-          "left": 1080,
-          "top": 670,
-          "right": 1490,
-          "bottom": 860,
-          "threshold": 0.9
-        },
-        "sweep_done": {
-          "name": "扫荡完成（继续扫荡）",
-          "template": "assets/equipment_sweep_done.png",
-          "left": 1080,
-          "top": 815,
-          "right": 1490,
-          "bottom": 990,
-          "threshold": 0.9
-        },
-        "advance": {
-          "name": "装备进阶",
-          "template": "assets/equipment_advance.png",
-          "left": 1550,
-          "top": 740,
-          "right": 1920,
-          "bottom": 930,
-          "threshold": 0.9
         }
       },
       {

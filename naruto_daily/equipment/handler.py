@@ -1,4 +1,4 @@
-"""优先最低进阶装备，循环获取材料、合成、装备和进阶。"""
+"""优先最低进阶装备，从左到右处理六格材料，再检查进阶。"""
 import logging
 import time
 from pathlib import Path
@@ -12,6 +12,8 @@ EQUIPMENT_POINTS = ((275, 360), (525, 360), (780, 360), (275, 610), (525, 610), 
 MATERIAL_POINTS = tuple((x, 690) for x in (1106, 1244, 1380, 1518, 1656, 1792))
 BLANK = (1600, 920)
 MATERIAL_BUTTON = (650, 840)
+START_SWEEP = (1300, 780)
+ADVANCE = (1750, 830)
 # 1920×1080 扫荡设置弹层：提示文字右侧、开始扫荡按钮左侧的复选框。
 AUTO_STOP = (1110, 785)
 
@@ -25,18 +27,13 @@ def lowest_equipment(data):
     return min(range(6), key=lambda i: levels[i]) + 1
 
 
-def first_material(data, selected):
+def _can_advance(data, selected):
     require_page(data, 'equipment')
     if type(data.get('selected_slot')) is not int or data['selected_slot'] != selected:
         raise VisualError('当前选中的装备与目标不一致')
-    index, state = data.get('material_slot'), data.get('material_state')
-    if state == 'advance' and index is None and data.get('can_advance') is True:
-        return None
-    if (state not in ('sweepable', 'craftable', 'equipable')
-            or type(index) is not int or not 1 <= index <= 6
-            or data.get('can_advance') is not False):
-        raise VisualError('未确认首个可扫荡材料或其它可用操作')
-    return index
+    if type(data.get('can_advance')) is not bool:
+        raise VisualError('未确认当前装备能否进阶')
+    return data['can_advance']
 
 
 def _overview(data):
@@ -142,17 +139,12 @@ def _dismiss_sweep_result(flow, stamina_before):
     # 必须确认前景回到材料详情，不能把按钮暂时消失当成结果层关闭。
     while flow.elapsed() < deadline:
         flow.tap(BLANK)
-        center, _ = flow.images.match(flow.client.screenshot(), flow.action['sweep_done'])
-        flow.remaining()
-        if flow.elapsed() >= deadline:
-            break
-        if center is None:
-            page = flow.read('扫荡结果关闭检查', prompts.PAGE, _page,
-                             timeout=deadline - flow.elapsed())
-            if page == 'material':
-                return
-            if page != 'sweep_result':
-                raise VisualError('扫荡结果关闭后未回到材料详情，已停止')
+        page = flow.read('扫荡结果关闭检查', prompts.PAGE, _page,
+                         timeout=deadline - flow.elapsed())
+        if page == 'material':
+            return
+        if page != 'sweep_result':
+            raise VisualError('扫荡结果关闭后未回到材料详情，已停止')
         LOGGER.info('扫荡结果弹层仍在，等待动画后再次点击空白')
         delay = min(1, deadline - flow.elapsed())
         if delay > 0:
@@ -160,12 +152,35 @@ def _dismiss_sweep_result(flow, stamina_before):
     raise VisualError('等待扫荡结果关闭超时，未继续操作装备')
 
 
+def _sweep_material(flow):
+    """当前材料扫荡至可合成/装备；体力不足时关闭弹层并返回False。"""
+    while True:
+        # 调用前已由模型确认最前方材料详情的一键扫荡按钮。
+        flow.tap(MATERIAL_BUTTON)
+        stamina, auto_stop = flow.read('开始扫荡前体力检查', prompts.STAMINA, _sweep_setup)
+        if stamina > 5 and not auto_stop:
+            LOGGER.info('材料足够后自动停止未勾选，点击复选框后重新截图确认')
+            flow.tap(AUTO_STOP)
+            # 只点一次；点击后仅重新识别，避免把勾取消。
+            stamina = flow.read('材料足够后自动停止勾选复查', prompts.STAMINA, _stamina)
+        if stamina <= 5:
+            LOGGER.info('体力为%d，不大于5，结束装备任务并返回主界面', stamina)
+            _close_layers(flow, 'sweep_setup')
+            return False
+        flow.tap(START_SWEEP)
+        _dismiss_sweep_result(flow, stamina)
+        button = flow.read('扫荡后合成检查', prompts.MATERIAL, _material)
+        if button != 'sweep':
+            _finish_material(flow, button)
+            return True
+        LOGGER.info('当前材料仍需扫荡，重新打开扫荡设置并检查体力')
+
+
 def handle_equipment_upgrade(client, action, *, model=None, template_matcher=find_template_in_png,
                              asset_root=Path('.'), sleep=time.sleep):
     flow = ModelWorkflow(client, action, model=model, template_matcher=template_matcher,
                          asset_root=asset_root, sleep=sleep)
     previous_advance = None
-    unchanged_material = None
     for round_number in range(1, action['max_rounds'] + 1):
         overview = flow.read('最低进阶装备识别', prompts.EQUIPMENT, _overview)
         slot = lowest_equipment(overview)
@@ -175,55 +190,31 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
         previous_advance = None
         LOGGER.info('[装备养成 第%d轮] 选择第%d件装备，进阶+%d', round_number, slot, levels[slot - 1])
         flow.tap(EQUIPMENT_POINTS[slot - 1])
-        info_slots = set()
-        def validate_materials(data):
-            index = first_material(data, slot)
-            if index in info_slots:
-                raise VisualError(f'第{index}格已确认是只读成品信息卡，未重复点击')
-            return data
-        materials = flow.read('首个可扫荡材料识别', prompts.MATERIALS, validate_materials)
-        index = first_material(materials, slot)
-        signature = (levels, slot, index, materials['material_state'])
-        if unchanged_material == signature:
-            raise VisualError('合成装备后材料状态未变化，已停止循环')
-        unchanged_material = None
-        while index is not None:
-            LOGGER.info('选中第%d格材料，模型确认操作：%s', index, materials['material_state'])
-            flow.tap(MATERIAL_POINTS[index - 1])
+        operated = False
+        for index, point in enumerate(MATERIAL_POINTS, 1):
+            LOGGER.info('[装备养成 第%d轮 材料%d/6] 打开材料格，由模型判断弹层操作', round_number, index)
+            flow.tap(point)
             button = flow.read('装备材料详情', prompts.MATERIAL_ENTRY, _material_entry)
-            if button != 'material_info':
-                break
-            LOGGER.info('第%d格打开只读成品信息卡，关闭后重新识别首个可扫荡材料', index)
-            info_slots.add(index)
-            _close_layers(flow, 'material_info')
-            prompt = prompts.MATERIALS + f'\n本轮已确认第{sorted(info_slots)}格仅打开只读成品信息卡，不能再次选择这些格子。'
-            materials = flow.read('成品信息卡关闭后重新识别扫荡目标', prompt, validate_materials)
-            index = first_material(materials, slot)
-            signature = (levels, slot, index, materials['material_state'])
-        if index is None:
-            LOGGER.info('当前装备六个成品均已齐全，执行进阶')
-            flow.button('advance')
+            if button == 'material_info':
+                LOGGER.info('第%d格已装备，信息卡没有操作按钮，关闭后继续下一格', index)
+                _close_layers(flow, 'material_info')
+                continue
+            LOGGER.info('第%d格材料操作：%s', index, button)
+            if button == 'sweep':
+                if not _sweep_material(flow):
+                    return
+            else:
+                _finish_material(flow, button)
+            operated = True
+        can_advance = flow.read('六格遍历后进阶检查', prompts.ADVANCE,
+                                lambda data: _can_advance(data, slot))
+        if can_advance:
+            LOGGER.info('六格材料遍历完成，模型确认进阶按钮可用，执行进阶')
+            flow.tap(ADVANCE)
             previous_advance = levels
-            continue
-        if button != 'sweep':
-            _finish_material(flow, button)
-            unchanged_material = signature
-            continue
-        flow.button('one_click_sweep')
-        stamina, auto_stop = flow.read('开始扫荡前体力检查', prompts.STAMINA, _sweep_setup)
-        if stamina > 5 and not auto_stop:
-            LOGGER.info('材料足够后自动停止未勾选，点击复选框后重新截图确认')
-            flow.tap(AUTO_STOP)
-            # 只点一次；点击后仅重新识别，避免延迟或误识别时把勾取消。
-            stamina = flow.read('材料足够后自动停止勾选复查', prompts.STAMINA, _stamina)
-        if stamina <= 5:
-            LOGGER.info('体力为%d，不大于5，结束装备任务并返回主界面', stamina)
-            _close_layers(flow, 'sweep_setup')
+        elif not operated:
+            LOGGER.info('六格材料均无可用操作，当前装备也不能进阶，结束装备任务')
             return
-        flow.button('start_sweep')
-        _dismiss_sweep_result(flow, stamina)
-        button = flow.read('扫荡后合成检查', prompts.MATERIAL, _material)
-        _finish_material(flow, button)
-        if button != 'sweep':
-            unchanged_material = signature
+        else:
+            LOGGER.info('六格材料遍历完成，当前不能进阶，下一轮重新选择最低进阶装备')
     raise VisualError(f"装备任务达到最多{action['max_rounds']}轮，已停止")

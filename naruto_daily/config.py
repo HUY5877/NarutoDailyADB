@@ -326,6 +326,9 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         optional_keys = optional_keys | {"multimodal"}
     if action_type == "handle_survival_challenge":
         optional_keys = optional_keys | {"sweep_prompt"}
+    if action_type == "handle_equipment_upgrade":
+        # 兼容旧配置；装备流程已全部使用模型判断，不再依赖这四个模板。
+        optional_keys = optional_keys | {"one_click_sweep", "start_sweep", "sweep_done", "advance"}
     _require_exact_keys(action, ACTION_KEYS[action_type], context, optional_keys)
     if action_type == "tap":
         _coordinate(action["x"], width, context)
@@ -568,10 +571,12 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
                 if type(value) not in (int, float) or not lower <= value <= upper or (key == 'max_rounds' and type(value) is not int):
                     raise ConfigError(f'{context}.{key} 必须在 {lower} 到 {upper} 之间')
             for key in ('one_click_sweep', 'start_sweep', 'sweep_done', 'advance'):
+                if key not in action:
+                    continue
                 _validate_template_target(action[key], width, height, f'{context}.{key}', True)
                 if action[key]['threshold'] < .85:
                     raise ConfigError(f'{context}.{key} 识别阈值不能低于 0.85')
-            if action['advance']['top'] < 720 or action['advance']['left'] < 1500:
+            if 'advance' in action and (action['advance']['top'] < 720 or action['advance']['left'] < 1500):
                 raise ConfigError(f'{context}.advance 必须限制在右下角，避开升级按钮')
         return
     elif action_type == "handle_survival_challenge":
