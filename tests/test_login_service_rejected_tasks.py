@@ -67,7 +67,7 @@ async def read_failure(redis, body):
 
 
 @pytest.mark.parametrize("offset,ttl", [(-25, 60), (25, 10)])
-def test_25_second_clock_skew_fails_immediately_with_redis_based_diagnostic_time(monkeypatch, offset, ttl):
+def test_clock_skew_keeps_task_queued_for_a_healthy_consumer(monkeypatch, offset, ttl):
     async def scenario():
         redis = client()
         try:
@@ -80,17 +80,16 @@ def test_25_second_clock_skew_fails_immediately_with_redis_based_diagnostic_time
             monkeypatch.setattr(models, "time", SimpleNamespace(time=lambda: actual_now + offset))
             queue = RedisTaskQueue(configuration(), client=redis)
             assert await queue.pop() is None
-            session, run, event = await read_failure(redis, body)
-            assert session["errorCode"] == "worker_clock_skew"
-            assert session["tokenHash"] == original["tokenHash"]
-            assert session["custom"] == original["custom"]
-            assert session["createdAt"] == original["createdAt"] and session["expiresAt"] == original["expiresAt"]
-            assert "workerId" not in session
+            assert json.loads(await redis.get(session_key)) == original
+            assert await redis.lrange(configuration().redis_queue_key, 0, -1) == [json.dumps(body)]
+            assert await redis.exists(run_key, log_key) == 0
             assert 0 < await redis.pttl(session_key) <= original_ttl
-            assert 118 <= await redis.ttl(run_key) <= 120 and 118 <= await redis.ttl(log_key) <= 120
-            assert abs(models.timestamp_ms(event["time"]) / 1000 - actual_now) < 2
-            assert run["startedAt"] is None
-            assert "tokenHash" not in json.dumps([run, event]) and "private-user" not in json.dumps([run, event])
+            monkeypatch.setattr(models, 'time', time)
+            healthy = RedisTaskQueue(configuration(), client=redis)
+            record = await healthy.pop()
+            assert record is not None and record.id == body['id']
+            assert await redis.llen(configuration().redis_queue_key) == 0
+            assert json.loads(await redis.get(session_key))['workerId'] == healthy.owner
         finally:
             await redis.aclose()
     asyncio.run(scenario())
@@ -99,9 +98,6 @@ def test_25_second_clock_skew_fails_immediately_with_redis_based_diagnostic_time
 @pytest.mark.parametrize("changes,code", [
     ({"version": 2}, "invalid_task_payload"),
     ({"objectKey": "login/wrong/qr.png"}, "invalid_task_payload"),
-    ({"created_delta": 30, "ttl": 60}, "invalid_task_timestamps"),
-    ({"ttl": 601}, "invalid_task_timestamps"),
-    ({"created_delta": 60, "ttl": 30}, "invalid_task_timestamps"),
 ])
 def test_attributable_invalid_envelopes_are_distinguished_from_clock_skew(changes, code):
     async def scenario():
@@ -117,17 +113,19 @@ def test_attributable_invalid_envelopes_are_distinguished_from_clock_skew(change
     asyncio.run(scenario())
 
 
-def test_invalid_producer_timestamps_are_not_misdiagnosed_as_worker_clock_skew(monkeypatch):
+@pytest.mark.parametrize('changes', [
+    {'created_delta': 30, 'ttl': 60}, {'ttl': 601}, {'created_delta': 60, 'ttl': 30},
+])
+def test_invalid_producer_timestamps_stay_queued_without_failure_report(changes):
     async def scenario():
         redis = client()
         try:
-            body = message(created_delta=120, ttl=180)
-            await enqueue(redis, body)
-            real_now = time.time()
-            monkeypatch.setattr(models, "time", SimpleNamespace(time=lambda: real_now - 25))
+            body = message(**changes)
+            original = await enqueue(redis, body)
             assert await RedisTaskQueue(configuration(), client=redis).pop() is None
-            session, _, _ = await read_failure(redis, body)
-            assert session["errorCode"] == "invalid_task_timestamps"
+            assert json.loads(await redis.get(task_keys(body)[0])) == original
+            assert await redis.lrange(configuration().redis_queue_key, 0, -1) == [json.dumps(body)]
+            assert await redis.exists(*task_keys(body)[1:]) == 0
         finally:
             await redis.aclose()
     asyncio.run(scenario())
@@ -274,7 +272,8 @@ def test_failed_rejection_reporting_does_not_stop_next_queue_task_or_expose_driv
                     return await redis.time()
 
                 async def eval(self, *args):
-                    if not self.failed and failure in {"eval", "lost_reply"}:
+                    from naruto_daily.login_service.queue import _REJECT_SCRIPT
+                    if args[0] == _REJECT_SCRIPT and not self.failed and failure in {"eval", "lost_reply"}:
                         self.failed = True
                         if failure == "lost_reply":
                             await redis.eval(*args)

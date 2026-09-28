@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
 MAX_QUEUE_PAYLOAD_BYTES = 8192
+QUEUE_POLL_SECONDS = 1.0
 TERMINAL_STATUSES = frozenset({"qr_ready", "failed", "expired"})
 SAFE_TASK_ERROR = "Could not prepare the simulated login QR code. Please create a new login request."
 UNSUPPORTED_DRIVER_ERROR = "LDPlayer adapter is not implemented. Set EMULATOR_DRIVER=mock."
@@ -69,12 +70,44 @@ local expires = tonumber(ARGV[4])
 if ttl <= 0 or not expires or expires <= now then return 0 end
 """
 
-_CLAIM_SCRIPT = _SESSION_GUARD + """
+# The Python timestamp check is read-only. Compare the exact FIFO head again
+# inside Lua, then claim and remove it in the same atomic operation.
+_CLAIM_SCRIPT = """
+if redis.call('LINDEX', KEYS[2], -1) ~= ARGV[6] then return 0 end
+local created = tonumber(ARGV[7])
+local expiry = tonumber(ARGV[4])
+local function validTime(now)
+    return now and created and expiry and created <= now + 5000
+        and created >= now - 600000 and expiry > now and expiry > created
+        and expiry - created <= 600000 and expiry - now <= 600000
+end
+if not validTime(tonumber(ARGV[8])) then return -1 end
+local function claim()
+""" + _SESSION_GUARD + """
+if not validTime(now) then return -1 end
 if session.status ~= 'queued' then return 0 end
+if session.workerId ~= nil and session.workerId ~= cjson.null then return 0 end
 session.status = 'starting_emulator'
 session.workerId = ARGV[5]
 session.error = nil
 redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+return 1
+end
+local result = claim()
+-- Stale session entries can be removed; time-ineligible jobs stay queued.
+if result >= 0 then redis.call('RPOP', KEYS[2]) end
+return result
+"""
+
+_DISCARD_SCRIPT = """
+if redis.call('LINDEX', KEYS[1], -1) ~= ARGV[1] then return 0 end
+if ARGV[2] ~= '' then
+    local clock = redis.call('TIME')
+    local now = tonumber(clock[1]) * 1000 + tonumber(clock[2]) / 1000
+    -- Clock skew on this worker never authorizes expiry cleanup.
+    if tonumber(ARGV[2]) > now and redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
+end
+redis.call('RPOP', KEYS[1])
 return 1
 """
 
@@ -171,11 +204,12 @@ class RedisTaskQueue:
                 client = from_url(
                     config.redis_url, decode_responses=True,
                     socket_connect_timeout=5, socket_timeout=5,
-                    # BRPOP can consume a job even if its response is lost.
+                    # A claim script may succeed even if its response is lost.
                     # Let the runtime reconnect without retrying that command.
                     retry=Retry(NoBackoff(), 0),
                 )
             self._client = client
+            self._last_time_warning = float('-inf')
         except Exception:
             raise RedisQueueError("Could not configure Redis transport") from None
 
@@ -218,18 +252,8 @@ class RedisTaskQueue:
         if code not in SAFE_REJECTION_ERRORS:
             code = "invalid_task_payload"
         try:
-            local_before = models.time.time() * 1000
             seconds, micros = await self._call("time")
             redis_ms = int(seconds) * 1000 + int(micros) / 1000
-            local_after = models.time.time() * 1000
-            if code == "invalid_task_timestamps":
-                try:
-                    models._validate_timestamps(created_at, expires_at, now_ms=redis_ms)
-                except HttpError:
-                    pass  # Bad producer timestamps must not be blamed on this worker's clock.
-                else:
-                    if redis_ms < min(local_before, local_after) - 5000 or redis_ms > max(local_before, local_after) + 5000:
-                        code = "worker_clock_skew"
             timestamp = datetime.fromtimestamp(redis_ms / 1000, timezone.utc).isoformat(
                 timespec="milliseconds",
             ).replace("+00:00", "Z")
@@ -254,34 +278,72 @@ class RedisTaskQueue:
         except (RedisQueueError, ValueError, TypeError, OverflowError, OSError):
             logger.warning("Rejected login queue task %s: %s; Redis failure report unavailable", task_id, code)
 
+    async def _discard(self, payload: str | bytes, *, body: dict | None = None, expires_ms: float | None = None) -> bool:
+        keys = [self.config.redis_queue_key]
+        if expires_ms is not None:
+            keys.append(f"{self.config.redis_queue_key}:sessions:{body['id']}")
+        return bool(await self._call('eval', _DISCARD_SCRIPT, len(keys), *keys, payload,
+                                     '' if expires_ms is None else str(expires_ms)))
+
+    async def _defer_timestamps(self, payload: str, body: dict) -> None:
+        try:
+            if any(not isinstance(body.get(key), str) or not ISO_PATTERN.fullmatch(body[key])
+                   for key in ('createdAt', 'expiresAt')):
+                raise ValueError('Invalid timestamp format')
+            expires_ms = models.timestamp_ms(body['expiresAt'])
+            models.timestamp_ms(body['createdAt'])
+        except (ValueError, TypeError, OverflowError, OSError):
+            # Unparseable dates cannot become eligible by waiting.
+            if await self._discard(payload):
+                await self._reject_invalid_task(body, 'invalid_task_timestamps')
+            return
+        if await self._discard(payload, body=body, expires_ms=expires_ms):
+            logger.info('Skipped expired login queue task %s according to Redis expiry', body['id'])
+            return
+        clock = asyncio.get_running_loop().time()
+        if clock - self._last_time_warning >= 30:
+            self._last_time_warning = clock
+            logger.warning('Login queue task %s timestamps are not eligible; left queued, '
+                           'retrying after 1s. Check worker system time if this persists.', body['id'])
+        await asyncio.sleep(QUEUE_POLL_SECONDS)
+
     async def pop(self) -> TaskRecord | None:
-        item = await self._call("brpop", self.config.redis_queue_key, timeout=1)
-        if item is None:
+        payload = await self._call('lindex', self.config.redis_queue_key, -1)
+        if payload is None:
+            await asyncio.sleep(QUEUE_POLL_SECONDS)
             return None
-        if not isinstance(item, (tuple, list)) or len(item) != 2:
-            logger.warning("Skipped invalid login queue response")
-            return None
-        payload = item[1]
+        original_payload = payload
         body = None
         try:
             if isinstance(payload, bytes):
                 if len(payload) > MAX_QUEUE_PAYLOAD_BYTES:
                     logger.warning("Skipped oversized login queue message")
+                    await self._discard(original_payload)
                     return None
                 payload = payload.decode("utf-8")
             if not isinstance(payload, str) or len(payload.encode("utf-8")) > MAX_QUEUE_PAYLOAD_BYTES:
                 logger.warning("Skipped invalid or oversized login queue message")
+                await self._discard(original_payload)
                 return None
             body = json.loads(payload)
             record = parse_queue_task(body, self.config.key_prefix)
         except HttpError as error:
-            await self._reject_invalid_task(body, getattr(error, "code", "invalid_task_payload"))
+            code = getattr(error, 'code', 'invalid_task_payload')
+            if code == 'invalid_task_timestamps':
+                await self._defer_timestamps(payload, body)
+            elif await self._discard(original_payload):
+                await self._reject_invalid_task(body, code)
             return None
         except (ValueError, UnicodeError, RecursionError):
             logger.warning("Skipped malformed login queue message")
+            await self._discard(original_payload)
             return None
-        claimed = await self._call("eval", _CLAIM_SCRIPT, 1, self._session_key(record), *self._session_args(record))
-        if not claimed:
+        claimed = await self._call('eval', _CLAIM_SCRIPT, 2, self._session_key(record), self.config.redis_queue_key,
+                                   *self._session_args(record), payload, str(models.timestamp_ms(record.created_at)),
+                                   str(models.time.time() * 1000))
+        if claimed == -1:
+            await self._defer_timestamps(payload, body)
+        if claimed != 1:
             return None
         record.status = "starting_emulator"
         record._queue_payload = payload
