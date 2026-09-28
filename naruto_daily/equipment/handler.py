@@ -35,7 +35,7 @@ def first_material(data, selected):
     if (state not in ('sweepable', 'craftable', 'equipable')
             or type(index) is not int or not 1 <= index <= 6
             or data.get('can_advance') is not False):
-        raise VisualError('未确认首个可扫荡材料或其它可用操作；可扫荡提示可能闪烁，需要重新截图')
+        raise VisualError('未确认首个可扫荡材料或其它可用操作')
     return index
 
 

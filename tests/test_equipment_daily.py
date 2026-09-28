@@ -224,7 +224,8 @@ def test_leftmost_sweep_target_opens_slot_four_without_probing_filled_slots(capl
     assert '选中第4格材料' in caplog.text
 
 
-def test_blinking_sweep_label_retries_with_fresh_image_before_clicking():
+@pytest.mark.parametrize('uncertain_first', [False, True])
+def test_material_target_is_clicked_immediately_unless_model_is_uncertain(uncertain_first):
     class FreshClient(Client):
         shot = 0
 
@@ -234,24 +235,26 @@ def test_blinking_sweep_label_retries_with_fresh_image_before_clicking():
 
     client, waits, target_images = FreshClient(), [], []
 
-    class BlinkModel(Model):
+    class TargetModel(Model):
         def complete_json(self, png, prompt, **kwargs):
             if 'material_slot' in prompt:
                 target_images.append(png)
-                assert client.taps == [(525, 610)], 'No material may be clicked while the label is hidden'
+                assert client.taps == [(525, 610)], 'No material may be clicked before a target is recognized'
             return super().complete_json(png, prompt, **kwargs)
 
-    model = BlinkModel(overview(), material_target(None, 'unknown'), material_target(4),
-                       material('sweep'), setup(4), dict(page='material'), dict(page='equipment'))
+    uncertain_answers = [material_target(None, 'unknown')] if uncertain_first else []
+    model = TargetModel(overview(), *uncertain_answers, material_target(4),
+                        material('sweep'), setup(4), dict(page='material'), dict(page='equipment'))
     handle_equipment_upgrade(client, action(), model=model, template_matcher=matcher, sleep=waits.append)
-    assert len(target_images) == 2 and target_images[0] != target_images[1]
+    assert len(target_images) == 1 + int(uncertain_first)
+    assert len(set(target_images)) == len(target_images)
     assert client.taps[1] == (1518, 690)
-    assert len(waits) > len(client.taps), 'A hidden label needs a wait before another screenshot'
+    assert len(waits) == len(client.taps) + int(uncertain_first)
 
 
 def test_unconfirmed_sweep_target_stops_without_clicking_a_finished_material():
     client = Client()
-    with pytest.raises(VisualError, match='可扫荡提示可能闪烁'):
+    with pytest.raises(VisualError, match='未确认首个可扫荡材料或其它可用操作'):
         handle_equipment_upgrade(client, action(), model=Model(
             overview(), material_target(None, 'unknown'), material_target(None, 'unknown')),
             template_matcher=matcher, sleep=lambda _: None)
