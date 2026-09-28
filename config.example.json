@@ -907,7 +907,7 @@
         "poll_seconds": 3,
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 5,
-        "load_wait_seconds": 15,
+        "load_wait_seconds": 9,
         "create_room": {
           "name": "创建房间",
           "template": "assets/secret_create_room.png",

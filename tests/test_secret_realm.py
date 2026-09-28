@@ -78,8 +78,8 @@ def test_secret_realm_runs_two_battles_then_zero_returns_to_main(monkeypatch):
         secret_action(), {"type": "return_to_main"}])
     assert client.taps == [(1443, 791), (1787, 920), (1787, 920)]
     assert len(battles) == 2 and returned == [True] and len(calls) == 5
-    # 两次15秒加载现在分段等待，期间检查出战提示。
-    assert sum(sleeps) == pytest.approx(54, abs=.1)
+    # 两次9秒加载现在分段等待，期间检查出战提示。
+    assert sum(sleeps) == pytest.approx(42, abs=.1)
 
 
 def test_zero_tickets_never_deploys_or_starts_battle(monkeypatch):
