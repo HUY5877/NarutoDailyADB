@@ -24,7 +24,9 @@ class ImageRecognition:
         self._started = time.monotonic()
         self._use_wall_clock = False
         self._main_models = {}
-        self.main_calls = 0
+        # 同一动作内累计两阶段的次数，切换阶段或进入下一轮都不清零。
+        self.main_calls = {'查找': 0, '点击前复查': 0}
+        self.main_call_phase = '查找'
         self.main_call_limit = None
 
     @property
@@ -44,12 +46,16 @@ class ImageRecognition:
         if 'main_menu' in target:
             from .main_screen import MainScreenRecognition
             self._use_wall_clock = True
-            if self.main_call_limit is not None and self.main_calls >= self.main_call_limit:
-                raise VisualError(f"{target['name']}已达到模型调用上限，未继续点击")
+            phase = self.main_call_phase
+            if self.main_call_limit is not None and self.main_calls[phase] >= self.main_call_limit:
+                raise VisualError(f"{target['name']}的{phase}已达到模型调用上限，未继续点击")
             key = tuple(sorted(target['multimodal'].items()))
             if key not in self._main_models:
                 self._main_models[key] = MainScreenRecognition(target['multimodal'], self.asset_root)
-            self.main_calls += 1
+            self.main_calls[phase] += 1
+            if self.main_call_limit is not None:
+                LOGGER.info('%s：%s模型调用 %d/%d', target['name'], phase,
+                            self.main_calls[phase], self.main_call_limit)
             return self._main_models[key].match(screenshot, target, timeout_seconds)
         roi = tuple(target[key] for key in ("left", "top", "right", "bottom"))
         best = (None, -1.0)

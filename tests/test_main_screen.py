@@ -102,7 +102,64 @@ def test_disappeared_button_does_not_click_cached_position_and_calls_are_bounded
     client = SimpleNamespace(screenshot=lambda: png(), tap=lambda *xy: taps.append(xy))
     with pytest.raises(VisualError, match='调用上限'):
         required_template_tap(client, action(), sleep=lambda _: None)
-    assert not taps and len(calls) == MODEL['max_calls']
+    # 查找最多4次，第一次找到后复查2次未确认；重新查找不能重置查找额度。
+    assert not taps and len(calls) == MODEL['max_calls'] + 2
+
+
+@pytest.mark.parametrize('menu,page', [('equipment_submenu', 'equipment_menu'), ('rewards', 'main')])
+@pytest.mark.parametrize('max_calls,confirm_misses', [(3, 0), (2, 1)])
+def test_last_search_call_can_still_confirm_and_click(monkeypatch, menu, page, max_calls, confirm_misses):
+    responses = iter([answer(menu, found=False)] * (max_calls - 1)
+                     + [answer(menu, page=page, candidate_id=1)]
+                     + [answer(menu, found=False)] * confirm_misses
+                     + [answer(menu, page=page, candidate_id=2)])
+    calls, taps = [], []
+    def complete(*args, **kwargs):
+        calls.append(1)
+        return next(responses)
+    fake_model(monkeypatch, complete)
+    config = action(menu)
+    config['multimodal']['max_calls'] = max_calls
+    client = SimpleNamespace(screenshot=lambda: png(), tap=lambda *xy: taps.append(xy))
+    required_template_tap(client, config, sleep=lambda _: None)
+    expected = (282, 835) if menu == 'equipment_submenu' else (1845, 85)
+    assert taps == [expected] and len(calls) == max_calls + confirm_misses + 1
+
+
+def test_confirmation_budget_survives_repeated_search_rounds(monkeypatch):
+    # 每轮重新找到后都复查失败，累计三次复查就停止，不能每轮刷新额度。
+    responses = iter([answer(), answer(found=False), answer(found=False),
+                      answer(), answer(found=False)])
+    calls, taps = [], []
+    def complete(*args, **kwargs):
+        calls.append(1)
+        return next(responses)
+    fake_model(monkeypatch, complete)
+    config = action()
+    config['multimodal']['max_calls'] = 3
+    client = SimpleNamespace(screenshot=lambda: png(), tap=lambda *xy: taps.append(xy))
+    with pytest.raises(VisualError, match='点击前复查.*调用上限'):
+        required_template_tap(client, config, sleep=lambda _: None)
+    assert not taps and len(calls) == 5
+
+
+def test_confirmation_keeps_original_total_deadline(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(main_screen.time, 'monotonic', lambda: now[0])
+    delays = iter([20, 20, 17])
+    calls, taps = [], []
+    def complete(*args, **kwargs):
+        calls.append(1)
+        now[0] += next(delays)
+        return answer(found=len(calls) == 3)
+    def sleep(seconds): now[0] += seconds
+    fake_model(monkeypatch, complete)
+    config = action()
+    config['multimodal']['max_calls'] = 3
+    client = SimpleNamespace(screenshot=lambda: png(), tap=lambda *xy: taps.append(xy))
+    with pytest.raises(VisualError, match='超时'):
+        required_template_tap(client, config, sleep=sleep)
+    assert not taps and len(calls) == 3 and now[0] == 60
 
 
 def test_late_response_is_rejected_and_actual_model_time_counts(monkeypatch):

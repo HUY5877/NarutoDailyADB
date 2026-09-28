@@ -188,6 +188,8 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
         round_number += 1
         LOGGER.info('[等待点击%s 第%d轮] 查找按钮→等待后复查→点击后结束；未确认则轮询，超时停止；剩余等待 %.2f 秒',
                     action['name'], round_number, max(0, deadline - images.elapsed))
+        if is_main:
+            images.main_call_phase = '查找'
         center, score = images.find(action, deadline=deadline)
         if center is not None:
             if is_main:
@@ -196,6 +198,8 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
                 LOGGER.info("发现%s，相似度 %.3f，点击前等待 %.2f 秒",
                             action["name"], score, pre_click_wait_seconds)
             images.sleep(pre_click_wait_seconds)
+            if is_main:
+                images.main_call_phase = '点击前复查'
             confirmed_center, confirmed_score = images.find(action, deadline=deadline)
             if confirmed_center is None:
                 LOGGER.info('等待后未确认%s，本轮不点击旧坐标', action['name'])
