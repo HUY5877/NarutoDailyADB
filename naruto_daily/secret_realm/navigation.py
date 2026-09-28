@@ -7,8 +7,8 @@ from pydantic import Field
 from naruto_daily.multimodal.agent import Joystick, NavigationEvidence, run_agent
 
 
-# 项目当前固定 1920×1080 布局；中心取自现有秘境战斗参考截图左下角摇杆。
-SECRET_JOYSTICK = Joystick(x=320, y=840, radius=80, duration_ms=300)
+# 固定 1920×1080 布局；中心经毒风未解封场景实机校准，避免右移时向下偏。
+SECRET_JOYSTICK = Joystick(x=327, y=825, radius=80, duration_ms=300)
 POISON_SEAL_GOAL = '走到毒风秘境真正的封印区域，触发解封并召唤 BOSS。'
 POISON_SEAL_INSTRUCTIONS = '''每轮仅根据当前最新截图，先检查页面结束状态，再抄写文字事实，最后决定导航动作。
 move 和 finish 都必须按工具结构逐项填写全部事实字段，不要嵌套对象或把整份证据编码成字符串；finish 不接受 reached 字段，是否完成由证据规则判定。

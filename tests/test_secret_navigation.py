@@ -126,7 +126,7 @@ def test_poison_realm_navigates_then_battles_only_after_fresh_confirmation(monke
     assert scenario.events[events.index('battle') - 1] == ('navigation', True)
     assert 'pause' not in events and scenario.moves == 2
     assert [e[1] for e in scenario.events if e[0] == 'move'] == [
-        (320, 840, 400, 840, 300), (320, 840, 400, 840, 300)]
+        (327, 825, 407, 825, 300), (327, 825, 407, 825, 300)]
 
 
 @pytest.mark.parametrize('final_tool', ['move', 'finish'])
