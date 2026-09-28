@@ -29,7 +29,7 @@ def failure(status=429):
 
 
 @pytest.mark.parametrize('status', [408, 429, 500, 502, 503, 504])
-def test_transient_http_errors_retry_three_times_at_two_seconds(status, caplog):
+def test_transient_http_errors_retry_three_times_at_three_seconds(status, caplog):
     clock = Clock()
     calls = []
     caplog.set_level(logging.WARNING, logger='naruto_daily')
@@ -41,8 +41,8 @@ def test_transient_http_errors_retry_three_times_at_two_seconds(status, caplog):
     with pytest.raises(transport.MultimodalRequestError, match='已重试3次') as caught:
         transport.request_with_retry(Request('https://private.invalid'), request_timeout=30,
                                      open_request=request, sleep=clock.sleep, clock=clock)
-    assert calls == [0, 2, 4, 6]
-    assert clock.sleeps == [2, 2, 2]
+    assert calls == [0, 3, 6, 9]
+    assert clock.sleeps == [3, 3, 3]
     assert caught.value.status_code == status
     assert 'private-key' not in caplog.text + str(caught.value)
     assert 'private.invalid' not in caplog.text + str(caught.value)
@@ -61,7 +61,7 @@ def test_last_retry_can_succeed_without_another_wait():
     result = transport.request_with_retry(Request('https://example.test'), request_timeout=30,
                                           open_request=request, sleep=clock.sleep, clock=clock)
     assert result.body == b'success'
-    assert calls == [0, 2, 4, 6] and clock.sleeps == [2, 2, 2]
+    assert calls == [0, 3, 6, 9] and clock.sleeps == [3, 3, 3]
 
 
 @pytest.mark.parametrize('status', [400, 401, 403, 404])
@@ -91,7 +91,7 @@ def test_attempts_and_waits_share_the_phase_deadline():
     with pytest.raises(transport.MultimodalRequestError, match='剩余时间不足'):
         transport.request_with_retry(Request('https://example.test'), request_timeout=30, timeout_seconds=60,
                                      open_request=request, sleep=clock.sleep, clock=clock)
-    assert timeouts == [30, 28] and clock.sleeps == [2]
+    assert timeouts == [30, 27] and clock.sleeps == [3]
 
 
 def test_sleep_overrunning_deadline_does_not_send_another_request():
@@ -147,7 +147,7 @@ def test_workflow_does_not_multiply_exhausted_http_retries(tmp_path):
     with pytest.raises(transport.MultimodalRequestError, match='已重试3次'):
         flow.read('装备材料详情', 'prompt', lambda value: value)
     assert len(requests) == 4 and len(screenshots) == 1
-    assert clock.sleeps == [2, 2, 2]
+    assert clock.sleeps == [3, 3, 3]
 
 
 @pytest.mark.parametrize('base_path,route', [('/v1', '/v1/chat/completions'), ('', '/v1/messages')])
@@ -162,7 +162,7 @@ def test_sdk_relay_uses_shared_transport_and_replaces_only_authorization(monkeyp
     connection = dict(base_url='https://example.test' + base_path, api_key='upstream-private-key',
                       model='offline', timeout_seconds=30)
     with transport.model_api_connection(connection) as sdk:
-        assert sdk['timeout_seconds'] == 126
+        assert sdk['timeout_seconds'] == 129
         assert sdk['api_key'] != connection['api_key']
         address = sdk['base_url'] + route[len(base_path):]
         payload = b'{"model":"offline","stream":true}'

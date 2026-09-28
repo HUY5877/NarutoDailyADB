@@ -291,7 +291,7 @@ def test_http_retries_reuse_same_frame_without_replaying_moves(monkeypatch):
                    {'http_status': 503}, decision(reached=True)])
     result = run(device, model)
     assert result.reached and result.steps == 1
-    assert waits == [2, 2]
+    assert waits == [3, 3]
     assert [png for png, _ in model.requests] == [b'frame-1', b'frame-1', b'frame-2', b'frame-2']
     assert device.events == ['screenshot', (200, 800, 200, 720, 300), 'screenshot']
 
@@ -305,5 +305,5 @@ def test_agent_sdk_does_not_add_retries_after_shared_limit(monkeypatch):
     with pytest.raises(AgentError):
         run(device, model)
     assert len(model.requests) == 4
-    assert waits == [2, 2, 2]
+    assert waits == [3, 3, 3]
     assert device.events == ['screenshot']

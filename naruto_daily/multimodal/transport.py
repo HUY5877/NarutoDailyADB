@@ -18,7 +18,7 @@ from naruto_daily.common.visual import VisualError
 
 LOGGER = logging.getLogger('naruto_daily')
 MAX_REQUEST_RETRIES = 3
-REQUEST_RETRY_SECONDS = 2
+REQUEST_RETRY_SECONDS = 3
 RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 

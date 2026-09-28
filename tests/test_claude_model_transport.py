@@ -33,7 +33,7 @@ def test_claude_sdk_uses_shared_transport_with_native_retries_disabled(monkeypat
                 pass
             env = self.options.env
             assert env['CLAUDE_CODE_MAX_RETRIES'] == '0'
-            assert env['API_TIMEOUT_MS'] == '126000'
+            assert env['API_TIMEOUT_MS'] == '129000'
             assert env['ANTHROPIC_AUTH_TOKEN'] != 'private-key'
             req = Request(env['ANTHROPIC_BASE_URL'] + '/v1/messages', data=b'{"stream":true}',
                           headers={'Authorization': 'Bearer ' + env['ANTHROPIC_AUTH_TOKEN']})
