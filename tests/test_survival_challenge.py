@@ -157,17 +157,41 @@ def test_survival_without_transfer_starts_directly_and_zero_breaks():
     assert waits[-1] == 60
 
 
-def test_survival_rejects_ambiguous_reset_count_without_reset_click():
+@pytest.mark.parametrize('counts', [[1, 0], [2, 1, 0]])
+def test_survival_resets_for_every_positive_count_and_exits_only_at_zero(counts):
     client, waits = Client(transfer=False), []
-    with pytest.raises(VisualError, match='重置次数'):
-        run(action(), client, Model([1]), waits)
-    assert not any(x == 1400 for x, _, _ in client.taps)
+    model = Model(counts)
+    run(dict(action(), timeout_seconds=300), client, model, waits)
+    states = [state for _, _, state in client.taps]
+    sweep = ['map', 'ready', 'confirm_first', 'confirm_second']
+    assert states == (sweep + ['map', 'reset_confirm']) * (len(counts) - 1) + sweep
+    assert sum(x == 1400 for x, _, _ in client.taps) == len(counts) - 1
+    assert model.calls == waits.count(60) == len(counts)
 
 
-def test_survival_rejects_invalid_model_result():
+@pytest.mark.parametrize('initial_transfer', [False, True])
+def test_survival_dismisses_transfer_again_after_reset_before_next_sweep(initial_transfer):
+    class TransferAfterResetClient(Client):
+        def tap(self, x, y):
+            reset_confirmed = self.state == 'reset_confirm'
+            super().tap(x, y)
+            if reset_confirmed:
+                self.state = 'transfer'
+
+    client, waits = TransferAfterResetClient(transfer=initial_transfer), []
+    run(action(), client, Model([1, 0]), waits)
+    states = [state for _, _, state in client.taps]
+    assert states.count('transfer') == 1 + int(initial_transfer)
+    reset = states.index('reset_confirm')
+    assert states[reset + 1:reset + 4] == ['transfer', 'map', 'ready']
+    assert waits.count(60) == 2
+
+
+@pytest.mark.parametrize('count', [None, True, -1, '1'])
+def test_survival_rejects_invalid_model_result(count):
     client, waits = Client(transfer=False), []
     with pytest.raises(VisualError, match='重置次数'):
-        run(action(), client, Model([None]), waits)
+        run(action(), client, Model([count]), waits)
     assert not any(x == 1400 for x, _, _ in client.taps)
 
 

@@ -154,10 +154,10 @@ def handle_survival_challenge(
     post_click_wait = float(action.get("post_click_wait_seconds", 1))
     poll_seconds = float(action["poll_seconds"])
 
-    _dismiss_transfer_if_present(client, images, action["transfer_marker"])
     for round_number in range(1, int(action["max_rounds"]) + 1):
-        LOGGER.info("[生存挑战第%d轮] 开始扫荡→按当前页面处理名单/扫荡确认→等待%d秒",
+        LOGGER.info("[生存挑战第%d轮] 关闭可选传送提示→开始扫荡→处理名单/扫荡确认→等待%d秒→检查重置次数",
                     round_number, int(action["wait_seconds"]))
+        _dismiss_transfer_if_present(client, images, action["transfer_marker"])
         stage = _start_sweep_and_wait(
             client, images, action, deadline=deadline, poll_seconds=poll_seconds,
             post_click_wait=post_click_wait, elapsed=elapsed,
@@ -186,9 +186,7 @@ def handle_survival_challenge(
         if count == 0:
             LOGGER.info("生存挑战重置次数为0，结束扫荡循环")
             return
-        if count == 1:
-            raise VisualError("生存挑战重置次数为1，无法按安全规则判断是否继续")
-        LOGGER.info("生存挑战重置次数为%d，大于1，点击重置并确认后继续", count)
+        LOGGER.info("生存挑战剩余重置次数为%d，点击重置并确认后回到下一轮扫荡", count)
         _wait_and_click(client, images, action["reset"], deadline=deadline,
                         poll_seconds=poll_seconds, post_click_wait=post_click_wait,
                         elapsed=elapsed)
