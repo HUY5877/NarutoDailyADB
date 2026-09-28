@@ -76,9 +76,9 @@ def test_real_screens_follow_abundance_from_main_page_through_result_and_back(mo
     result = ActionRunner(client, asset_root=ROOT, sleep=waits.append).run(build_task(settings, 'abundance'))
     assert result.action_count == 5 and client.state == 'home'
     assert client.challenge_clicks == 1
-    assert client.result_extra_taps == 76
+    assert client.result_extra_taps == 116
     assert sorted(client.battle_taps) == sorted([(1500, 960), (1535, 750), (1725, 650), (1715, 885)])
-    assert now[0] == 20
+    assert now[0] == 30
     assert waits.count(10) == 1
 
 

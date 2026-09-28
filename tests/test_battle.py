@@ -49,23 +49,26 @@ class Client:
 
 
 @pytest.mark.parametrize('tap_seconds, expected_frames', [
-    (.25, [0, 20, 40]),
-    (.75, [0, 21, 42]),
+    (.25, [0, 30, 65]),
+    (1, [0, 32, 69]),
 ])
-def test_result_checks_use_twenty_seconds_of_elapsed_adb_time(tap_seconds, expected_frames):
+def test_result_checks_use_thirty_seconds_of_elapsed_adb_time(tap_seconds, expected_frames):
     clock, waits = Clock(), []
     client = Client(clock, tap_seconds)
     def matcher(png, path, roi, threshold):
         assert path.stem == 'result', '战斗期间只识别结束标记'
-        # 结果在25秒出现，但只能在下一次到期检查时发现。
-        return ((50, 50), .99) if clock() >= 25 else (None, .2)
-    result = run_battle(client, battle_config(), template_matcher=matcher,
-                        sleep=waits.append, clock=clock)
+        # 结果在40秒出现，下一个30秒连点窗口结束后才会发现。
+        return ((50, 50), .99) if clock() >= 40 else (None, .2)
+    def sleep(seconds):
+        waits.append(seconds)
+        clock.advance(seconds)
+    result = run_battle(client, dict(battle_config(), timeout_seconds=100), template_matcher=matcher,
+                        sleep=sleep, clock=clock)
     assert client.frames == expected_frames
     assert result.taps == len(client.taps) and result.taps > 12
     assert len(set(Counter(client.taps).values())) == 1
     assert set(client.taps) == {(1, 1), (2, 2), (3, 3), (4, 4)}
-    assert waits == [] and result.end_target == 'result'
+    assert waits == [5] and result.end_target == 'result'
 
 
 def test_four_buttons_run_concurrently_and_finish_before_result_check():
@@ -75,14 +78,14 @@ def test_four_buttons_run_concurrently_and_finish_before_result_check():
     def tap(x, y):
         client.taps.append((x, y))
         if barrier.wait() == 0:
-            clock.advance(20)
+            clock.advance(30)
     client.tap = tap
     def matcher(png, *args):
         return ((50, 50), .99) if int(png) == 2 else (None, .2)
     result = run_battle(client, battle_config(), template_matcher=matcher,
                         sleep=waits.append, clock=clock)
     assert result.taps == 4 and sorted(client.taps) == [(1, 1), (2, 2), (3, 3), (4, 4)]
-    assert client.frames == [0, 20] and waits == []
+    assert client.frames == [0, 30] and waits == []
 
 
 def test_result_visible_on_entry_stops_without_attacks_or_sleep():
@@ -138,8 +141,8 @@ def test_configured_batch_delay_keeps_clicking_between_result_checks():
     result = run_battle(client, action,
                         template_matcher=lambda png, *a: ((50, 50), .99) if int(png) == 2 else (None, .2),
                         sleep=waits.append, clock=clock)
-    assert result.taps == 40 and len(client.frames) == 2
-    assert waits == [2] * 10
+    assert result.taps == 60 and len(client.frames) == 2
+    assert waits == [2] * 15
 
 
 def test_one_failed_parallel_tap_stops_after_current_batch_without_retry():
@@ -183,18 +186,18 @@ def test_periodic_pauses_stop_all_taps_for_five_seconds_and_resume_at_same_speed
         clock.advance(seconds)
 
     client.tap = tap
-    result = run_battle(client, dict(battle_config(), timeout_seconds=100),
-                        template_matcher=lambda *args: ((50, 50), .99) if clock() >= 70 else (None, .2),
-                        sleep=sleep, clock=clock, pause_every_seconds=30, pause_seconds=5)
+    result = run_battle(client, dict(battle_config(), timeout_seconds=110),
+                        template_matcher=lambda *args: ((50, 50), .99) if clock() >= 100 else (None, .2),
+                        sleep=sleep, clock=clock)
     assert pauses == [(30, 5, 120), (65, 5, 240)]
-    assert client.frames == [0, 20, 35, 55, 70]
-    assert result.taps == 240
-    assert sum(t < 30 for t in tap_times) == sum(35 <= t < 65 for t in tap_times) == 120
+    assert client.frames == [0, 30, 65, 100]
+    assert result.taps == 360
+    assert sum(t < 30 for t in tap_times) == sum(35 <= t < 65 for t in tap_times) == sum(70 <= t < 100 for t in tap_times) == 120
     assert not any(30 <= t < 35 or 65 <= t < 70 for t in tap_times)
 
 
 @pytest.mark.parametrize('use_model', [False, True])
-def test_result_found_after_pause_never_resumes_taps(use_model):
+def test_result_found_during_pause_never_resumes_taps_or_waits_unnecessarily(use_model):
     clock, waits = Clock(), []
     client = Client(clock)
 
@@ -206,24 +209,23 @@ def test_result_found_after_pause_never_resumes_taps(use_model):
         config = {'max_calls': 3}
 
         def complete_json(self, *args, **kwargs):
-            finished = clock() >= 35
+            finished = clock() >= 30
             return {'finished': finished, 'page': 'finished' if finished else 'battle',
                     'reason': '战后弹窗' if finished else '战斗中'}
 
     def matcher(*args):
-        return ((50, 50), .99) if not use_model and clock() >= 35 else (None, .2)
+        return ((50, 50), .99) if not use_model and clock() >= 30 else (None, .2)
 
     result = run_battle(client, battle_config(), template_matcher=matcher,
-                        sleep=sleep, clock=clock, model=ResultModel() if use_model else None,
-                        pause_every_seconds=30, pause_seconds=5)
-    assert waits == [5]
-    assert client.frames == [0, 20, 35]
+                        sleep=sleep, clock=clock, model=ResultModel() if use_model else None)
+    assert waits == []
+    assert client.frames == [0, 30]
     assert len(client.taps) == result.taps == 120
     assert result.end_target == ('multimodal' if use_model else 'result')
 
 
-def test_pause_waits_for_all_parallel_inputs_to_finish():
-    clock, active, lock = Clock(), [0], Lock()
+def test_pause_and_model_check_wait_for_all_parallel_inputs_to_finish():
+    clock, active, lock, events = Clock(), [0], Lock(), []
     client = Client(clock)
     barrier = Barrier(4, timeout=3)
 
@@ -237,15 +239,33 @@ def test_pause_waits_for_all_parallel_inputs_to_finish():
             active[0] -= 1
 
     def sleep(seconds):
-        assert active[0] == 0 and len(client.taps) == 4
+        assert active[0] == 0
         assert seconds == 5
+        events.append(('sleep', clock(), len(client.taps)))
         clock.advance(seconds)
 
+    original_screenshot = client.screenshot
+    def screenshot():
+        assert active[0] == 0
+        events.append(('screenshot', clock(), len(client.taps)))
+        return original_screenshot()
+
+    class Model:
+        def complete_json(self, *args, **kwargs):
+            assert active[0] == 0
+            events.append(('model', clock(), len(client.taps)))
+            finished = clock() >= 65
+            return {'finished': finished, 'page': 'finished' if finished else 'battle', 'reason': '测试'}
+
     client.tap = tap
-    result = run_battle(client, battle_config(),
-                        template_matcher=lambda *args: ((50, 50), .99) if clock() >= 35 else (None, .2),
-                        sleep=sleep, clock=clock, pause_every_seconds=30, pause_seconds=5)
-    assert result.taps == 4 and client.frames == [0, 35]
+    client.screenshot = screenshot
+    result = run_battle(client, dict(battle_config(), timeout_seconds=100),
+                        template_matcher=lambda *args: (None, .2),
+                        sleep=sleep, clock=clock, model=Model())
+    assert result.taps == 8 and client.frames == [0, 30, 65]
+    assert events == [('screenshot', 0, 0), ('model', 0, 0),
+                      ('screenshot', 30, 4), ('model', 30, 4), ('sleep', 30, 4),
+                      ('screenshot', 65, 8), ('model', 65, 8)]
 
 
 def test_pause_exhausting_total_timeout_never_resumes_or_checks_late_frame():
@@ -258,10 +278,9 @@ def test_pause_exhausting_total_timeout_never_resumes_or_checks_late_frame():
 
     with pytest.raises(VisualError, match='战斗.*超时'):
         run_battle(client, dict(battle_config(), timeout_seconds=32),
-                   template_matcher=lambda *a: (None, .2), sleep=sleep, clock=clock,
-                   pause_every_seconds=30, pause_seconds=5)
+                   template_matcher=lambda *a: (None, .2), sleep=sleep, clock=clock)
     assert waits == [2] and clock() == 32
-    assert len(client.taps) == 120 and client.frames == [0, 20]
+    assert len(client.taps) == 120 and client.frames == [0, 30]
 
 
 def test_multimodal_completion_stops_clicking_when_result_template_is_missing():
@@ -275,14 +294,107 @@ def test_multimodal_completion_stops_clicking_when_result_template_is_missing():
     assert client.taps == []
 
 
-def test_multimodal_completion_keeps_battle_clicking_when_pending():
+def test_multimodal_completion_is_bounded_by_total_timeout_when_pending():
     clock, waits = Clock(), []
     client = Client(clock)
     model = CompletionModel({'finished': False, 'page': 'battle', 'reason': '仍在战斗'})
     action = battle_config()
     action['timeout_seconds'] = 65
-    with pytest.raises(VisualError, match='战斗完成识别达到模型调用上限'):
+    def sleep(seconds):
+        waits.append(seconds)
+        clock.advance(seconds)
+    with pytest.raises(VisualError, match='战斗.*超时'):
         run_battle(client, action, template_matcher=lambda *a: (None, .2),
-                   sleep=waits.append, clock=clock, model=model)
-    assert model.calls == 3
-    assert len(client.taps) > 0
+                   sleep=sleep, clock=clock, model=model)
+    assert model.calls == 2 and client.frames == [0, 30]
+    assert clock() == 65 and len(client.taps) == 240
+
+
+@pytest.mark.parametrize('check_seconds, expected_waits, final_check', [
+    (2, [3], 72), (8, [], 75),
+])
+def test_check_time_overlaps_pause_and_next_click_window_is_complete(check_seconds, expected_waits, final_check):
+    clock, waits, tap_times = Clock(), [], []
+    client = Client(clock)
+    original_tap = client.tap
+
+    def tap(x, y):
+        tap_times.append(clock())
+        original_tap(x, y)
+
+    def sleep(seconds):
+        waits.append(seconds)
+        clock.advance(seconds)
+
+    class Model:
+        calls = 0
+        def complete_json(self, *args, **kwargs):
+            self.calls += 1
+            before = len(client.taps)
+            # 入场检查耗时不占第一个连点窗口；周期检查从停止点击时立即开始。
+            if self.calls == 1:
+                clock.advance(7)
+            elif self.calls == 2:
+                assert clock() == 37 and before == 120
+                clock.advance(check_seconds)
+            assert len(client.taps) == before
+            finished = self.calls == 3
+            return {'finished': finished, 'page': 'finished' if finished else 'battle', 'reason': '测试'}
+
+    client.tap = tap
+    result = run_battle(client, dict(battle_config(), timeout_seconds=110),
+                        template_matcher=lambda *args: (None, .2), sleep=sleep, clock=clock, model=Model())
+    assert client.frames == [0, 37, final_check]
+    assert waits == expected_waits and result.taps == 240
+    assert not any(37 <= t < final_check - 30 for t in tap_times)
+    assert sum(7 <= t < 37 for t in tap_times) == sum(final_check - 30 <= t < final_check for t in tap_times) == 120
+
+
+def test_valid_battle_checks_can_continue_past_six_calls_until_completion():
+    clock = Clock()
+    client = Client(clock)
+
+    class Model:
+        config = {'max_calls': 6}
+        calls = 0
+        def complete_json(self, *args, **kwargs):
+            self.calls += 1
+            finished = self.calls == 8
+            return {'finished': finished, 'page': 'finished' if finished else 'battle', 'reason': '测试'}
+
+    model = Model()
+    result = run_battle(client, dict(battle_config(), timeout_seconds=300),
+                        template_matcher=lambda *args: (None, .2), sleep=clock.advance, clock=clock, model=model)
+    assert model.calls == 8 and result.end_target == 'multimodal'
+    assert client.frames == [0, 30, 65, 100, 135, 170, 205, 240]
+
+
+@pytest.mark.parametrize('finished', [False, True])
+def test_model_response_after_timeout_cannot_resume_clicking_or_report_success(finished):
+    clock = Clock()
+    client = Client(clock)
+    budgets = []
+
+    class Model:
+        def complete_json(self, *args, timeout_seconds):
+            budgets.append(timeout_seconds)
+            if clock() == 0:
+                return {'finished': False, 'page': 'battle', 'reason': '测试'}
+            clock.advance(6)
+            return {'finished': finished, 'page': 'finished' if finished else 'battle', 'reason': '测试'}
+
+    with pytest.raises(VisualError, match='战斗.*超时'):
+        run_battle(client, dict(battle_config(), timeout_seconds=35),
+                   template_matcher=lambda *args: (None, .2), sleep=clock.advance, clock=clock, model=Model())
+    assert budgets == [35, 5] and client.frames == [0, 30]
+    assert len(client.taps) == 120
+
+
+def test_invalid_model_response_still_stops_all_clicks():
+    clock = Clock()
+    client = Client(clock)
+    model = CompletionModel({'finished': 'false', 'page': 'battle', 'reason': '无效格式'})
+    with pytest.raises(VisualError, match='返回格式无效'):
+        run_battle(client, battle_config(), template_matcher=lambda *args: (None, .2),
+                   sleep=clock.advance, clock=clock, model=model)
+    assert client.taps == [] and model.calls == 1

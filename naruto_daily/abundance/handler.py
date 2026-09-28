@@ -98,8 +98,7 @@ def handle_abundance(
     model = (MultimodalClient(action["multimodal"], asset_root=asset_root)
              if action.get("multimodal") else None)
     summary = run_battle(client, action['battle'], template_matcher=template_matcher,
-                         asset_root=asset_root, sleep=sleep, model=model,
-                         pause_every_seconds=30, pause_seconds=5)
+                         asset_root=asset_root, sleep=sleep, model=model)
     finish_abundance_result(client, action, template_matcher=template_matcher,
                             asset_root=asset_root, sleep=sleep, model=model)
     return summary

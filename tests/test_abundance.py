@@ -24,7 +24,7 @@ def action():
     return dict(type='handle_abundance', timeout_seconds=3, pre_click_wait_seconds=1,
         post_click_wait_seconds=1, load_wait_seconds=10,
         challenge_button=target('challenge'), result_return=target('dismiss'),
-        battle=dict(start_timeout_seconds=3, timeout_seconds=30, tap_interval_seconds=.25,
+        battle=dict(start_timeout_seconds=3, timeout_seconds=120, tap_interval_seconds=.25,
                     battle_marker=target('battle'), end_targets=[target('result')],
                     buttons=[dict(name=n,x=i,y=i) for i,n in enumerate(('一技能','二技能','大招','普攻'),1)]))
 
@@ -54,9 +54,9 @@ def test_challenge_waits_ten_seconds_before_battle_and_dismisses_result():
     summary=handle_abundance(client,action(),template_matcher=matcher,sleep=lambda s:events.append(('sleep',s)))
     assert client.taps[0] == (50, 50)
     assert client.taps[-1] == SERVICE_POPUP_DISMISS
-    assert Counter(client.taps[1:-1]) == Counter({(1,1):80, (2,2):80, (3,3):80, (4,4):80})
+    assert Counter(client.taps[1:-1]) == Counter({(1,1):120, (2,2):120, (3,3):120, (4,4):120})
     assert events[:3]==[('sleep',1),('tap',50,50),('sleep',10)]
-    assert summary.taps==320
+    assert summary.taps==480
 
 
 def test_missing_challenge_aborts_before_loading_or_attack():
@@ -79,7 +79,7 @@ def test_disappearing_result_prompt_is_not_clicked():
     with pytest.raises(VisualError):
         handle_abundance(client,action(),template_matcher=matcher,sleep=waits.append)
     assert client.taps[0] == (50,50)
-    assert Counter(client.taps[1:]) == Counter({(1,1):80, (2,2):80, (3,3):80, (4,4):80})
+    assert Counter(client.taps[1:]) == Counter({(1,1):120, (2,2):120, (3,3):120, (4,4):120})
 
 
 class AfterBattleModel:
@@ -172,8 +172,8 @@ def test_abundance_passes_shared_model_to_result_handler(monkeypatch):
     monkeypatch.setattr(handler, 'MultimodalClient', lambda *a, **kw: model)
     def battle(*args, **kwargs):
         assert kwargs.get('model') is model
-        assert kwargs['pause_every_seconds'] == 30
-        assert kwargs['pause_seconds'] == 5
+        # 调用公共战斗模块的默认节奏，调用方不再单独传入暂停规则。
+        assert set(kwargs) == {'template_matcher', 'asset_root', 'sleep', 'model'}
         return BattleSummary(4, 'multimodal')
     def finish(*args, **kwargs):
         assert kwargs.get('model') is model
