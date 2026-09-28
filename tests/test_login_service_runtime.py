@@ -539,6 +539,7 @@ def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_relea
 
 
 def test_ldplayer_worker_error_is_whitelisted_and_instance_is_closed(monkeypatch, tmp_path):
+    monkeypatch.setattr("naruto_daily.login_service.runtime.FAILED_INSTANCE_HOLD_SECONDS", 0)
     child = _ProtocolChild([{
         "type": "error", "code": "qr_not_found",
         "message": "redis://user:password@private-host should never escape",
@@ -582,6 +583,7 @@ def test_ldplayer_worker_shutdown_closes_unfinished_instance(monkeypatch, tmp_pa
 
 
 def test_ldplayer_worker_expiry_closes_unfinished_instance(monkeypatch, tmp_path):
+    monkeypatch.setattr("naruto_daily.login_service.runtime.FAILED_INSTANCE_HOLD_SECONDS", 0)
     child = _BlockingChild()
     monkeypatch.setattr("naruto_daily.login_service.runtime.subprocess.Popen", lambda *a, **k: child)
     closed = []

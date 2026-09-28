@@ -15,6 +15,7 @@ import pytest
 from naruto_daily.login_service.config import PROJECT_ROOT, ServiceConfig, load_config
 from naruto_daily.login_service.ldplayer import LDPlayerPoolFull
 from naruto_daily.login_service.models import parse_submission
+from naruto_daily.login_service import runtime as runtime_module
 from naruto_daily.login_service.runtime import LoginRuntime
 
 
@@ -23,6 +24,13 @@ QR = {"type": "qr", "png": base64.b64encode(PNG).decode("ascii")}
 AUTHORIZED = {"type": "authorized"}
 LOGGED_IN = {"type": "logged_in"}
 COMPLETED = {"type": "daily_completed", "actionCount": 3}
+DEFAULT_FAILURE_HOLD_SECONDS = runtime_module.FAILED_INSTANCE_HOLD_SECONDS
+
+
+@pytest.fixture(autouse=True)
+def short_failure_hold(monkeypatch):
+    # Existing lifecycle cases exercise cleanup without a real minute-long wait.
+    monkeypatch.setattr(runtime_module, "FAILED_INSTANCE_HOLD_SECONDS", 0)
 
 # These children exchange the actual JSON-line protocol over OS pipes. File gates
 # let each test inspect the live child before allowing the next lifecycle event.
@@ -237,6 +245,136 @@ def start_processing(runtime, record):
     # stop() must await the same consumer that owns this child.
     runtime._workers.append(work)
     return work
+
+
+class RecordingReporter:
+    def __init__(self):
+        self.events = []
+        self.finished = []
+
+    def emit(self, record, **event):
+        self.events.append((record.id, event))
+
+    def finish(self, task_id):
+        self.finished.append(task_id)
+
+    async def close(self):
+        pass
+
+
+@pytest.mark.parametrize("after_login", [False, True])
+def test_failed_emulator_is_reserved_until_hold_expires_and_failure_is_reported_immediately(
+    monkeypatch, tmp_path, after_login,
+):
+    assert DEFAULT_FAILURE_HOLD_SECONDS == 60
+
+    async def scenario():
+        record = record_with_ttl()
+        plan = ([emit(QR), emit(LOGGED_IN)] if after_login else []) + [
+            emit({"type": "error", "code": "daily_failed" if after_login else "qr_not_found"}),
+        ]
+        runtime, _, queue, pool = make_runtime(tmp_path, monkeypatch, record, plan)
+        reporter = RecordingReporter()
+        runtime._run_reporter = reporter
+        entered, elapsed = asyncio.Event(), asyncio.Event()
+
+        class InspectionClock:
+            async def wait(self):
+                entered.set()
+                await elapsed.wait()
+                # Simulate expiry without sleeping for a real minute.
+                raise TimeoutError
+
+            def set(self):
+                elapsed.set()
+
+        monkeypatch.setattr(runtime_module, "FAILED_INSTANCE_HOLD_SECONDS", 60)
+        runtime._stop_event = InspectionClock()
+        work = start_processing(runtime, record)
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            assert record.daily_status == "failed"
+            assert reporter.events[-1][1]["status"] == "failed"
+            assert reporter.events[-1][1]["error_code"] == ("daily_failed" if after_login else "qr_not_found")
+            assert not reporter.finished
+            assert not work.done()
+            assert not pool.has_capacity()
+            assert not pool.closed
+            assert not queue.requeued
+            if not after_login:
+                assert queue.statuses[-1][1] == "failed"
+
+            elapsed.set()
+            await asyncio.wait_for(work, 3)
+            assert pool.closed == [record.id]
+            assert pool.has_capacity()
+            assert reporter.finished == [record.id]
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
+def test_shutdown_interrupts_failure_hold_and_preserves_failure_status(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl()
+        runtime, _, queue, pool = make_runtime(tmp_path, monkeypatch, record, [
+            emit(QR), emit(LOGGED_IN), emit({"type": "error", "code": "daily_failed"}),
+        ])
+        reporter = RecordingReporter()
+        runtime._run_reporter = reporter
+        monkeypatch.setattr(runtime_module, "FAILED_INSTANCE_HOLD_SECONDS", 60)
+        work = start_processing(runtime, record)
+        try:
+            await eventually(lambda: bool(reporter.events) and reporter.events[-1][1].get("status") == "failed")
+            assert not work.done() and not pool.closed
+            await asyncio.wait_for(runtime.stop(), 2)
+            assert work.done()
+            assert pool.closed == [record.id]
+            assert record.daily_status == "failed"
+            assert reporter.events[-1][1]["status"] == "failed"
+            assert not queue.requeued
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
+def test_cancelling_failure_hold_still_closes_emulator(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl()
+        runtime, _, _, pool = make_runtime(tmp_path, monkeypatch, record, [
+            emit(QR), emit(LOGGED_IN), emit({"type": "error", "code": "daily_failed"}),
+        ])
+        reporter = RecordingReporter()
+        runtime._run_reporter = reporter
+        monkeypatch.setattr(runtime_module, "FAILED_INSTANCE_HOLD_SECONDS", 60)
+        work = start_processing(runtime, record)
+        try:
+            await eventually(lambda: bool(reporter.events) and reporter.events[-1][1].get("status") == "failed")
+            assert not pool.closed
+            work.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await work
+            assert pool.closed == [record.id]
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
+def test_successful_daily_run_does_not_hold_emulator(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl()
+        runtime, _, _, pool = make_runtime(tmp_path, monkeypatch, record, [
+            emit(QR), emit(LOGGED_IN), emit(COMPLETED),
+        ])
+        monkeypatch.setattr(runtime_module, "FAILED_INSTANCE_HOLD_SECONDS", 60)
+        work = start_processing(runtime, record)
+        try:
+            await asyncio.wait_for(work, 3)
+            assert record.daily_status == "completed"
+            assert pool.closed == [record.id]
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
 
 
 def test_daily_qr_is_published_while_child_waits_and_slot_remains_reserved(monkeypatch, tmp_path):

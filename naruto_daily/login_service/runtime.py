@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+FAILED_INSTANCE_HOLD_SECONDS = 60.0
 
 _CHILD_ENV_ALLOWLIST = frozenset({
     "ALLUSERSPROFILE", "APPDATA", "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)",
@@ -504,6 +505,24 @@ class LoginRuntime:
             logger.warning("Could not close the LDPlayer login instance for task %s", task_id)
             return False
 
+    async def _hold_failed_ldplayer(self, record: TaskRecord) -> None:
+        """Leave the failed emulator visible and reserved until inspection time ends."""
+        record.daily_status = "failed"
+        if self._run_reporter is not None:
+            # Publish the failure now; emulator cleanup must not delay the UI.
+            # The reporter deduplicates this unchanged status after cleanup.
+            self._run_reporter.emit(
+                record, status="failed", error_code=record.daily_error_code, level="ERROR",
+            )
+        logger.warning(
+            "Task %s: 执行失败，保留模拟器 %g 秒供排查，期间实例保持占用；到时自动关闭",
+            record.id, FAILED_INSTANCE_HOLD_SECONDS,
+        )
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=FAILED_INSTANCE_HOLD_SECONDS)
+        except TimeoutError:
+            logger.info("Task %s: 失败现场保留时间已到，开始关闭模拟器", record.id)
+
     async def _release_and_requeue(self, record: TaskRecord) -> None:
         if self.config.emulator_driver == "ldplayer":
             if not await self._cleanup_ldplayer(record.id):
@@ -698,9 +717,16 @@ class LoginRuntime:
             if requeue_on_exit:
                 await self._release_and_requeue(record)
             elif self.config.emulator_driver == "ldplayer" and not keep_ldplayer:
-                released = await self._cleanup_ldplayer(task_id)
-                if record.qr_published and not released:
-                    self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
+                try:
+                    if (not self._stopping
+                            and (record.daily_status == "failed" or record.status == "failed")):
+                        await self._hold_failed_ldplayer(record)
+                finally:
+                    # The pool binding stays reserved throughout the hold. Also
+                    # release it if the consumer is cancelled during inspection.
+                    released = await self._cleanup_ldplayer(task_id)
+                    if record.qr_published and not released:
+                        self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
             if self._run_reporter is not None:
                 final_status = record.daily_status
                 if final_status not in RUN_TERMINAL_STATUSES:
