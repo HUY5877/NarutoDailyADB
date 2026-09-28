@@ -50,7 +50,7 @@ def config_file(tmp_path, *, change=None):
     return path
 
 
-def session_for(tmp_path, *, change=None, matcher=None, subprocess_runner=None):
+def session_for(tmp_path, *, change=None, matcher=None, subprocess_runner=None, task_name="all"):
     clock = Clock()
     calls = []
 
@@ -70,7 +70,7 @@ def session_for(tmp_path, *, change=None, matcher=None, subprocess_runner=None):
     session = DailySession(config_file(tmp_path, change=change), Path("current-adb.exe"),
                            "emulator-5580", 20, clock=clock, sleep=clock.sleep,
                            run_subprocess=subprocess_runner or run,
-                           template_matcher=matcher or match)
+                           template_matcher=matcher or match, task_name=task_name)
     return session, clock, calls
 
 
@@ -121,6 +121,29 @@ def test_scan_and_daily_reuse_one_serial_and_complete_existing_all_order(tmp_pat
     daily_taps = [command[-2:] for command, _ in calls[login_calls:] if "tap" in command]
     assert daily_taps == [[str(index), "0"] for index in range(1, len(TASK_ORDER))]
     assert capsys.readouterr().out == ""
+
+
+def test_local_secret_session_runs_only_shared_secret_route_after_scan(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    original = json.loads((PROJECT_ROOT / "config.example.json").read_text(encoding="utf-8"))
+
+    def change(payload):
+        for name in ("secret_realm_farm", "secret_realm"):
+            payload['tasks'][name] = deepcopy(original['tasks'][name])
+
+    monkeypatch.delenv("LOGIN_ACCOUNT_NAME")
+    session, clock, calls = session_for(tmp_path, change=change, task_name="secret_realm_farm")
+    session.wait_for_login(clock() + 300)
+    actions_run = []
+    def run(actions):
+        actions_run.extend(actions)
+        return SimpleNamespace(action_count=len(actions))
+    monkeypatch.setattr(session, "_runner", lambda: SimpleNamespace(run=run))
+    assert session.run_daily(clock() + 300) == 3
+    assert actions_run == [*session.settings.tasks['secret_realm_farm'],
+                           *session.settings.tasks['secret_realm'][1:]]
+    assert [a['type'] for a in actions_run] == ['enter_secret_realm', 'handle_secret_realm', 'return_to_main']
+    assert all(command[:3] == ['current-adb.exe', '-s', 'emulator-5580'] for command, _ in calls)
 
 
 def test_daily_does_not_run_before_confirmed_login(tmp_path):

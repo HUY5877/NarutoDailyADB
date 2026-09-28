@@ -15,7 +15,7 @@ from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.config import ConfigError, load_settings
 from naruto_daily.runner import ActionRunner
-from naruto_daily.tasks import build_all
+from naruto_daily.tasks import build_all, build_task
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -41,6 +41,7 @@ class DailySession:
         sleep: Callable[[float], None] = time.sleep,
         run_subprocess: Callable = subprocess.run,
         template_matcher: Callable = find_template_in_png,
+        task_name: str = "all",
     ):
         if not isinstance(serial, str) or not serial.strip():
             raise ValueError("日常任务必须指定已绑定的 ADB serial")
@@ -51,7 +52,13 @@ class DailySession:
         self.asset_root = self.config_path.parent
         self.settings = load_settings(self.config_path, skip_account_login=True)
         self._login_actions = deepcopy(self.settings.tasks["login"])
-        self._daily_actions = build_all(self.settings)[len(self._login_actions):]
+        if task_name == "all":
+            actions = build_all(self.settings)
+        elif task_name == "secret_realm_farm":
+            actions = build_task(self.settings, task_name)
+        else:
+            raise ConfigError(f"不支持的扫码后任务：{task_name}")
+        self._daily_actions = actions[len(self._login_actions):]
         main_actions = [action for action in self._login_actions if action["type"] == "return_to_main"]
         if not main_actions:
             raise ConfigError("扫码登录收尾必须包含 return_to_main 以确认进入主界面")
@@ -169,7 +176,7 @@ class DailySession:
         self.finish_login(deadline)
 
     def run_daily(self, deadline: float) -> int:
-        """复用原 run all 的日常顺序，始终操作已经完成扫码的同一设备。"""
+        """执行所选线路的登录后动作，默认完整日常，始终使用同一设备。"""
         if not self._logged_in:
             raise RuntimeError("必须先完成扫码登录并确认主界面")
         self._set_deadline(deadline)

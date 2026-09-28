@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import logging
 import sys
 import time
@@ -23,6 +24,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("task", choices=["login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "secret_realm", "secret_realm_farm", "all"])
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--dry-run", action="store_true")
+    run.add_argument("--qr-login", action="store_true", help="秘境线路改为本地 QQ 扫码登录，不上传二维码")
+    run.add_argument("--serial", help="指定要操作的 ADB 设备，覆盖配置文件的 serial")
     return parser
 
 
@@ -56,12 +59,28 @@ def main(
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     args = _parser().parse_args(argv)
     try:
-        settings = load_settings(args.config)
+        qr_login = getattr(args, "qr_login", False)
+        if qr_login and args.task != "secret_realm_farm":
+            raise ConfigError("--qr-login 仅用于 run secret_realm_farm")
+        settings = load_settings(args.config, skip_account_login=qr_login)
+        if getattr(args, "serial", None):
+            settings = replace(settings, serial=args.serial)
+        if qr_login and (settings.screen_width, settings.screen_height) != (1920, 1080):
+            raise ConfigError("本地扫码登录需要 1920x1080 分辨率")
         client = _preflight(settings, client_factory)
         if args.command == "check":
             print(f"ADB 设备已就绪，分辨率 {settings.screen_width}x{settings.screen_height}")
             return 0
         actions = build_all(settings) if args.task == "all" else build_task(settings, args.task)
+        if qr_login:
+            if args.dry_run:
+                print("模拟本地扫码登录：二维码显示在模拟器，手机 QQ 确认后执行以下收尾和秘境动作。")
+            else:
+                from .login_service.local import run_local_qr_secret
+
+                count = run_local_qr_secret(args.config, settings.adb_path, client.serial, sleep=sleep)
+                print(f"本地扫码秘境执行完成：{count} 个动作")
+                return 0
         if args.task == "all" and not args.dry_run:
             print("完整流程将在 5 秒后开始，按 Ctrl+C 可取消。")
             for _ in range(5):

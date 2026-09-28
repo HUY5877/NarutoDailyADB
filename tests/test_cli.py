@@ -1,4 +1,7 @@
 import json
+from pathlib import Path
+
+import pytest
 
 from naruto_daily.cli import main
 
@@ -124,3 +127,38 @@ def test_login_is_an_independently_runnable_command(tmp_path):
 
     assert result == 0
     assert client.inputs == [("tap", 158, 924)]
+
+
+@pytest.mark.parametrize('dry_run', [False, True])
+def test_local_qr_secret_selects_device_and_skips_saved_account(tmp_path, monkeypatch, dry_run):
+    from naruto_daily.login_service import local
+    path = tmp_path / 'qr.json'
+    original = Path(__file__).parents[1] / 'config.example.json'
+    path.write_bytes(original.read_bytes())
+    monkeypatch.delenv('LOGIN_ACCOUNT_NAME')
+    selected, runs = [], []
+
+    def factory(adb_path, serial=None):
+        selected.append(serial)
+        client = FakeClient(['emulator-5554', 'emulator-5556'], size=(1920, 1080))
+        client.serial = serial
+        client.tap = lambda *args: pytest.fail('CLI 不应直接点击或执行原账号登录')
+        return client
+
+    def run(config, adb, serial, **kwargs):
+        assert not dry_run
+        runs.append((config, serial))
+        return 3
+
+    monkeypatch.setattr(local, 'run_local_qr_secret', run)
+    argv = ['run', 'secret_realm_farm', '--qr-login', '--config', str(path), '--serial', 'emulator-5556']
+    assert main(argv + (['--dry-run'] if dry_run else []), client_factory=factory) == 0
+    assert selected == [None, 'emulator-5556']
+    assert runs == ([] if dry_run else [(path, 'emulator-5556')])
+
+
+def test_qr_login_rejects_other_task_routes_before_device_access(capsys):
+    def factory(*args, **kwargs):
+        pytest.fail('错误线路不应连接设备')
+    assert main(['run', 'all', '--qr-login', '--config', 'unused.json'], client_factory=factory) == 2
+    assert '仅用于 run secret_realm_farm' in capsys.readouterr().err
