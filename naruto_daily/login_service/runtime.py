@@ -409,6 +409,7 @@ class LoginRuntime:
             "commandTimeout": self.config.ldplayer_command_timeout_seconds,
             "dailyConfigPath": str(self.config.daily_config_path),
             "dailyTimeoutSeconds": self.config.daily_timeout_seconds,
+            "userOptions": record.user_options,
         }
         return await self._run_child(
             record, [sys.executable, "-u", "-m", "naruto_daily.login_service.ldplayer_worker"], message,

@@ -18,6 +18,7 @@ from typing import Callable, TextIO
 from uuid import UUID
 
 from .log_events import forward_task_logs
+from .user_options import parse_user_options
 
 
 _MAX_INPUT_BYTES = 16_384
@@ -154,6 +155,7 @@ def main(
             command_timeout, pool_indices,
         ) = _validate(message, clock())
         daily_options = _daily_options(message)
+        user_options = parse_user_options(message.get("userOptions", {}))
         if watchdog is not None:
             watchdog.cancel()
     except Exception:
@@ -200,6 +202,7 @@ def main(
                 daily_session = DailySession(
                     config_path=daily_options[0], adb_path=manager.adb_path,
                     serial=serial, command_timeout=command_timeout,
+                    user_options=user_options,
                 )
 
         phase = "game"

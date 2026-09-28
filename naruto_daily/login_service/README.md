@@ -76,11 +76,16 @@ TypeScript 后端通过 `LPUSH` 投递，Python 先用 `LINDEX -1` 查看最早�
   "id": "客户端生成的 UUID",
   "createdAt": "2026-09-23T08:00:00.000Z",
   "expiresAt": "2026-09-23T08:02:00.000Z",
-  "objectKey": "login/客户端生成的 UUID/qr.png"
+  "objectKey": "login/客户端生成的 UUID/qr.png",
+  "userOptions": {
+    "equipmentStamina": true
+  }
 }
 ```
 
 示例时间戳仅说明结构，实际任务必须使用当前创建时间和有效的过期时间。队列消息不携带明文访问凭证。
+
+`userOptions` 统一承载用户附加参数，并作为完整 JSON 对象从队列经父进程传给执行子进程。`equipmentStamina` 控制装备栏体力刷取：`true` 执行原有装备材料扫荡、合成、装备和进阶流程；`false` 跳过整个 `equipment_upgrade` 任务组，包括装备菜单导航，其他日常及其顺序保持不变。旧消息省略 `userOptions` 或传 `{}` 时默认开启，显式 `false` 不会被默认值覆盖。独立刷秘境线路原本不包含装备任务，不受此选项影响。`null`、数组、未知选项和非布尔值均按无效任务拒绝，不启动模拟器。客户端和 worker 更新后需重启常驻 worker 才会消费此参数；此前已运行的任务继续使用其启动时的选项。
 
 对应会话位于 `${REDIS_QUEUE_KEY}:sessions:${id}`，例如 `naruto:login:tasks:sessions:<UUID>`。客户端先创建会话，Python 回写处理阶段时保留客户端的 `tokenHash` 和原有 TTL，不延长会话有效期。
 

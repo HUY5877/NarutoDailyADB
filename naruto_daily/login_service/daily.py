@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import logging
 import math
 from pathlib import Path
@@ -16,6 +17,7 @@ from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.config import ConfigError, load_settings
 from naruto_daily.runner import ActionRunner
 from naruto_daily.tasks import build_all, build_task
+from .user_options import UserOptions, parse_user_options
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -42,6 +44,7 @@ class DailySession:
         run_subprocess: Callable = subprocess.run,
         template_matcher: Callable = find_template_in_png,
         task_name: str = "all",
+        user_options: UserOptions | None = None,
     ):
         if not isinstance(serial, str) or not serial.strip():
             raise ValueError("日常任务必须指定已绑定的 ADB serial")
@@ -51,9 +54,16 @@ class DailySession:
         self.config_path = Path(config_path).resolve()
         self.asset_root = self.config_path.parent
         self.settings = load_settings(self.config_path, skip_account_login=True)
+        self.user_options = parse_user_options({} if user_options is None else user_options)
         self._login_actions = deepcopy(self.settings.tasks["login"])
         if task_name == "all":
-            actions = build_all(self.settings)
+            selected_settings = self.settings
+            if not self.user_options["equipmentStamina"]:
+                # Skip the whole equipment route, including menu navigation and
+                # material synthesis/upgrade; all other task groups keep their order.
+                selected_settings = replace(self.settings, tasks={**self.settings.tasks, "equipment_upgrade": []})
+                LOGGER.info("已按用户设置跳过装备栏体力刷取（扫荡、合成、装备和进阶）")
+            actions = build_all(selected_settings)
         elif task_name == "secret_realm_farm":
             actions = build_task(self.settings, task_name)
         else:

@@ -301,8 +301,11 @@ def daily_dependencies(calls):
     return Manager, DriverError, Device, fetch
 
 
+@pytest.mark.parametrize("options,enabled", [
+    (None, True), ({}, True), ({"equipmentStamina": True}, True), ({"equipmentStamina": False}, False),
+])
 def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_login_finish(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, options, enabled,
 ):
     now = 1_800_000_000.0
     clock = [now]
@@ -321,6 +324,7 @@ def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_l
             assert kwargs == {
                 "config_path": config_path, "adb_path": Path("C:/LDPlayer/adb.exe"),
                 "serial": "emulator-5570", "command_timeout": 23,
+                "user_options": {"equipmentStamina": enabled},
             }
             self.logged_in = False
 
@@ -351,6 +355,8 @@ def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_l
     monkeypatch.setattr(ldplayer_worker, "_load_dependencies", lambda: daily_dependencies(calls))
     monkeypatch.setattr(ldplayer_worker, "_load_daily_session", lambda: DailySession)
     message = request(now, dailyConfigPath=str(config_path), dailyTimeoutSeconds=60)
+    if options is not None:
+        message["userOptions"] = options
     code = ldplayer_worker.main(
         input_stream=StringIO(json.dumps(message) + "\n"), output_stream=output,
         clock=lambda: clock[0], use_watchdog=False,
@@ -362,6 +368,25 @@ def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_l
         "stage", "stage", "stage", "qr", "authorized", "logged_in", "daily_completed",
     ]
     assert events[-1] == {"type": "daily_completed", "actionCount": 12}
+
+
+@pytest.mark.parametrize("options", [
+    None, [], False, "false", 0, {"equipmentStamina": None}, {"equipmentStamina": 0},
+    {"equipmentStamina": "false"}, {"equipmentStamina": False, "unknown": True},
+])
+def test_invalid_user_options_fail_before_driver_initialization(monkeypatch, options):
+    loaded = []
+    monkeypatch.setattr(ldplayer_worker, "_load_dependencies", lambda: loaded.append(True))
+    output = StringIO()
+    code = ldplayer_worker.main(
+        input_stream=StringIO(json.dumps(request(userOptions=options)) + "\n"),
+        output_stream=output, clock=lambda: 1_800_000_000.0, use_watchdog=False,
+    )
+    assert code == 1
+    assert loaded == []
+    assert [json.loads(line) for line in output.getvalue().splitlines()] == [
+        {"type": "error", "code": "configuration_error"},
+    ]
 
 
 @pytest.mark.parametrize("phase,error,expected", [

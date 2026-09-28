@@ -50,7 +50,7 @@ def config_file(tmp_path, *, change=None):
     return path
 
 
-def session_for(tmp_path, *, change=None, matcher=None, subprocess_runner=None, task_name="all"):
+def session_for(tmp_path, *, change=None, matcher=None, subprocess_runner=None, task_name="all", user_options=None):
     clock = Clock()
     calls = []
 
@@ -70,7 +70,8 @@ def session_for(tmp_path, *, change=None, matcher=None, subprocess_runner=None, 
     session = DailySession(config_file(tmp_path, change=change), Path("current-adb.exe"),
                            "emulator-5580", 20, clock=clock, sleep=clock.sleep,
                            run_subprocess=subprocess_runner or run,
-                           template_matcher=matcher or match, task_name=task_name)
+                           template_matcher=matcher or match, task_name=task_name,
+                           user_options=user_options)
     return session, clock, calls
 
 
@@ -121,6 +122,45 @@ def test_scan_and_daily_reuse_one_serial_and_complete_existing_all_order(tmp_pat
     daily_taps = [command[-2:] for command, _ in calls[login_calls:] if "tap" in command]
     assert daily_taps == [[str(index), "0"] for index in range(1, len(TASK_ORDER))]
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_equipment_option_changes_only_equipment_route_and_keeps_other_daily_actions(tmp_path, enabled):
+    # Multiple actions represent equipment menu navigation, material processing
+    # and returning to the main screen. Disabling must remove the whole route.
+    equipment_actions = [{"type": "tap", "x": 100 + index, "y": 0} for index in range(3)]
+    options = {"equipmentStamina": enabled}
+    session, clock, calls = session_for(
+        tmp_path, change=lambda p: p["tasks"].update(equipment_upgrade=equipment_actions),
+        user_options=options,
+    )
+    assert session.settings.tasks["equipment_upgrade"] == equipment_actions
+    assert options == {"equipmentStamina": enabled}
+    session.wait_for_login(clock() + 300)
+    login_calls = len(calls)
+    expected_actions = [
+        action for name in TASK_ORDER if name != "login" and (enabled or name != "equipment_upgrade")
+        for action in session.settings.tasks.get(name, [])
+    ]
+    assert session.run_daily(clock() + 300) == len(expected_actions)
+    daily_taps = [command[-2:] for command, _ in calls[login_calls:] if "tap" in command]
+    assert daily_taps == [[str(action["x"]), str(action["y"])] for action in expected_actions]
+    assert session.settings.tasks["equipment_upgrade"] == equipment_actions
+
+
+def test_disabled_equipment_route_does_not_require_its_templates(tmp_path):
+    def change(payload):
+        payload["tasks"]["equipment_upgrade"] = [{
+            "type": "optional_template_tap", "template": "assets/equipment_only.png",
+            "left": 0, "top": 0, "right": 100, "bottom": 100, "threshold": .9,
+        }]
+
+    path = config_file(tmp_path, change=change)
+    (tmp_path / "assets/equipment_only.png").unlink()
+    DailySession(path, Path("adb.exe"), "emulator-5580", 20,
+                 user_options={"equipmentStamina": False})
+    with pytest.raises(ConfigError, match="equipment_only"):
+        DailySession(path, Path("adb.exe"), "emulator-5580", 20)
 
 
 def test_local_secret_session_runs_only_shared_secret_route_after_scan(tmp_path, monkeypatch):

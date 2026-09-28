@@ -8,6 +8,8 @@ import hmac
 import re
 import time
 
+from .user_options import UserOptions, parse_user_options
+
 
 UUID_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", re.IGNORECASE)
 TOKEN_PATTERN = re.compile(r"[0-9a-f]{64}", re.IGNORECASE)
@@ -53,6 +55,7 @@ class TaskRecord:
     daily_started_at: float | None = None
     daily_error_code: str | None = None
     authorized_at: float | None = None
+    user_options: UserOptions = field(default_factory=parse_user_options)
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {
@@ -90,7 +93,15 @@ def parse_submission(body: object) -> TaskRecord:
             or not isinstance(created_at, str) or not isinstance(expires_at, str)):
         raise HttpError(400, "Expected UUID id, 64-character hex accessToken and ISO timestamps")
     expires = _validate_timestamps(created_at, expires_at)
-    return TaskRecord(task_id.lower(), token, created_at, expires_at, expires)
+    return TaskRecord(task_id.lower(), token, created_at, expires_at, expires,
+                      user_options=_user_options(body))
+
+
+def _user_options(body: dict) -> UserOptions:
+    try:
+        return parse_user_options(body.get("userOptions", {}))
+    except ValueError:
+        raise TaskValidationError("invalid_task_payload", "Invalid user options") from None
 
 
 def parse_queue_task(body: object, key_prefix: str) -> TaskRecord:
@@ -107,4 +118,5 @@ def parse_queue_task(body: object, key_prefix: str) -> TaskRecord:
         raise TaskValidationError("invalid_task_payload", "Invalid queue task")
     created_at, expires_at = body.get("createdAt"), body.get("expiresAt")
     expires = _validate_timestamps(created_at, expires_at)
-    return TaskRecord(task_id, "", created_at, expires_at, expires)
+    return TaskRecord(task_id, "", created_at, expires_at, expires,
+                      user_options=_user_options(body))
