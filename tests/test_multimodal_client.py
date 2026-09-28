@@ -60,6 +60,29 @@ def test_missing_key_fails_before_network(tmp_path):
         mm.MultimodalClient(settings, asset_root=tmp_path)
 
 
+@pytest.mark.parametrize('content,finish,reason', [
+    ('private-response', 'stop', 'invalid_json_or_response_structure'),
+    ('[]', 'stop', 'result_not_object'),
+    ('{"secret": "private-response"}', 'length', 'generation_not_complete'),
+])
+def test_invalid_response_logs_safe_details_with_transport_request_id(tmp_path, caplog, content, finish, reason):
+    import re
+    from naruto_daily.multimodal.diagnostics import model_request_context
+
+    caplog.set_level('INFO', logger='naruto_daily')
+    client = mm.MultimodalClient(config(tmp_path), asset_root=tmp_path,
+                                 open_request=lambda *a, **k: response(content, finish))
+    with model_request_context('主界面识别/home'):
+        with pytest.raises(mm.MultimodalError):
+            client.complete_json(b'private-screenshot', 'private-prompt')
+
+    assert f'reason={reason}' in caplog.text and 'scene=主界面识别/home' in caplog.text
+    assert 'status=200' in caplog.text and 'response_bytes=' in caplog.text
+    assert len(set(re.findall(r'request_id=(\w+)', caplog.text))) == 1
+    for private in ('test-secret', 'private-response', 'private-screenshot', 'private-prompt'):
+        assert private not in caplog.text
+
+
 def test_client_resolves_model_url_and_key_from_environment(tmp_path, monkeypatch):
     (tmp_path / '.env').write_text(
         'MULTIMODAL_API_KEY=file-key\nMULTIMODAL_BASE_URL=https://file.test/v1\n'

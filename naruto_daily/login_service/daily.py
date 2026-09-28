@@ -172,7 +172,9 @@ class DailySession:
         actions = deepcopy(self._login_actions[1:] if self._already_in_game else self._login_actions)
         if not self._already_in_game:
             actions[0]["timeout_seconds"] = self._remaining()
+        LOGGER.info("开始扫码登录收尾，执行登录收尾动作；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
         self._runner().run(actions)
+        LOGGER.info("登录收尾动作已完成，额外复核主界面；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
         images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
         center, _ = images.find(self._main_marker, deadline=images.elapsed + self._remaining())
         if center is None:

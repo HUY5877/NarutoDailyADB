@@ -12,6 +12,7 @@ from typing import Callable
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalClient
+from naruto_daily.multimodal.diagnostics import model_request_context
 from naruto_daily.multimodal.prompts import BATTLE_COMPLETION
 
 
@@ -89,8 +90,9 @@ def run_battle(
                 if model is not None:
                     # 正常的“仍在战斗”由总时限约束，不累计消耗其他阶段的识别次数上限。
                     model_calls += 1
-                    result = model.complete_json(screenshot, BATTLE_COMPLETION,
-                                                 timeout_seconds=remaining())
+                    with model_request_context('战斗完成检查'):
+                        result = model.complete_json(screenshot, BATTLE_COMPLETION,
+                                                     timeout_seconds=remaining())
                     if remaining() <= 0:
                         break
                     finished = result.get('finished')

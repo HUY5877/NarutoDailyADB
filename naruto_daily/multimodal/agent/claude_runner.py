@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import math
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
@@ -21,11 +22,13 @@ from claude_agent_sdk import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from naruto_daily.common.visual import VisualError
+from naruto_daily.multimodal.diagnostics import model_request_context, safe_exception_details
 from naruto_daily.multimodal.transport import MAX_REQUEST_RETRIES, request_budget
 from .completion_watch import CompletionDetected, CompletionWatch
 
 Observation = str
 COMPLETION_RETRIES = 3
+LOGGER = logging.getLogger('naruto_daily')
 
 
 def _stop_owned_cli(sdk) -> None:
@@ -226,13 +229,15 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
     if base_url.endswith('/v1'):
         base_url = base_url[:-3].rstrip('/')
     try:
-        watch.check(initial_png)
-        return asyncio.run(asyncio.wait_for(
-            watch.run(session()), timeout=request_budget(timeout) * (max_steps + 1 + COMPLETION_RETRIES)))
+        with model_request_context('导航/ClaudeSDK'):
+            watch.check(initial_png)
+            return asyncio.run(asyncio.wait_for(
+                watch.run(session()), timeout=request_budget(timeout) * (max_steps + 1 + COMPLETION_RETRIES)))
     except CompletionDetected as exc:
         return result(True, exc.reason)
     except AgentError:
         raise
-    except Exception:
+    except Exception as exc:
+        LOGGER.error('导航模型调用失败：场景=导航/ClaudeSDK；%s', safe_exception_details(exc))
         raise AgentError('导航模型请求或工具参数异常，已停止') from None
 

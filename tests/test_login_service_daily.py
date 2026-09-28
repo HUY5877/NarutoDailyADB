@@ -2,6 +2,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -214,6 +215,43 @@ def test_login_cleanup_cannot_start_before_authorization(tmp_path):
     with pytest.raises(RuntimeError, match="先完成扫码授权"):
         session.finish_login(clock() + 300)
     assert calls == []
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_login_cleanup_logs_extra_main_check_and_preserves_its_failure(tmp_path, monkeypatch, caplog, failed):
+    session, clock, calls = session_for(tmp_path)
+    session._authorized = True
+    failure = RuntimeError('main check failed')
+    observations = []
+
+    def run(actions):
+        assert '开始扫码登录收尾' in caplog.text
+        assert '登录收尾动作已完成，额外复核主界面' not in caplog.text
+        assert actions[0]['type'] == 'finish_login_authorization'
+        assert actions[0]['timeout_seconds'] == 30
+        clock.sleep(4)
+
+    def match(png, path, roi, threshold):
+        assert '登录收尾动作已完成，额外复核主界面' in caplog.text
+        observations.append(path.name)
+        if failed:
+            raise failure
+        return (1800, 500), 1.0
+
+    monkeypatch.setattr(session, '_runner', lambda: SimpleNamespace(run=run))
+    session._template_matcher = match
+    with caplog.at_level('INFO', logger='naruto_daily'):
+        if failed:
+            with pytest.raises(RuntimeError) as caught:
+                session.finish_login(clock() + 30)
+            assert caught.value is failure
+        else:
+            session.finish_login(clock() + 30)
+    assert observations == ['main_reward_label.png']
+    assert session._logged_in is not failed
+    assert '外围剩余时间 30.00 秒' in caplog.text
+    assert '外围剩余时间 26.00 秒' in caplog.text
+    assert len(calls) == 1 and 'screencap' in calls[0][0]
 
 
 @pytest.mark.parametrize("marker", [

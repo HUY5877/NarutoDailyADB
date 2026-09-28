@@ -3,13 +3,18 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from pathlib import Path
 from urllib.request import Request
 
 from .transport import MultimodalError, MultimodalRequestError, request_with_retry
+from .diagnostics import current_model_scene, safe_exception_details
 from naruto_daily.common.environment import (
     EnvironmentConfigError, read_environment, require_environment, resolve_environment,
 )
+
+
+LOGGER = logging.getLogger('naruto_daily')
 
 
 class MultimodalClient:
@@ -45,18 +50,28 @@ class MultimodalClient:
         request = Request(self.config['base_url'].rstrip('/') + '/chat/completions',
                           data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
                           headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self._key})
-        body = request_with_retry(
+        response = request_with_retry(
             request, request_timeout=float(self.config['timeout_seconds']), timeout_seconds=timeout_seconds,
             open_request=self._open, sleep=self._sleep, clock=self._clock,
-        ).body
+        )
+        body = response.body
+
+        def log_invalid_response(reason, exc=None):
+            LOGGER.error('[多模态结果无效] request_id=%s scene=%s status=%d response_bytes=%d reason=%s%s',
+                         response.request_id, current_model_scene(), response.status, len(body), reason,
+                         ' ' + safe_exception_details(exc) if exc is not None else '')
+
         try:
             result = json.loads(body)
             choice = result['choices'][0]
             if choice.get('finish_reason') != 'stop':
+                log_invalid_response('generation_not_complete')
                 raise MultimodalError('多模态结果未完整生成，已停止本次识别')
             parsed = json.loads(choice['message']['content'])
             if not isinstance(parsed, dict):
+                log_invalid_response('result_not_object')
                 raise MultimodalError('多模态结果必须是 JSON 对象')
             return parsed
-        except (ValueError, KeyError, IndexError, TypeError, UnicodeError):
+        except (ValueError, KeyError, IndexError, TypeError, UnicodeError) as exc:
+            log_invalid_response('invalid_json_or_response_structure', exc)
             raise MultimodalError('多模态 API 返回了无法解析的结果') from None

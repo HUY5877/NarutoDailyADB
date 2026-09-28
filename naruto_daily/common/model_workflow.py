@@ -8,6 +8,7 @@ from pathlib import Path
 from .recognition import ImageRecognition
 from .visual import VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalClient, MultimodalRequestError
+from naruto_daily.multimodal.diagnostics import model_request_context
 
 LOGGER = logging.getLogger('naruto_daily')
 
@@ -54,7 +55,8 @@ class ModelWorkflow:
                 LOGGER.info('[%s 第%d/%d次] 模型请求开始：阶段剩余 %.2f 秒，调用超时 %.2f 秒',
                             name, attempt, max_calls, remaining, call_timeout)
                 request_started = time.monotonic()
-                result = self.model.complete_json(png, prompt, timeout_seconds=remaining)
+                with model_request_context(name):
+                    result = self.model.complete_json(png, prompt, timeout_seconds=remaining)
                 LOGGER.info('[%s 第%d/%d次] 模型请求返回：耗时 %.2f 秒',
                             name, attempt, max_calls, time.monotonic() - request_started)
                 remaining_budget()  # 迟到的模型响应不能触发后续点击。

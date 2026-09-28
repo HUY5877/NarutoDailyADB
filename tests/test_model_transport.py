@@ -1,5 +1,6 @@
 import io
 import logging
+import re
 import threading
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
@@ -9,6 +10,7 @@ import pytest
 from naruto_daily.common.model_workflow import ModelWorkflow
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal import transport
+from naruto_daily.multimodal.diagnostics import model_request_context
 
 
 class Clock:
@@ -50,10 +52,11 @@ def test_transient_http_errors_retry_every_ten_seconds(status, caplog):
     assert 'private.invalid' not in caplog.text + str(caught.value)
 
 
-def test_rate_limit_server_and_network_errors_use_the_same_retry_delay():
+def test_rate_limit_server_and_network_errors_use_the_same_retry_delay(caplog):
     clock = Clock()
     calls = []
     errors = [failure(429), failure(503), URLError('temporary network error')]
+    caplog.set_level(logging.INFO, logger='naruto_daily')
 
     def request(*args, **kwargs):
         calls.append(clock.now)
@@ -65,6 +68,11 @@ def test_rate_limit_server_and_network_errors_use_the_same_retry_delay():
                                           open_request=request, sleep=clock.sleep, clock=clock)
     assert result.body == b'success'
     assert calls == [0, 10, 20, 30] and clock.sleeps == [10, 10, 10]
+    succeeded = next(item for item in caplog.messages if '[多模态请求成功]' in item)
+    assert 'attempt=4/4' in succeeded and 'retries=3/3' in succeeded
+    assert 'elapsed=30.00s' in succeeded and 'attempt_elapsed=0.00s' in succeeded
+    assert 'error_type=' not in succeeded
+    assert f'request_id={result.request_id}' in succeeded
 
 
 @pytest.mark.parametrize('budget,expected_calls', [(5, [0]), (10, [0]), (25, [0, 10, 20])])
@@ -251,3 +259,93 @@ def test_cancellation_interrupts_ten_second_retry_wait():
     finally:
         cancelled.set()
         thread.join(timeout=2)
+
+
+def test_timeout_exhausting_phase_budget_logs_first_attempt_and_real_cause(caplog):
+    clock = Clock()
+    calls = []
+    caplog.set_level(logging.INFO, logger='naruto_daily')
+
+    def request(*args, timeout):
+        calls.append(timeout)
+        clock.now += timeout
+        raise URLError(TimeoutError('private-key https://private.invalid/request'))
+
+    with model_request_context('登录收尾主界面'), pytest.raises(
+            transport.MultimodalRequestError, match='剩余时间不足'):
+        transport.request_with_retry(
+            Request('https://private.invalid', data=b'private-prompt',
+                    headers={'Authorization': 'Bearer private-key'}),
+            request_timeout=30, timeout_seconds=30, open_request=request,
+            sleep=clock.sleep, clock=clock)
+
+    assert calls == [30] and clock.sleeps == []
+    messages = [item.getMessage() for item in caplog.records
+                if 'request_id=' in item.getMessage()]
+    failure_log = next(item for item in messages if 'stop_reason=budget_insufficient' in item)
+    for field, value in [('budget', 30), ('remaining', 0), ('elapsed', 30),
+                         ('attempt_elapsed', 30), ('request_timeout', 30)]:
+        assert float(re.search(rf'\b{field}=([0-9.]+)', failure_log).group(1)) == value
+    assert 'scene=登录收尾主界面' in failure_log
+    assert 'attempt=1/4' in failure_log
+    assert 'retries=0/3' in failure_log
+    assert 'URLError' in failure_log and 'TimeoutError' in failure_log
+    assert len(set(re.findall(r'\brequest_id=([^\s,;，；]+)', '\n'.join(messages)))) == 1
+    assert '进行第1/3次接口重试' not in caplog.text
+    for secret in ['private-key', 'private.invalid', 'private-prompt']:
+        assert secret not in caplog.text
+
+
+@pytest.mark.parametrize('status,expected_attempts,stop_reason', [
+    (401, 1, 'non_retryable'), (429, 4, 'retries_exhausted'),
+])
+def test_http_failure_logs_status_reason_and_one_id_per_logical_request(
+        caplog, status, expected_attempts, stop_reason):
+    clock = Clock()
+    calls = []
+    caplog.set_level(logging.INFO, logger='naruto_daily')
+
+    def request(*args, **kwargs):
+        calls.append(1)
+        raise HTTPError('https://private.invalid', status, 'private-key',
+                        {'Authorization': 'Bearer private-key'}, io.BytesIO(b'private-response'))
+
+    with model_request_context('主界面二次核对'), pytest.raises(transport.MultimodalRequestError):
+        transport.request_with_retry(Request('https://private.invalid'), request_timeout=30,
+                                     open_request=request, sleep=clock.sleep, clock=clock)
+
+    assert len(calls) == expected_attempts
+    messages = [item.getMessage() for item in caplog.records
+                if 'request_id=' in item.getMessage()]
+    final_log = next(item for item in messages if f'stop_reason={stop_reason}' in item)
+    assert f'attempt={expected_attempts}/4' in final_log
+    assert f'status={status}' in final_log or f'http_status={status}' in final_log
+    assert 'HTTPError' in final_log
+    assert 'scene=主界面二次核对' in final_log
+    assert len(set(re.findall(r'\brequest_id=([^\s,;，；]+)', '\n'.join(messages)))) == 1
+    for secret in ['private-key', 'private.invalid', 'private-response']:
+        assert secret not in caplog.text
+
+
+def test_response_body_timeout_preserves_http_status_and_read_phase(caplog):
+    clock = Clock()
+    caplog.set_level(logging.INFO, logger='naruto_daily')
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def read(self, _size):
+            clock.now += 30
+            raise TimeoutError('private-response-body')
+
+    response = Response()
+    with pytest.raises(transport.MultimodalRequestError, match='剩余时间不足'):
+        transport.request_with_retry(Request('https://example.test'), request_timeout=30,
+                                     timeout_seconds=30, open_request=lambda *a, **k: response,
+                                     sleep=clock.sleep, clock=clock)
+
+    final_log = next(item for item in caplog.messages if 'stop_reason=budget_insufficient' in item)
+    assert 'phase=read_body' in final_log and 'status=200' in final_log
+    assert 'error_type=TimeoutError' in final_log
+    assert 'private-response-body' not in caplog.text
+    assert response.closed and not clock.sleeps

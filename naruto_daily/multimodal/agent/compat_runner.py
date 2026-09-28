@@ -18,6 +18,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
 
 from naruto_daily.common.visual import VisualError
+from naruto_daily.multimodal.diagnostics import model_request_context, safe_exception_details
 from naruto_daily.multimodal.transport import ModelAsyncClient
 from .completion_watch import CompletionDetected, CompletionWatch
 
@@ -254,14 +255,16 @@ def run_agent(
                 return run.output
 
     try:
-        watch.check(initial_png)
-        return asyncio.run(watch.run(navigate()))
+        with model_request_context('导航/兼容SDK'):
+            watch.check(initial_png)
+            return asyncio.run(watch.run(navigate()))
     except CompletionDetected as exc:
         return result(True, exc.reason)
     except _NavigationDone as exc:
         return exc.result
-    except (AgentRunError, OpenAIError):
+    except (AgentRunError, OpenAIError) as exc:
         # 供应商错误可能含请求信息，面向任务只暴露错误类别，不输出密钥或响应正文。
+        LOGGER.error('导航模型调用失败：场景=导航/兼容SDK；%s', safe_exception_details(exc))
         raise AgentError('导航模型请求或工具参数异常，已停止') from None
 
 

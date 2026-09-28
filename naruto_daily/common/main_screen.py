@@ -9,6 +9,7 @@ import numpy as np
 
 from .visual import VisualError
 from naruto_daily.multimodal.client import MultimodalClient
+from naruto_daily.multimodal.diagnostics import model_request_context
 
 LOGGER = logging.getLogger('naruto_daily')
 MAIN_TARGETS = {
@@ -91,22 +92,30 @@ class MainScreenRecognition:
 
     def match(self, png, target, timeout_seconds=None):
         budget = self.timeout if timeout_seconds is None else min(self.timeout, timeout_seconds)
-        if budget <= 0:
-            raise VisualError('主界面模型识别超时，未继续点击')
         started = time.monotonic()
-        frame = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
-        if frame is None:
-            raise VisualError('主界面截图无法解析')
-        height, width = frame.shape[:2]
-        preview, centers = button_candidates(frame, target['main_menu'])
-        remaining = budget - (time.monotonic() - started)
-        if remaining <= 0:
-            raise VisualError('主界面截图处理超时，未继续点击')
-        LOGGER.info('主界面模型识别：%s，调用预算 %.2f 秒', target['name'], budget)
-        result = self.model.complete_json(preview, main_screen_prompt(target['main_menu']), timeout_seconds=remaining)
-        if time.monotonic() - started >= budget:
-            raise VisualError('主界面模型响应已超时，忽略结果，未继续点击')
-        center, score = parse_main_screen(result, target['main_menu'], width, height, centers)
+        menu = target['main_menu']
+        try:
+            if budget <= 0:
+                raise VisualError('主界面模型识别超时，未继续点击')
+            frame = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+            if frame is None:
+                raise VisualError('主界面截图无法解析')
+            height, width = frame.shape[:2]
+            preview, centers = button_candidates(frame, menu)
+            remaining = budget - (time.monotonic() - started)
+            if remaining <= 0:
+                raise VisualError('主界面截图处理超时，未继续点击')
+            LOGGER.info('主界面模型识别：%s，调用预算 %.2f 秒', target['name'], budget)
+            with model_request_context(f'主界面识别/{menu}'):
+                result = self.model.complete_json(preview, main_screen_prompt(menu), timeout_seconds=remaining)
+            if time.monotonic() - started >= budget:
+                raise VisualError('主界面模型响应已超时，忽略结果，未继续点击')
+            center, score = parse_main_screen(result, menu, width, height, centers)
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            LOGGER.error('主界面模型识别失败：目标=%s，异常类型=%s，已耗时 %.2f 秒，本次识别总预算 %.2f 秒，剩余预算 %.2f 秒',
+                         menu, type(exc).__name__, elapsed, budget, max(0.0, budget - elapsed))
+            raise
         LOGGER.info('主界面模型识别：%s，%s，耗时 %.2f 秒',
                     target['name'], f'已确认 {center}' if center else '未确认', time.monotonic() - started)
         return center, score

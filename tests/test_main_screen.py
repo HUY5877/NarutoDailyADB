@@ -1,4 +1,5 @@
 from copy import deepcopy
+from contextlib import contextmanager
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +41,40 @@ def png(width=1920, height=1080, color=100):
 def fake_model(monkeypatch, complete):
     monkeypatch.setattr(main_screen, 'MultimodalClient',
                         lambda *a, **kw: SimpleNamespace(complete_json=complete))
+
+
+def test_model_failure_logs_scene_budget_and_type_without_payload_and_preserves_error(monkeypatch, caplog):
+    now, contexts, active = [0.0], [], []
+    failure = RuntimeError('secret-api-key private-prompt screenshot-payload')
+    monkeypatch.setattr(main_screen.time, 'monotonic', lambda: now[0])
+
+    @contextmanager
+    def context(scene):
+        contexts.append(scene)
+        active.append(scene)
+        try:
+            yield
+        finally:
+            active.pop()
+
+    def complete(image, prompt, *, timeout_seconds):
+        assert active == ['主界面识别/home']
+        assert timeout_seconds == 6
+        now[0] = 4
+        raise failure
+
+    monkeypatch.setattr(main_screen, 'model_request_context', context)
+    fake_model(monkeypatch, complete)
+    recognizer = main_screen.MainScreenRecognition(MODEL, ROOT)
+    with caplog.at_level('ERROR', logger='naruto_daily'):
+        with pytest.raises(RuntimeError) as caught:
+            recognizer.match(png(96, 54), target('home'), timeout_seconds=6)
+    assert caught.value is failure
+    assert contexts == ['主界面识别/home'] and active == []
+    assert '目标=home' in caplog.text and '异常类型=RuntimeError' in caplog.text
+    assert '已耗时 4.00 秒' in caplog.text
+    assert '本次识别总预算 6.00 秒' in caplog.text and '剩余预算 2.00 秒' in caplog.text
+    assert not any(text in caplog.text for text in ('secret-api-key', 'private-prompt', 'screenshot-payload'))
 
 
 @pytest.mark.parametrize('size', [(1920, 1080), (1169, 660), (960, 540)])
