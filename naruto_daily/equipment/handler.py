@@ -29,15 +29,14 @@ def first_material(data, selected):
     require_page(data, 'equipment')
     if type(data.get('selected_slot')) is not int or data['selected_slot'] != selected:
         raise VisualError('当前选中的装备与目标不一致')
-    states = data.get('materials')
-    if (not isinstance(states, list) or len(states) != 6
-            or any(s not in ('sweepable', 'filled', 'craftable', 'equipable') for s in states)
-            or type(data.get('can_advance')) is not bool):
-        raise VisualError('装备材料状态未读全')
-    missing = next((i + 1 for i, state in enumerate(states) if state != 'filled'), None)
-    if missing is None and not data['can_advance']:
-        raise VisualError('材料已齐但没有确认可用的进阶按钮')
-    return missing
+    index, state = data.get('material_slot'), data.get('material_state')
+    if state == 'advance' and index is None and data.get('can_advance') is True:
+        return None
+    if (state not in ('sweepable', 'craftable', 'equipable')
+            or type(index) is not int or not 1 <= index <= 6
+            or data.get('can_advance') is not False):
+        raise VisualError('未确认首个可扫荡材料或其它可用操作；可扫荡提示可能闪烁，需要重新截图')
+    return index
 
 
 def _overview(data):
@@ -176,31 +175,31 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
         previous_advance = None
         LOGGER.info('[装备养成 第%d轮] 选择第%d件装备，进阶+%d', round_number, slot, levels[slot - 1])
         flow.tap(EQUIPMENT_POINTS[slot - 1])
+        info_slots = set()
         def validate_materials(data):
-            first_material(data, slot)
+            index = first_material(data, slot)
+            if index in info_slots:
+                raise VisualError(f'第{index}格已确认是只读成品信息卡，未重复点击')
             return data
-        materials = flow.read('装备成品从左到右识别', prompts.MATERIALS, validate_materials)
+        materials = flow.read('首个可扫荡材料识别', prompts.MATERIALS, validate_materials)
         index = first_material(materials, slot)
-        signature = (levels, slot, tuple(materials['materials']))
+        signature = (levels, slot, index, materials['material_state'])
         if unchanged_material == signature:
             raise VisualError('合成装备后材料状态未变化，已停止循环')
         unchanged_material = None
         while index is not None:
+            LOGGER.info('选中第%d格材料，模型确认操作：%s', index, materials['material_state'])
             flow.tap(MATERIAL_POINTS[index - 1])
             button = flow.read('装备材料详情', prompts.MATERIAL_ENTRY, _material_entry)
             if button != 'material_info':
                 break
-            LOGGER.info('第%d格打开成品信息卡，关闭后复查是否已装备', index)
+            LOGGER.info('第%d格打开只读成品信息卡，关闭后重新识别首个可扫荡材料', index)
+            info_slots.add(index)
             _close_layers(flow, 'material_info')
-            materials = flow.read('成品信息卡关闭后材料复查', prompts.MATERIALS, validate_materials)
-            if materials['materials'][index - 1] != 'filled':
-                raise VisualError(f'第{index}格信息卡已关闭，但未确认已装备，已停止')
-            next_index = first_material(materials, slot)
-            if next_index is not None and next_index <= index:
-                raise VisualError('已确认的成品格再次显示未装备，已停止重复点击')
-            LOGGER.info('确认第%d格成品已装备，继续检查后面的材料', index)
-            index = next_index
-            signature = (levels, slot, tuple(materials['materials']))
+            prompt = prompts.MATERIALS + f'\n本轮已确认第{sorted(info_slots)}格仅打开只读成品信息卡，不能再次选择这些格子。'
+            materials = flow.read('成品信息卡关闭后重新识别扫荡目标', prompt, validate_materials)
+            index = first_material(materials, slot)
+            signature = (levels, slot, index, materials['material_state'])
         if index is None:
             LOGGER.info('当前装备六个成品均已齐全，执行进阶')
             flow.button('advance')

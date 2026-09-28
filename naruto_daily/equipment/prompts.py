@@ -10,14 +10,19 @@ selected_slot为发亮边框选中的装备编号1到6。所有数字必须读�
 '''
 
 MATERIALS = BASE + '''确认前景是装备总览，无弹层。读取当前发光选中装备的编号1到6，顺序为左上、中上、右上、左下、中下、右下。
-读取右侧下方“装备进阶”区域横排6个成品框，从左到右返回状态。
-返回{"page":"equipment","selected_slot":5,"materials":["sweepable","filled","filled","filled","filled","sweepable"],"can_advance":false}。
-状态：sweepable=明确有“可扫荡”字样；craftable=明确可合成；equipable=明确可装备/添加；
-filled=已装好的完整彩色成品，且没有可扫荡、加号或待添加提示；unknown=无法判断。
-equipable必须有该成品格自身的加号、“可装备”或待添加标记。完整彩色图标且无这些标记应为filled。
-成品的金色边框、图标颜色、绿色属性数字和全局“一键添加”按钮都不能作为某格equipable的依据。
-灰色占位图不是已装备；若界面尚未加载出加号或“可扫荡”等标记，该格返回unknown，不能猜filled。
-右下角明确显示可用的“进阶”按钮时can_advance=true，否则false。不要把上方“升级”当作进阶。
+只需找出右侧下方“装备进阶”横排6格中，从左到右第一个明确显示“可扫荡”的材料格。
+找到后立即返回这一格，不需要分类全部六格，不要返回materials数组，也不要选择它前面已经装好的彩色成品。
+只返回字段page（equipment）、selected_slot（选中装备编号）、material_slot（目标材料格编号1到6或null）、
+material_state（sweepable/craftable/equipable/advance/unknown）、can_advance（布尔值）。
+优先级：只要有明确的“可扫荡”字样，material_state=sweepable，material_slot=最左边该格编号，can_advance=false。
+“可扫荡”文字和加号会闪烁，截图可能恰好看不到。灰暗、半透明的材料占位图不能据此判为已装备，
+单凭材料图标、加号、金色边框或材料描述也不能猜测可扫荡。如果提示暂未显示或无法确定最左边目标，
+返回material_state=unknown、material_slot=null、can_advance=false，由程序等待后重新截图。
+已经装好的完整彩色成品不作为点击目标，不要为了确认状态去点开成品信息卡。
+仅在没有可扫荡目标、没有尚待确认的灰色占位格，且某格明确显示可合成或可装备/添加时，
+才返回最左边该格编号和craftable或equipable。全局“一键添加”、绿色属性数字不作为某格可操作的依据。
+只有六格已装齐且右下角明确显示可用“进阶”按钮时，返回advance、material_slot=null、can_advance=true。
+不要把上方“升级”按钮当作进阶。看不清时返回unknown，不要猜测。
 '''
 
 MATERIAL = BASE + '''判断前景是否是装备成品/材料详情面板（左侧合成树、底部操作按钮，右侧获取途径）。

@@ -58,9 +58,18 @@ def overview(levels=None):
 
 
 def materials(states=None, advance=False):
+    states = states or ['sweepable', 'filled', 'filled', 'filled', 'filled', 'sweepable']
+    index = next((i for i, state in enumerate(states) if state == 'sweepable'), None)
+    if index is None:
+        index = next((i for i, state in enumerate(states) if state in ('craftable', 'equipable')), None)
     return dict(page='equipment', selected_slot=5,
-                materials=states or ['sweepable', 'filled', 'filled', 'filled', 'filled', 'sweepable'],
+                material_slot=None if index is None else index + 1,
+                material_state=('advance' if advance else 'unknown') if index is None else states[index],
                 can_advance=advance)
+
+
+def material_target(index, state='sweepable'):
+    return dict(page='equipment', selected_slot=5, material_slot=index, material_state=state, can_advance=False)
 
 
 def material(button):
@@ -196,7 +205,7 @@ def test_unreadable_equipment_is_not_guessed(levels):
         lowest_equipment(overview(levels))
 
 
-def test_material_selection_uses_leftmost_missing_slot_and_requires_selected_equipment():
+def test_material_selection_accepts_one_sweep_target_and_requires_selected_equipment():
     assert first_material(materials(['filled', 'sweepable', 'filled', 'sweepable', 'filled', 'filled']), 5) == 2
     assert first_material(materials(['filled'] * 6, True), 5) is None
     with pytest.raises(VisualError):
@@ -205,9 +214,65 @@ def test_material_selection_uses_leftmost_missing_slot_and_requires_selected_equ
         first_material(materials(['filled'] * 6, False), 5)
 
 
+def test_leftmost_sweep_target_opens_slot_four_without_probing_filled_slots(caplog):
+    with caplog.at_level('INFO', logger='naruto_daily'):
+        client, _ = run(overview(), material_target(4), material('sweep'), setup(4),
+                        dict(page='material'), dict(page='equipment'))
+    assert client.taps[:3] == [(525, 610), (1518, 690), CENTERS['one_click_sweep']]
+    assert not any(point in client.taps for point in [(1106, 690), (1244, 690), (1380, 690)])
+    assert '首个可扫荡材料识别' in caplog.text
+    assert '选中第4格材料' in caplog.text
+
+
+def test_blinking_sweep_label_retries_with_fresh_image_before_clicking():
+    class FreshClient(Client):
+        shot = 0
+
+        def screenshot(self):
+            self.shot += 1
+            return str(self.shot).encode()
+
+    client, waits, target_images = FreshClient(), [], []
+
+    class BlinkModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            if 'material_slot' in prompt:
+                target_images.append(png)
+                assert client.taps == [(525, 610)], 'No material may be clicked while the label is hidden'
+            return super().complete_json(png, prompt, **kwargs)
+
+    model = BlinkModel(overview(), material_target(None, 'unknown'), material_target(4),
+                       material('sweep'), setup(4), dict(page='material'), dict(page='equipment'))
+    handle_equipment_upgrade(client, action(), model=model, template_matcher=matcher, sleep=waits.append)
+    assert len(target_images) == 2 and target_images[0] != target_images[1]
+    assert client.taps[1] == (1518, 690)
+    assert len(waits) > len(client.taps), 'A hidden label needs a wait before another screenshot'
+
+
+def test_unconfirmed_sweep_target_stops_without_clicking_a_finished_material():
+    client = Client()
+    with pytest.raises(VisualError, match='可扫荡提示可能闪烁'):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), material_target(None, 'unknown'), material_target(None, 'unknown')),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps == [(525, 610)]
+
+
+@pytest.mark.parametrize('bad', [
+    material_target(True), material_target('4'), material_target(0), material_target(7),
+    material_target(4, 'filled'), material_target(4, 'unknown'),
+    dict(material_target(4), can_advance=True),
+    dict(material_target(None, 'advance'), can_advance=False),
+    dict(material_target(4, 'advance'), can_advance=True),
+])
+def test_ambiguous_target_number_or_operation_is_not_clicked(bad):
+    with pytest.raises(VisualError):
+        first_material(bad, 5)
+
+
 def test_filled_material_info_is_closed_and_next_missing_slot_is_opened():
-    before = materials(['filled', 'equipable', 'filled', 'sweepable', 'sweepable', 'sweepable'])
-    after = materials(['filled', 'filled', 'filled', 'sweepable', 'sweepable', 'sweepable'])
+    before = material_target(2)
+    after = material_target(4)
     client, _ = run(
         overview(), before, dict(page='material_info'), dict(page='equipment'), after,
         material('sweep'), setup(4), dict(page='material'), dict(page='equipment'),
@@ -231,11 +296,11 @@ def test_last_filled_material_info_leads_to_advance_after_verification():
 
 def test_multiple_filled_info_cards_continue_forward_without_reopening_them():
     client, _ = run(
-        overview(), materials(['filled', 'equipable', 'equipable', 'sweepable', 'filled', 'filled']),
+        overview(), material_target(2),
         dict(page='material_info'), dict(page='material_info'), dict(page='equipment'),
-        materials(['filled', 'filled', 'equipable', 'sweepable', 'filled', 'filled']),
+        material_target(3),
         dict(page='material_info'), dict(page='equipment'),
-        materials(['filled', 'filled', 'filled', 'sweepable', 'filled', 'filled']),
+        material_target(4),
         material('sweep'), setup(4), dict(page='material'), dict(page='equipment'),
     )
     assert client.taps == [
@@ -245,25 +310,25 @@ def test_multiple_filled_info_cards_continue_forward_without_reopening_them():
     ]
 
 
-def test_info_verification_cannot_reopen_an_earlier_confirmed_filled_slot():
+def test_info_verification_cannot_reopen_a_confirmed_read_only_slot():
     client = Client()
-    with pytest.raises(VisualError, match='已确认的成品格'):
+    with pytest.raises(VisualError, match='第2格已确认是只读'):
         handle_equipment_upgrade(client, action(), model=Model(
-            overview(), materials(['filled', 'equipable', 'filled', 'sweepable', 'filled', 'filled']),
+            overview(), material_target(2),
             dict(page='material_info'), dict(page='equipment'),
-            materials(['equipable', 'filled', 'filled', 'sweepable', 'filled', 'filled'])),
+            material_target(2), material_target(2)),
             template_matcher=matcher, sleep=lambda _: None)
     assert client.taps == [(525, 610), (1244, 690), (1600, 920)]
 
 
 @pytest.mark.parametrize('state', ['equipable', 'sweepable', 'craftable'])
-def test_material_info_does_not_skip_slot_without_filled_confirmation(state):
+def test_material_info_cannot_reselect_the_same_slot_under_another_action(state):
     client = Client()
-    before = materials(['filled', 'equipable', 'filled', 'sweepable', 'sweepable', 'sweepable'])
-    after = materials(['filled', state, 'filled', 'sweepable', 'sweepable', 'sweepable'])
-    with pytest.raises(VisualError, match='第2格.*已装备'):
+    before = material_target(2)
+    after = material_target(2, state)
+    with pytest.raises(VisualError, match='第2格已确认是只读'):
         handle_equipment_upgrade(client, action(), model=Model(
-            overview(), before, dict(page='material_info'), dict(page='equipment'), after),
+            overview(), before, dict(page='material_info'), dict(page='equipment'), after, after),
             template_matcher=matcher, sleep=lambda _: None)
     assert client.taps == [(525, 610), (1244, 690), (1600, 920)]
 
