@@ -20,6 +20,7 @@ from pydantic_ai.usage import UsageLimits
 
 from naruto_daily.common.visual import VisualError
 from naruto_daily.multimodal.transport import model_api_connection
+from .completion_watch import CompletionDetected, CompletionWatch
 
 LOGGER = logging.getLogger('naruto_daily')
 Observation = Annotated[str, Field(strict=True, min_length=1, max_length=2000, pattern=r'\S')]
@@ -134,6 +135,7 @@ def run_agent(
     client, model, goal: str, *, joystick: Joystick, max_steps: int = 50,
     settle_seconds: float = 0.5, sleep: Callable[[float], None] = time.sleep,
     evidence_type: type[NavigationEvidence] = GoalEvidence, instructions: str = '',
+    completion_probe: Callable[[bytes], str | None] | None = None,
 ) -> AgentResult:
     """业务模块直接调用；最多 50 次移动及最后一次截图确认，无子进程。"""
     if not isinstance(goal, str) or not goal.strip():
@@ -159,17 +161,20 @@ def run_agent(
     timeout = connection['timeout_seconds']
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError('模型请求超时必须是正数')
+    watch = CompletionWatch(client, completion_probe)
     initial_png = client.screenshot()
     history: list[AgentStep] = []
     hooks = Hooks()
 
     @hooks.on.before_model_request
     async def latest_frame(ctx, request_context):
+        watch.raise_if_complete()
         request_context.messages = _latest_image_only(request_context.messages)
         return request_context
 
     @hooks.on.after_model_request
     async def single_action(ctx, *, request_context, response):
+        watch.check_fresh()
         calls = [part for part in response.parts if isinstance(part, ToolCallPart)]
         if response.finish_reason != 'tool_call' or len(calls) != 1:
             raise AgentError('模型每轮必须完整返回一个导航工具调用，已停止')
@@ -197,6 +202,7 @@ def run_agent(
     # 注解使用调用方传入的 Pydantic 类型；SDK 直接把其字段生成原生工具 schema。
     async def finish(evidence: evidence_type) -> AgentResult:
         """依据本轮截图事实结束导航；不接受独立的 reached 声明。"""
+        watch.raise_if_complete()
         state = state_of(evidence)
         if state == 'pending' and len(history) < max_steps:
             raise ModelRetry(f'本轮事实尚不满足目标完成条件；本轮证据：{evidence.model_dump_json()}。'
@@ -222,6 +228,7 @@ def run_agent(
                     @agent.tool_plain(sequential=True, retries=0)
                     async def move(evidence: move_evidence_type) -> ToolReturn:
                         """沿一个方向短距离移动一次，并获取移动后的新截图。"""
+                        watch.check_fresh()
                         state = state_of(evidence)
                         if state == 'reached':
                             raise _NavigationDone(result(True, evidence.observation))
@@ -232,10 +239,12 @@ def run_agent(
                         history.append(AgentStep(evidence.observation, direction))
                         LOGGER.info('[导航 %d/%d] 方向=%s；移动后重新截图', len(history), max_steps, direction)
                         sleep(settle_seconds)
+                        png = client.screenshot()
+                        watch.check(png)
                         return ToolReturn(
                             return_value=f'已移动 {len(history)}/{max_steps} 步，剩余 {max_steps - len(history)} 步。',
                             content=['请观察移动后的新截图，再判断是否到达。',
-                                     BinaryContent(data=client.screenshot(), media_type='image/png')],
+                                     BinaryContent(data=png, media_type='image/png')],
                         )
 
                     run = await agent.run(
@@ -247,7 +256,10 @@ def run_agent(
                     return run.output
 
     try:
-        return asyncio.run(navigate())
+        watch.check(initial_png)
+        return asyncio.run(watch.run(navigate()))
+    except CompletionDetected as exc:
+        return result(True, exc.reason)
     except _NavigationDone as exc:
         return exc.result
     except (AgentRunError, OpenAIError):

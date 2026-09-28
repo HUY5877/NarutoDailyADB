@@ -18,8 +18,7 @@ from naruto_daily.common.visual import VisualError
 
 LOGGER = logging.getLogger('naruto_daily')
 MAX_REQUEST_RETRIES = 3
-REQUEST_RETRY_SECONDS = 3
-RATE_LIMIT_RETRY_SECONDS = 10
+REQUEST_RETRY_SECONDS = 10
 RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 
@@ -48,18 +47,22 @@ class ModelResponse:
 
 
 def request_budget(timeout):
-    # 默认预算和 SDK 超时需容纳全部限流等待；调用方的阶段截止时间仍优先。
-    retry_seconds = max(REQUEST_RETRY_SECONDS, RATE_LIMIT_RETRY_SECONDS)
-    return float(timeout) * (MAX_REQUEST_RETRIES + 1) + retry_seconds * MAX_REQUEST_RETRIES
+    # 默认预算和 SDK 超时需容纳全部重试等待；调用方的阶段截止时间仍优先。
+    return float(timeout) * (MAX_REQUEST_RETRIES + 1) + REQUEST_RETRY_SECONDS * MAX_REQUEST_RETRIES
 
 
 def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_request=None,
-                       sleep=None, clock=None, max_response_bytes=1_048_576):
+                       sleep=None, clock=None, max_response_bytes=1_048_576, cancel_event=None):
     open_request = open_request or build_opener(NoRedirect).open
     sleep, clock = sleep or time.sleep, clock or time.monotonic
     budget = request_budget(request_timeout) if timeout_seconds is None else float(timeout_seconds)
     deadline = clock() + budget
+    def check_cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            raise MultimodalRequestError('多模态请求已取消')
+
     for attempt in range(MAX_REQUEST_RETRIES + 1):
+        check_cancelled()
         remaining = deadline - clock()
         if request_timeout <= 0 or remaining <= 0:
             raise MultimodalRequestError('多模态调用已超过本阶段剩余时间')
@@ -71,6 +74,7 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
                 result = ModelResponse(getattr(response, 'status', 200),
                                        headers.get('Content-Type', 'application/json') if headers else 'application/json',
                                        body)
+            check_cancelled()
             if clock() >= deadline:
                 raise MultimodalRequestError('多模态响应已超过本阶段剩余时间')
             if len(body) > max_response_bytes:
@@ -85,18 +89,23 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
         except (URLError, TimeoutError, OSError, HTTPException):
             retryable = True
             message = '多模态 API 网络异常或请求超时'
+        check_cancelled()
         if not retryable:
             raise MultimodalRequestError(message, status_code=status_code) from None
         if attempt == MAX_REQUEST_RETRIES:
             raise MultimodalRequestError(f'{message}；已重试{MAX_REQUEST_RETRIES}次，停止请求',
                                          status_code=status_code) from None
-        retry_seconds = RATE_LIMIT_RETRY_SECONDS if status_code == 429 else REQUEST_RETRY_SECONDS
+        retry_seconds = REQUEST_RETRY_SECONDS
         if deadline - clock() <= retry_seconds:
             raise MultimodalRequestError(f'{message}；本阶段剩余时间不足，停止重试',
                                          status_code=status_code) from None
         LOGGER.warning('%s；%d秒后进行第%d/%d次接口重试',
                        message, retry_seconds, attempt + 1, MAX_REQUEST_RETRIES)
-        sleep(retry_seconds)
+        if cancel_event is None:
+            sleep(retry_seconds)
+        else:
+            cancel_event.wait(retry_seconds)
+            check_cancelled()
 
 
 @contextmanager
@@ -106,12 +115,15 @@ def model_api_connection(connection):
     prefix = urlsplit(upstream).path.rstrip('/')
     token = secrets.token_urlsafe(32)
     timeout = float(connection['timeout_seconds'])
+    cancel_event = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
 
         def do_POST(self):
+            if cancel_event.is_set():
+                return
             auth = self.headers.get('Authorization', '')
             key = self.headers.get('x-api-key', '')
             if not (secrets.compare_digest(auth, 'Bearer ' + token) or secrets.compare_digest(key, token)):
@@ -136,10 +148,13 @@ def model_api_connection(connection):
                               data=self.rfile.read(length), headers=headers)
             try:
                 # 完整读取当前响应再交给 SDK，避免重试半截流导致工具重复执行。
-                result = request_with_retry(request, request_timeout=timeout, max_response_bytes=16_777_216)
+                result = request_with_retry(request, request_timeout=timeout, max_response_bytes=16_777_216,
+                                            cancel_event=cancel_event)
             except MultimodalRequestError as exc:
                 body = json.dumps({'error': {'type': 'api_error', 'message': str(exc)}}).encode()
                 result = ModelResponse(exc.status_code or 502, 'application/json', body)
+            if cancel_event.is_set():
+                return  # 会话已结束，不发布迟到响应，也不再发起上游重试。
             try:
                 self.send_response(result.status)
                 self.send_header('Content-Type', result.content_type)
@@ -150,12 +165,15 @@ def model_api_connection(connection):
                 pass  # SDK 已取消，不重试已经返回的响应。
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    server.daemon_threads = True
+    server.block_on_close = False
     thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .05}, daemon=True)
     thread.start()
     try:
         yield {**connection, 'base_url': f'http://127.0.0.1:{server.server_port}{prefix}',
                'api_key': token, 'timeout_seconds': request_budget(timeout)}
     finally:
+        cancel_event.set()
         server.shutdown()
         server.server_close()
-        thread.join()
+        thread.join(timeout=1)

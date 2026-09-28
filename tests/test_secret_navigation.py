@@ -1,12 +1,13 @@
 """走真实秘境 handler 和 SDK；设备、模型 HTTP 服务与图像匹配为离线边界。"""
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent_fakes import tool_call
 from naruto_daily.common.visual import VisualError
 from naruto_daily.config import load_settings
-from naruto_daily.secret_realm import handler
+from naruto_daily.secret_realm import handler, navigation
 
 ROOT = Path(__file__).parents[1]
 
@@ -110,7 +111,8 @@ def execute(monkeypatch, scenario):
     def battle(*args, **kwargs):
         if scenario.realm == '毒风秘境':
             assert scenario.reach_after is not None and scenario.moves >= scenario.reach_after, '解封前不能攻击'
-            assert scenario.events[-1] == ('navigation', True), '同一次导航事实确认后直接进入战斗'
+            assert [e for e in scenario.events if e[0] != 'screenshot'][-1] == ('navigation', True), \
+                '同一次导航事实确认后直接进入战斗，本地只读截图不得额外导航或调用模型'
         scenario.events.append(('battle',))
         scenario.state = 'room'
     monkeypatch.setattr(handler, 'run_battle', battle)
@@ -123,7 +125,8 @@ def test_poison_realm_navigates_then_battles_only_after_fresh_confirmation(monke
     events = [e[0] for e in scenario.events]
     assert scenario.nav_frames == [b'battle:0', b'battle:1', b'battle:2']
     assert events.index('classify') < events.index('move') < events.index('battle')
-    assert scenario.events[events.index('battle') - 1] == ('navigation', True)
+    before_battle = scenario.events[:events.index('battle')]
+    assert [e for e in before_battle if e[0] != 'screenshot'][-1] == ('navigation', True)
     assert 'pause' not in events and scenario.moves == 2
     assert [e[1] for e in scenario.events if e[0] == 'move'] == [
         (327, 825, 407, 825, 300), (327, 825, 407, 825, 300)]
@@ -177,7 +180,8 @@ def test_poison_pending_finish_retries_same_image_without_extra_visual_request(m
     assert scenario.moves == 2
     assert scenario.nav_frames == [b'battle:0', b'battle:0', b'battle:1', b'battle:2']
     first = scenario.events.index(('navigation', False))
-    assert scenario.events[first + 1] == ('navigation', False), 'SDK重试应复用截图，不另拍或独立复核'
+    assert [e for e in scenario.events[first + 1:] if e[0] != 'screenshot'][0] == ('navigation', False), \
+        'SDK重试应复用请求截图；本地完成检测不应产生额外模型请求或移动'
 
 
 def test_poison_repeated_pending_finish_stops_after_three_sdk_retries(monkeypatch):
@@ -253,3 +257,15 @@ def test_poison_native_tool_schemas_use_required_flat_facts(monkeypatch, agent_s
             for field in ('seal_prompt_visible', 'boss_visible', 'battle_started'):
                 assert schema['properties'][field]['type'] == 'string'
                 assert set(schema['properties'][field]['enum']) == {'yes', 'no', 'unknown'}
+
+
+def test_poison_local_completion_after_move_skips_next_real_sdk_request(monkeypatch, agent_server):
+    scenario = Scenario(reach_after=1)
+    scenario.state = 'battle'
+    monkeypatch.setattr(navigation, 'poison_boss_visible', lambda png: png == b'battle:1')
+    images = SimpleNamespace(client=scenario, sleep=lambda _: None)
+    result = navigation.navigate_to_poison_seal(images, scenario)
+    assert result.reached and result.steps == scenario.moves == 1
+    assert [step.action for step in result.history] == ['d']
+    assert len(agent_server.payloads) == 1
+    assert scenario.nav_frames == [b'battle:0']

@@ -22,9 +22,24 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from naruto_daily.common.visual import VisualError
 from naruto_daily.multimodal.transport import model_api_connection
+from .completion_watch import CompletionDetected, CompletionWatch
 
 Observation = str
 COMPLETION_RETRIES = 3
+
+
+def _stop_owned_cli(sdk) -> None:
+    """Avoid the SDK's multi-second graceful subprocess shutdown on completion.
+
+    This targets only the transport process created for this navigation session.
+    Tool input is already disabled by the completion latch before this is called.
+    """
+    process = getattr(getattr(sdk, '_transport', None), '_process', None)
+    if process is not None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
 
 
 class AgentError(VisualError):
@@ -79,7 +94,8 @@ class _Joystick:
 def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
               settle_seconds: float = 0.5, sleep: Callable[[float], None] = __import__('time').sleep,
               evidence_type: type[NavigationEvidence] = GoalEvidence,
-              instructions: str = '') -> AgentResult:
+              instructions: str = '',
+              completion_probe: Callable[[bytes], str | None] | None = None) -> AgentResult:
     """Run one native Claude Agent SDK session with in-process MCP tools."""
     if not isinstance(goal, str) or not goal.strip():
         raise ValueError('目标必须是非空文字')
@@ -98,6 +114,8 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
     history: list[AgentStep] = []
     latest_observation = ''
     final_result: AgentResult | None = None
+    active_sdk = None
+    watch = CompletionWatch(client, completion_probe, on_complete=lambda: _stop_owned_cli(active_sdk))
     initial_png = client.screenshot()
 
     def result(reached: bool, observation: str) -> AgentResult:
@@ -126,12 +144,13 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
         return evidence
 
     async def session() -> AgentResult:
-        nonlocal final_result
+        nonlocal final_result, active_sdk
 
         @tool('move', '观察当前截图事实后，沿一个方向移动一次并返回新截图。',
               {**{name: str for name in evidence_type.model_fields}, 'direction': str})
         async def move(args: dict[str, Any]) -> dict[str, Any]:
             nonlocal final_result
+            watch.check_fresh()
             evidence = parse(args, direction=True)
             if evidence.state() == 'reached' or len(history) >= max_steps:
                 final_result = result(evidence.state() == 'reached', evidence.observation)
@@ -143,6 +162,7 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
             history.append(AgentStep(evidence.observation, direction))
             sleep(settle_seconds)
             png = client.screenshot()
+            watch.check(png)
             return {'content': [
                 {'type': 'text', 'text': f'已移动 {len(history)}/{max_steps} 步。只观察这张最新截图后再调用工具。'},
                 {'type': 'image', 'data': base64.b64encode(png).decode('ascii'), 'mimeType': 'image/png'},
@@ -152,6 +172,7 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
               {name: str for name in evidence_type.model_fields})
         async def finish(args: dict[str, Any]) -> dict[str, Any]:
             nonlocal final_result
+            watch.check_fresh()
             evidence = parse(args, direction=False)
             state = evidence.state()
             if state == 'pending' and len(history) < max_steps:
@@ -193,7 +214,8 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
                 {'type': 'text', 'text': f'目标：{goal.strip()}。最多移动 {max_steps} 步。先观察当前截图。'}, image
             ]}}
 
-        async with ClaudeSDKClient(options=options) as sdk:
+        active_sdk = ClaudeSDKClient(options=options)
+        async with active_sdk as sdk:
             await sdk.query(first_message())
             async for message in sdk.receive_response():
                 if isinstance(message, ResultMessage):
@@ -206,9 +228,12 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
     if base_url.endswith('/v1'):
         base_url = base_url[:-3].rstrip('/')
     try:
+        watch.check(initial_png)
         with model_api_connection({**connection, 'base_url': base_url}) as api_connection:
             return asyncio.run(asyncio.wait_for(
-                session(), timeout=api_connection['timeout_seconds'] * (max_steps + 1 + COMPLETION_RETRIES)))
+                watch.run(session()), timeout=api_connection['timeout_seconds'] * (max_steps + 1 + COMPLETION_RETRIES)))
+    except CompletionDetected as exc:
+        return result(True, exc.reason)
     except AgentError:
         raise
     except Exception:

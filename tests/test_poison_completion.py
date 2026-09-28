@@ -116,12 +116,14 @@ def test_poison_navigation_passes_native_evidence_rules_without_preflight_calls(
     model = SimpleNamespace(complete_json=forbidden)
     result = SimpleNamespace(reached=True, steps=3)
     calls = []
-    def run(client, actual_model, goal, *, joystick, max_steps, sleep, evidence_type, instructions):
+    def run(client, actual_model, goal, *, joystick, max_steps, sleep, evidence_type, instructions,
+            completion_probe):
         assert client is images.client and actual_model is model
         assert max_steps == 50 and sleep is images.sleep
         assert (joystick.x, joystick.y, joystick.radius, joystick.duration_ms) == (327, 825, 80, 300)
         assert evidence_type is navigation.PoisonEvidence
         assert instructions == navigation.POISON_SEAL_INSTRUCTIONS
+        assert completion_probe is navigation._poison_completion_probe
         assert goal == navigation.POISON_SEAL_GOAL
         calls.append('run')
         return result

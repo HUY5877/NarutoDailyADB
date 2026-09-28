@@ -70,7 +70,8 @@ class GoalEvidence(NavigationEvidence):
 def run_agent(client, model, goal: str, *, joystick: Joystick, max_steps: int = 50,
               settle_seconds: float = 0.5, sleep: Callable[[float], None] = time.sleep,
               evidence_type: type[NavigationEvidence] = GoalEvidence,
-              instructions: str = '') -> AgentResult:
+              instructions: str = '',
+              completion_probe: Callable[[bytes], str | None] | None = None) -> AgentResult:
     """真实连接使用 Claude Agent SDK；本地 HTTP 替身只用于离线测试。"""
     connection = model.agent_connection()
     base_url = str(connection.get('base_url', ''))
@@ -83,8 +84,10 @@ def run_agent(client, model, goal: str, *, joystick: Joystick, max_steps: int = 
         from .compat_runner import run_agent as run_compat_agent
         return run_compat_agent(client, model, goal, joystick=joystick, max_steps=max_steps,
                                 settle_seconds=settle_seconds, sleep=sleep,
-                                evidence_type=evidence_type, instructions=instructions)
+                                evidence_type=evidence_type, instructions=instructions,
+                                completion_probe=completion_probe)
     from .claude_runner import run_agent as run_claude_agent
     return run_claude_agent(client, model, goal, joystick=joystick, max_steps=max_steps,
                             settle_seconds=settle_seconds, sleep=sleep,
-                            evidence_type=evidence_type, instructions=instructions)
+                            evidence_type=evidence_type, instructions=instructions,
+                            completion_probe=completion_probe)

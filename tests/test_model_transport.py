@@ -1,6 +1,8 @@
 import io
 import json
 import logging
+import threading
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -28,8 +30,9 @@ def failure(status=429):
     return HTTPError('https://private.invalid/v1', status, 'private-key', {}, io.BytesIO(b'private-key'))
 
 
-@pytest.mark.parametrize('status,delay', [(408, 3), (429, 10), (500, 3), (502, 3), (503, 3), (504, 3)])
-def test_transient_http_errors_retry_with_status_specific_delay(status, delay, caplog):
+@pytest.mark.parametrize('status', [408, 429, 500, 502, 503, 504])
+def test_transient_http_errors_retry_every_ten_seconds(status, caplog):
+    delay = 10
     clock = Clock()
     calls = []
     caplog.set_level(logging.WARNING, logger='naruto_daily')
@@ -49,7 +52,7 @@ def test_transient_http_errors_retry_with_status_specific_delay(status, delay, c
     assert 'private.invalid' not in caplog.text + str(caught.value)
 
 
-def test_retry_delay_tracks_each_error_in_a_mixed_sequence():
+def test_rate_limit_server_and_network_errors_use_the_same_retry_delay():
     clock = Clock()
     calls = []
     errors = [failure(429), failure(503), URLError('temporary network error')]
@@ -63,17 +66,18 @@ def test_retry_delay_tracks_each_error_in_a_mixed_sequence():
     result = transport.request_with_retry(Request('https://example.test'), request_timeout=30,
                                           open_request=request, sleep=clock.sleep, clock=clock)
     assert result.body == b'success'
-    assert calls == [0, 10, 13, 16] and clock.sleeps == [10, 3, 3]
+    assert calls == [0, 10, 20, 30] and clock.sleeps == [10, 10, 10]
 
 
 @pytest.mark.parametrize('budget,expected_calls', [(5, [0]), (10, [0]), (25, [0, 10, 20])])
-def test_rate_limit_wait_respects_remaining_phase_budget(budget, expected_calls):
+@pytest.mark.parametrize('error', [429, 503, 'timeout'])
+def test_retry_wait_respects_remaining_phase_budget(budget, expected_calls, error):
     clock = Clock()
     calls = []
 
     def request(*args, **kwargs):
         calls.append(clock.now)
-        raise failure(429)
+        raise TimeoutError() if error == 'timeout' else failure(error)
 
     with pytest.raises(transport.MultimodalRequestError, match='剩余时间不足'):
         transport.request_with_retry(Request('https://example.test'), request_timeout=30, timeout_seconds=budget,
@@ -95,7 +99,7 @@ def test_last_retry_can_succeed_without_another_wait():
     result = transport.request_with_retry(Request('https://example.test'), request_timeout=30,
                                           open_request=request, sleep=clock.sleep, clock=clock)
     assert result.body == b'success'
-    assert calls == [0, 3, 6, 9] and clock.sleeps == [3, 3, 3]
+    assert calls == [0, 10, 20, 30] and clock.sleeps == [10, 10, 10]
 
 
 @pytest.mark.parametrize('status', [400, 401, 403, 404])
@@ -125,7 +129,7 @@ def test_attempts_and_waits_share_the_phase_deadline():
     with pytest.raises(transport.MultimodalRequestError, match='剩余时间不足'):
         transport.request_with_retry(Request('https://example.test'), request_timeout=30, timeout_seconds=60,
                                      open_request=request, sleep=clock.sleep, clock=clock)
-    assert timeouts == [30, 27] and clock.sleeps == [3]
+    assert timeouts == [30, 20] and clock.sleeps == [10]
 
 
 def test_sleep_overrunning_deadline_does_not_send_another_request():
@@ -216,3 +220,121 @@ def test_sdk_relay_uses_shared_transport_and_replaces_only_authorization(monkeyp
     assert upstream.get_header('Authorization') == 'Bearer upstream-private-key'
     assert upstream.get_header('Anthropic-version') == '2023-06-01'
     assert kwargs['request_timeout'] == 30
+    assert kwargs['cancel_event'].is_set()
+
+
+def test_cancelled_request_does_not_start_upstream():
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(transport.MultimodalRequestError, match='已取消'):
+        transport.request_with_retry(Request('https://example.test'), request_timeout=30,
+                                     cancel_event=cancelled,
+                                     open_request=lambda *a, **k: pytest.fail('取消后不得请求'))
+
+
+@pytest.mark.parametrize('late_result', ['success', 'timeout', 'http_error'])
+def test_cancellation_discards_late_response_and_never_retries(late_result):
+    cancelled = threading.Event()
+    calls = []
+
+    def request(*args, **kwargs):
+        calls.append(1)
+        cancelled.set()
+        if late_result == 'timeout':
+            raise TimeoutError()
+        if late_result == 'http_error':
+            raise failure(503)
+        return io.BytesIO(b'late success')
+
+    with pytest.raises(transport.MultimodalRequestError, match='已取消'):
+        transport.request_with_retry(Request('https://example.test'), request_timeout=30,
+                                     cancel_event=cancelled, open_request=request,
+                                     sleep=lambda _: pytest.fail('取消后不得等待'))
+    assert calls == [1]
+
+
+def test_cancellation_interrupts_ten_second_retry_wait():
+    waiting = threading.Event()
+
+    class CancelEvent(threading.Event):
+        def wait(self, timeout=None):
+            waiting.set()
+            return super().wait(timeout)
+
+    cancelled = CancelEvent()
+    errors = []
+    calls = []
+
+    def request(*args, **kwargs):
+        calls.append(1)
+        raise TimeoutError()
+
+    def run():
+        try:
+            transport.request_with_retry(Request('https://example.test'), request_timeout=30,
+                                         cancel_event=cancelled, open_request=request)
+        except transport.MultimodalRequestError as exc:
+            errors.append(str(exc))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        assert waiting.wait(2)
+        cancelled.set()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        assert errors == ['多模态请求已取消'] and calls == [1]
+    finally:
+        cancelled.set()
+        thread.join(timeout=2)
+
+
+@pytest.mark.parametrize('late_result', ['success', 'timeout'])
+def test_relay_shutdown_does_not_wait_for_upstream_or_send_late_response(monkeypatch, late_result):
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+    responses = []
+    client_errors = []
+
+    def upstream(*args, **kwargs):
+        calls.append(1)
+        entered.set()
+        assert release.wait(5)
+        if late_result == 'timeout':
+            raise TimeoutError()
+        return io.BytesIO(b'late success')
+
+    class Opener:
+        open = staticmethod(upstream)
+
+    monkeypatch.setattr(transport, 'build_opener', lambda *a: Opener())
+    connection = dict(base_url='https://example.test/v1', api_key='offline-key',
+                      model='offline', timeout_seconds=30)
+    client = None
+    try:
+        with transport.model_api_connection(connection) as sdk:
+            req = Request(sdk['base_url'] + '/chat/completions', data=b'{}',
+                          headers={'Authorization': 'Bearer ' + sdk['api_key']})
+
+            def read():
+                try:
+                    with urlopen(req, timeout=4) as response:
+                        responses.append(response.read())
+                except Exception as exc:
+                    client_errors.append(exc)
+
+            client = threading.Thread(target=read, daemon=True)
+            client.start()
+            assert entered.wait(2)
+            shutdown_started = time.monotonic()
+        assert time.monotonic() - shutdown_started < 1
+        assert not release.is_set()  # 上游仍然阻塞，但会话已经退出。
+        release.set()
+        client.join(timeout=2)
+        assert not client.is_alive()
+        assert calls == [1] and responses == [] and len(client_errors) == 1
+    finally:
+        release.set()
+        if client is not None:
+            client.join(timeout=2)

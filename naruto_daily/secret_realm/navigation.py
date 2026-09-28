@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from naruto_daily.multimodal.agent import Joystick, NavigationEvidence, run_agent
+from .boss_detection import poison_boss_visible
 
 
 # 固定 1920×1080 布局；中心经毒风未解封场景实机校准，避免右移时向下偏。
@@ -78,7 +79,14 @@ class PoisonEvidence(NavigationEvidence):
         return 'pending'
 
 
+def _poison_completion_probe(png: bytes) -> str | None:
+    if poison_boss_visible(png):
+        return '本地已确认毒风 BOSS 名称、风徽章和血条，立即结束导航并进入战斗'
+    return None
+
+
 def navigate_to_poison_seal(images, model):
     return run_agent(images.client, model, POISON_SEAL_GOAL,
                      joystick=SECRET_JOYSTICK, max_steps=50, sleep=images.sleep,
-                     evidence_type=PoisonEvidence, instructions=POISON_SEAL_INSTRUCTIONS)
+                     evidence_type=PoisonEvidence, instructions=POISON_SEAL_INSTRUCTIONS,
+                     completion_probe=_poison_completion_probe)
