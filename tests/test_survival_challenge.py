@@ -113,7 +113,7 @@ class Model:
         return {'reset_count': next(self.counts)}
 
 
-def run(action_value, client, model, waits, *, background_start=False):
+def run(action_value, client, model, waits, *, background_start=False, missing_targets=()):
     def matcher(png, path, roi, threshold):
         name = path.stem
         visible = {
@@ -126,6 +126,7 @@ def run(action_value, client, model, waits, *, background_start=False):
         }.get(client.state, set())
         if background_start and client.state in {'ready', 'confirm_first', 'confirm_second'}:
             visible.add('start_sweep')
+        visible.difference_update(missing_targets)
         centers = {
             'start_sweep': (1100, 900), 'ready': (1100, 900),
             'confirm_first': (1100, 900), 'confirm_second': (1100, 900),
@@ -195,16 +196,67 @@ def test_survival_rejects_invalid_model_result(count):
     assert not any(x == 1400 for x, _, _ in client.taps)
 
 
-def test_unresponsive_start_sweep_retries_twice_then_stops():
+def test_unresponsive_start_sweep_retries_twice_then_zero_reset_count_finishes():
     client, waits = Client(transfer=False), []
     action_value = action()
     action_value['timeout_seconds'] = 900
     client.tap = lambda x, y: client.taps.append((x, y, client.state))
-    with pytest.raises(VisualError, match='开始扫荡点击后仍停留原页面，已补点 2 次'):
-        run(action_value, client, Model([]), waits)
+    model = Model([0])
+    run(action_value, client, model, waits)
     assert len(client.taps) == 3  # Initial click and at most two fresh-screen retries.
     assert all(state == 'map' for _, _, state in client.taps)
+    assert model.calls == 1
+    assert 60 not in waits
     assert sum(waits) <= 21
+
+
+def test_unresponsive_start_sweep_resets_once_then_runs_next_sweep_normally():
+    class UnavailableUntilResetClient(Client):
+        def __init__(self):
+            super().__init__(transfer=False)
+            self.reset_done = False
+
+        def tap(self, x, y):
+            if self.state == 'map' and x == 1100 and not self.reset_done:
+                self.taps.append((x, y, self.state))
+                return
+            if self.state == 'reset_confirm':
+                self.reset_done = True
+            super().tap(x, y)
+
+    client, waits = UnavailableUntilResetClient(), []
+    model = Model([1, 0])
+    run(action(), client, model, waits)
+    assert client.taps == [
+        (1100, 900, 'map'), (1100, 900, 'map'), (1100, 900, 'map'),
+        (1400, 900, 'map'), (1100, 900, 'reset_confirm'),
+        (1100, 900, 'map'), (1100, 900, 'ready'),
+        (1100, 900, 'confirm_first'), (1100, 900, 'confirm_second'),
+    ]
+    assert model.calls == 2
+    assert waits.count(60) == 1
+
+
+def test_unresponsive_start_sweep_cannot_blindly_click_missing_reset_button():
+    client, waits = Client(transfer=False), []
+    client.tap = lambda x, y: client.taps.append((x, y, client.state))
+    model = Model([1])
+    with pytest.raises(VisualError, match='reset.*超时'):
+        run(action(), client, model, waits, missing_targets={'reset'})
+    assert len(client.taps) == 3
+    assert all(x == 1100 and state == 'map' for x, _, state in client.taps)
+    assert model.calls == 1
+    assert 60 not in waits
+
+
+def test_unresponsive_start_sweep_rejects_unknown_reset_count_without_resetting():
+    client, waits = Client(transfer=False), []
+    client.tap = lambda x, y: client.taps.append((x, y, client.state))
+    with pytest.raises(VisualError, match='重置次数'):
+        run(action(), client, Model([None]), waits)
+    assert len(client.taps) == 3
+    assert not any(x == 1400 for x, _, _ in client.taps)
+    assert 60 not in waits
 
 
 def test_start_sweep_recovers_when_first_click_does_not_change_page(caplog):

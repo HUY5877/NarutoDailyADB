@@ -110,7 +110,8 @@ def _start_sweep_and_wait(client, images: ImageRecognition, action: dict, *, dea
             return stage
         if stage == 'start_sweep' and elapsed() >= retry_at:
             if retries >= START_SWEEP_MAX_RETRIES:
-                raise VisualError(f"开始扫荡点击后仍停留原页面，已补点 {retries} 次，未继续点击")
+                LOGGER.info('开始扫荡补点%d次后仍停留原页面，本轮无法继续扫荡，转入重置次数检查', retries)
+                return 'reset'
             retries += 1
             LOGGER.info('仍在开始扫荡页面，相似度 %.3f，第%d/%d次补点，坐标：(%d, %d)',
                         score, retries, START_SWEEP_MAX_RETRIES, *center)
@@ -162,21 +163,24 @@ def handle_survival_challenge(
             client, images, action, deadline=deadline, poll_seconds=poll_seconds,
             post_click_wait=post_click_wait, elapsed=elapsed,
         )
-        if stage == 'ready':
-            roster_open = _wait_and_click(
-                client, images, action['ready'], deadline=deadline, poll_seconds=poll_seconds,
-                post_click_wait=post_click_wait, elapsed=elapsed, skip_if=action.get('sweep_prompt'),
-            )
+        if stage == 'reset':
+            LOGGER.info('本轮未进入扫荡，跳过名单/扫荡确认和等待，直接检查能否重置')
         else:
-            roster_open = stage == 'confirm_first'
-        if roster_open:
-            _wait_and_click(client, images, action['confirm_first'], deadline=deadline,
+            if stage == 'ready':
+                roster_open = _wait_and_click(
+                    client, images, action['ready'], deadline=deadline, poll_seconds=poll_seconds,
+                    post_click_wait=post_click_wait, elapsed=elapsed, skip_if=action.get('sweep_prompt'),
+                )
+            else:
+                roster_open = stage == 'confirm_first'
+            if roster_open:
+                _wait_and_click(client, images, action['confirm_first'], deadline=deadline,
+                                poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
+            _wait_and_click(client, images, action['confirm_second'], deadline=deadline,
                             poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
-        _wait_and_click(client, images, action['confirm_second'], deadline=deadline,
-                        poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
-        if elapsed() + float(action["wait_seconds"]) >= deadline:
-            raise VisualError("生存挑战等待扫荡完成超时")
-        images.sleep(float(action["wait_seconds"]))
+            if elapsed() + float(action["wait_seconds"]) >= deadline:
+                raise VisualError("生存挑战等待扫荡完成超时")
+            images.sleep(float(action["wait_seconds"]))
         remaining = deadline - elapsed()
         if remaining <= 0:
             raise VisualError("生存挑战等待扫荡完成超时")
