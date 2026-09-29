@@ -55,6 +55,7 @@ class TaskRecord:
     daily_started_at: float | None = None
     daily_error_code: str | None = None
     authorized_at: float | None = None
+    execution_deadline: float | None = None
     user_options: UserOptions = field(default_factory=parse_user_options)
 
     def to_view(self) -> dict[str, object]:

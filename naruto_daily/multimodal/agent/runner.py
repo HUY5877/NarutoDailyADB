@@ -7,6 +7,7 @@ from typing import Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from naruto_daily.common.visual import VisualError
+from naruto_daily.common.execution import check_execution
 
 
 class AgentError(VisualError):
@@ -30,6 +31,7 @@ class Joystick:
             raise ValueError('单次移动时长必须在 1 到 10000 毫秒之间')
 
     def move(self, client, direction: str) -> None:
+        check_execution()
         if direction not in ('w', 'a', 's', 'd'):
             raise AgentError('移动动作只能是单个 w/a/s/d')
         dx, dy = {'w': (0, -1), 'a': (-1, 0), 's': (0, 1), 'd': (1, 0)}[direction]

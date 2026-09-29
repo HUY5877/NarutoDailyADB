@@ -734,10 +734,53 @@ def test_daily_configuration_defaults_and_relative_path(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     config = load_config({})
     assert config.daily_config_path == PROJECT_ROOT / "config.example.json"
-    assert config.daily_timeout_seconds == 7200
+    assert config.daily_timeout_seconds == 1500
     configured = load_config({"DAILY_CONFIG_PATH": "config.example.json", "DAILY_TIMEOUT_SECONDS": "300"})
     assert configured.daily_config_path == PROJECT_ROOT / "config.example.json"
     assert configured.daily_timeout_seconds == 300
+
+
+@pytest.mark.parametrize("configured,expected", [(1, 1), (1500, 1500), (7200, 1500), (86400, 1500)])
+def test_old_daily_timeout_settings_cannot_extend_25_minute_ceiling(configured, expected):
+    assert load_config({"DAILY_TIMEOUT_SECONDS": str(configured)}).daily_timeout_seconds == expected
+    assert ServiceConfig(daily_timeout_seconds=configured).daily_timeout_seconds == expected
+
+
+def test_parent_uses_child_absolute_deadline_without_reset_at_logged_in(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl(5)
+        deadline = time.time() + 1.0
+        runtime, _, _, pool = make_runtime(tmp_path, monkeypatch, record, [
+            emit(QR), emit({"type": "authorized", "executionDeadline": deadline}),
+            emit(LOGGED_IN), gate(tmp_path / "never-finish"),
+        ], daily_timeout=5)
+        work = start_processing(runtime, record)
+        try:
+            await eventually(lambda: record.daily_started_at is not None)
+            child = runtime._children[record.id]
+            assert record.execution_deadline == deadline
+            assert run_report(runtime, record)["deadline"] == deadline
+            await asyncio.wait_for(work, 2)
+            assert record.daily_error_code == "daily_timeout"
+            assert child.poll() is not None
+            assert pool.closed == [record.id]
+            assert run_report(runtime, record)["deadline"] == deadline
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("deadline", [None, True, "1500", -1, float("nan"), float("inf"), 2501])
+def test_child_cannot_supply_invalid_or_overlong_execution_deadline(tmp_path, deadline):
+    runtime = LoginRuntime(ServiceConfig(daily_timeout_seconds=7200), MemoryStorage())
+    with pytest.raises(ValueError, match="execution deadline"):
+        runtime._execution_deadline({"executionDeadline": deadline}, 1000)
+
+
+def test_legacy_protocol_and_delayed_deadline_do_not_extend_execution_budget():
+    runtime = LoginRuntime(ServiceConfig(daily_timeout_seconds=7200), MemoryStorage())
+    assert runtime._execution_deadline({}, 1000) == 2500
+    assert runtime._execution_deadline({"executionDeadline": 999}, 1000) == 999
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "never"])

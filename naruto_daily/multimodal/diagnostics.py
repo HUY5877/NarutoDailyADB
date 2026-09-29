@@ -28,37 +28,46 @@ def model_request_context(scene):
         _SCENE.reset(token)
 
 
-def safe_exception_details(exc):
-    """只取异常类型链及数值错误码；reason 字符串不进入日志。"""
+def _exception_chain(exc):
     chain, seen = [], set()
     while isinstance(exc, BaseException) and id(exc) not in seen and len(chain) < 6:
         chain.append(exc)
         seen.add(id(exc))
         reason = getattr(exc, 'reason', None) if isinstance(exc, URLError) else None
         exc = reason if isinstance(reason, BaseException) else (exc.__cause__ or exc.__context__)
-    kinds = []
-    for error in chain:
+    return chain
+
+
+def exception_kind(exc):
+    """从异常类型而非异常文字判断原因，供重试和上层错误分类使用。"""
+    for error in _exception_chain(exc):
         name = type(error).__name__
         if name in {'ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout'}:
-            kinds.append(name.removesuffix('Timeout').lower() + '_timeout')
+            return name.removesuffix('Timeout').lower() + '_timeout'
         elif isinstance(error, TimeoutError):
-            kinds.append('timeout')
+            return 'timeout'
         elif isinstance(error, ssl.SSLCertVerificationError):
-            kinds.append('tls_certificate')
+            return 'tls_certificate'
         elif isinstance(error, ssl.SSLError):
-            kinds.append('tls')
+            return 'tls'
         elif isinstance(error, socket.gaierror):
-            kinds.append('dns')
+            return 'dns'
         elif isinstance(error, ConnectionResetError):
-            kinds.append('connection_reset')
+            return 'connection_reset'
         elif isinstance(error, ConnectionRefusedError):
-            kinds.append('connection_refused')
+            return 'connection_refused'
         elif isinstance(error, HTTPError):
-            kinds.append('http_status')
+            return 'http_status'
         elif isinstance(error, HTTPException):
-            kinds.append('http_protocol')
+            return 'http_protocol'
+    return 'transport_or_client_error'
+
+
+def safe_exception_details(exc):
+    """只取异常类型链及数值错误码；reason 字符串不进入日志。"""
+    chain = _exception_chain(exc)
     fields = ['error_type=' + '->'.join(type(error).__name__ for error in chain),
-              'error_kind=' + (kinds[0] if kinds else 'transport_or_client_error')]
+              'error_kind=' + exception_kind(exc)]
     for field in ('errno', 'winerror', 'verify_code'):
         values = [getattr(error, field, None) for error in chain]
         values = list(dict.fromkeys(value for value in values if type(value) is int))
@@ -96,8 +105,10 @@ class RequestDiagnostics:
 
     def summary(self):
         now = self.clock()
+        attempts = 'unlimited' if self.max_attempts is None else str(self.max_attempts)
+        retries = 'unlimited' if self.max_attempts is None else str(self.max_attempts - 1)
         return (f'request_id={self.request_id} scene={self.scene} '
-                f'attempt={self.attempt}/{self.max_attempts} retries={max(0, self.attempt - 1)}/{self.max_attempts - 1} '
+                f'attempt={self.attempt}/{attempts} retries={max(0, self.attempt - 1)}/{retries} '
                 f'phase={self.phase} request_timeout={self.request_timeout:.2f}s '
                 f'budget={self.budget:.2f}s elapsed={max(0, now - self.started):.2f}s '
                 f'attempt_elapsed={max(0, now - self.attempt_started):.2f}s '

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Awaitable, Callable, TypeVar
+from naruto_daily.common.execution import check_execution, current_execution, DailyDeadlineExceeded
 
 LOGGER = logging.getLogger('naruto_daily')
 POLL_SECONDS = 0.5
@@ -49,6 +50,7 @@ class CompletionWatch:
             self.raise_if_complete()
 
     def raise_if_complete(self) -> None:
+        check_execution()
         if self.reason is not None:
             raise CompletionDetected(self.reason)
 
@@ -63,10 +65,28 @@ class CompletionWatch:
             self.check_fresh()
 
     async def run(self, work: Awaitable[T]) -> T:
+        budget = current_execution()
+        if budget is None:
+            return await self._run(work)
+        limit = asyncio.timeout(budget.remaining())
+        try:
+            async with limit:
+                result = await self._run(work)
+                budget.remaining()
+                return result
+        except TimeoutError:
+            if self.on_complete is not None:
+                self.on_complete()
+            if limit.expired():
+                raise DailyDeadlineExceeded('执行总时限已到，已停止导航和模型等待') from None
+            raise
+
+    async def _run(self, work: Awaitable[T]) -> T:
         if self.probe is None:
             return await work
         navigation = asyncio.create_task(work)
         monitor = asyncio.create_task(self._monitor())
+        stopping = False
         try:
             done, _ = await asyncio.wait((navigation, monitor), return_when=asyncio.FIRST_COMPLETED)
             # Completion wins even if an obsolete model response failed concurrently.
@@ -74,12 +94,17 @@ class CompletionWatch:
             if monitor in done:
                 await monitor
             return await navigation
+        except (asyncio.CancelledError, DailyDeadlineExceeded):
+            stopping = True
+            if self.on_complete is not None:
+                self.on_complete()
+            raise
         finally:
             for task in (navigation, monitor):
                 if not task.done():
                     task.cancel()
             cleanup = asyncio.gather(navigation, monitor, return_exceptions=True)
-            if self.reason is None:
+            if self.reason is None and not stopping:
                 await cleanup
             else:
                 try:

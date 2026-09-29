@@ -7,6 +7,7 @@ import time
 from naruto_daily.common.visual import VisualError
 from naruto_daily.multimodal.client import MultimodalError
 from naruto_daily.multimodal.prompts import SECRET_BATTLE_REALM
+from naruto_daily.common.execution import current_execution, stage_timeout
 from .navigation import navigate_to_poison_seal
 
 
@@ -22,7 +23,7 @@ CONFIRM = dict(name='退出战斗确定按钮', template='assets/secret_exit_con
 
 
 def _wait_and_click(images, target, action, *, guard=None):
-    deadline = images.elapsed + action['timeout_seconds']
+    deadline = images.elapsed + stage_timeout(action['timeout_seconds'])
 
     def probe(png):
         if guard is not None and images.match(png, guard)[0] is None:
@@ -50,7 +51,7 @@ def _wait_and_click(images, target, action, *, guard=None):
 
 def identify_battle_realm(images, model, action, *, clock=time.monotonic):
     """加载后重新截图读名称；无法识别时停止，不猜测进入战斗。"""
-    deadline = images.elapsed + action['timeout_seconds']
+    deadline = images.elapsed + stage_timeout(action['timeout_seconds'])
     calls = 0
 
     def probe(png):
@@ -62,12 +63,14 @@ def identify_battle_realm(images, model, action, *, clock=time.monotonic):
             raise MultimodalError('秘境副本名称识别超时')
         if calls >= action['multimodal']['max_calls']:
             raise MultimodalError('秘境副本名称识别达到模型调用上限，未攻击或退出')
-        calls += 1
         start = clock()
         try:
-            result = model.complete_json(png, SECRET_BATTLE_REALM, timeout_seconds=deadline-images.elapsed)
+            result = model.complete_json(png, SECRET_BATTLE_REALM,
+                                         timeout_seconds=stage_timeout(deadline-images.elapsed))
+            calls += 1
         finally:
-            images.elapsed += max(0, clock()-start)
+            if current_execution() is None:
+                images.elapsed += max(0, clock()-start)
         if images.elapsed >= deadline:
             raise MultimodalError('秘境副本名称识别超时，忽略迟到结果')
         name = result.get('realm_name') if isinstance(result, dict) and result.get('page') == 'battle' else None

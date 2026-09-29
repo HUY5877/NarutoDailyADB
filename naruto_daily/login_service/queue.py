@@ -34,9 +34,9 @@ SAFE_DRIVER_ERRORS = {
     "unexpected_error": "Could not prepare the login QR code. Please create a new login request.",
     "login_timeout": "Timed out waiting for QR login confirmation.",
     "login_failed": "Could not confirm the game login.",
-    "login_finish_timeout": "扫码授权已完成，但进入游戏超时，请重新申请。",
+    "login_finish_timeout": "登录收尾期间已达到日常总时限（最多25分钟），任务已停止。",
     "login_finish_failed": "扫码授权已完成，但进入游戏失败，请重新申请。",
-    "daily_timeout": "The daily task execution timed out.",
+    "daily_timeout": "已达到日常总时限（最多25分钟），任务已停止。",
     "daily_failed": "Could not complete the daily tasks.",
 }
 SAFE_REJECTION_ERRORS = {

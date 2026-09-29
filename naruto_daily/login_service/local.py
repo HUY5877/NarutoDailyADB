@@ -6,6 +6,8 @@ from pathlib import Path
 import time
 from typing import Callable
 
+from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS
+
 from .daily import DailySession
 from .qr_navigation import LoginDevice, fetch_login_qr
 
@@ -26,7 +28,8 @@ def run_local_qr_secret(
     fetch_login_qr(LoginDevice(adb_path, serial, clock() + 120))
     LOGGER.info("二维码已显示，请在 180 秒内用手机 QQ 扫码并确认授权")
     session.wait_for_authorization(clock() + 180)
+    deadline = clock() + DAILY_TIMEOUT_SECONDS
     LOGGER.info("扫码授权成功，正在进入游戏并处理登录弹窗")
-    session.finish_login(clock() + 180)
+    session.finish_login(deadline)
     LOGGER.info("登录成功，开始独立秘境线路：忍者挑战 → 秘境探险 → 按挑战券循环")
-    return session.run_daily(clock() + 7200)
+    return session.run_daily(deadline)

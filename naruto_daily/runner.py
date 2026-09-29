@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from naruto_daily.common.adb_client import AdbClient
+from naruto_daily.common.execution import action_with_execution_budget, check_execution, execution_sleep
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.login import cleanup_popups
@@ -65,7 +66,7 @@ class ActionRunner:
         asset_root: Path = Path("."),
     ):
         self.client = client
-        self.sleep = sleep
+        self.sleep = lambda seconds: execution_sleep(seconds, sleep)
         self.dry_run = dry_run
         self.template_matcher = template_matcher
         self.asset_root = Path(asset_root)
@@ -79,6 +80,8 @@ class ActionRunner:
         skip_action_type: str | None = None
         completed_card_name = ""
         for index, action in enumerate(actions, start=1):
+            check_execution()
+            action = action_with_execution_budget(action)
             LOGGER.info(
                 "动作 %d/%d：%s", index, len(actions), ACTION_NAMES.get(action["type"], "未知动作"),
                 extra={"action_index": index, "action_total": len(actions)},
@@ -208,6 +211,7 @@ class ActionRunner:
                 )
             else:
                 raise ValueError(f"不支持的动作类型：{action_type!r}")
+        check_execution()
         LOGGER.info(
             "执行结束：%d 个动作", len(actions),
             extra={"action_index": len(actions), "action_total": len(actions)},

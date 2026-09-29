@@ -17,6 +17,8 @@ import time
 from typing import Callable, TextIO
 from uuid import UUID
 
+from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS, DailyDeadlineExceeded
+
 from .log_events import forward_task_logs
 from .user_options import parse_user_options
 
@@ -106,13 +108,18 @@ def _validate(
     )
 
 
-def _is_timeout(error: BaseException, deadline: float, clock: Callable[[], float]) -> bool:
+def _is_timeout(error: BaseException, deadline: float, clock: Callable[[], float], *, allow_message=False) -> bool:
     if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)) or clock() >= deadline:
         return True
     # LDPlayerError deliberately wraps subprocess timeouts. Its messages are
     # fixed locally and are used only to select a safe enum, never as output.
-    message = str(error).lower()
+    message = str(error).lower() if allow_message else ""
     return "timed out" in message or "timeout" in message or "deadline" in message
+
+
+def _is_execution_timeout(error: BaseException, deadline: float, clock: Callable[[], float]) -> bool:
+    # A socket/ADB timeout is not evidence that the whole daily budget expired.
+    return isinstance(error, DailyDeadlineExceeded) or clock() >= deadline
 
 
 def _daily_options(message: dict[str, object]) -> tuple[Path, float] | None:
@@ -128,7 +135,7 @@ def _daily_options(message: dict[str, object]) -> tuple[Path, float] | None:
     if (not isinstance(timeout, (int, float)) or isinstance(timeout, bool)
             or not math.isfinite(timeout) or not 1 <= timeout <= 86_400):
         raise ValueError
-    return Path(path), float(timeout)
+    return Path(path), min(float(timeout), DAILY_TIMEOUT_SECONDS)
 
 
 def main(
@@ -223,21 +230,20 @@ def main(
                 daily_session.wait_for_authorization(deadline)
             if clock() >= deadline:
                 raise TimeoutError
-            _send(output_stream, {"type": "authorized"})
-
             phase = "login_finish"
             deadline = clock() + daily_options[1]
+            _send(output_stream, {"type": "authorized", "executionDeadline": deadline})
             with redirect_stdout(sys.stderr):
                 daily_session.finish_login(deadline)
             if clock() >= deadline:
-                raise TimeoutError
+                raise DailyDeadlineExceeded("日常任务已超过截止时间")
             _send(output_stream, {"type": "logged_in"})
 
             phase = "daily"
             with redirect_stdout(sys.stderr):
                 action_count = daily_session.run_daily(deadline)
             if clock() >= deadline:
-                raise TimeoutError
+                raise DailyDeadlineExceeded("日常任务已超过截止时间")
             if type(action_count) is not int or action_count < 0:
                 raise ValueError
             _send(output_stream, {"type": "daily_completed", "actionCount": action_count})
@@ -251,10 +257,10 @@ def main(
         elif phase == "login":
             code = "login_timeout" if _is_timeout(error, deadline, clock) else "login_failed"
         elif phase == "login_finish":
-            code = "login_finish_timeout" if _is_timeout(error, deadline, clock) else "login_finish_failed"
+            code = "login_finish_timeout" if _is_execution_timeout(error, deadline, clock) else "login_finish_failed"
         elif phase == "daily":
-            code = "daily_timeout" if _is_timeout(error, deadline, clock) else "daily_failed"
-        elif _is_timeout(error, deadline, clock):
+            code = "daily_timeout" if _is_execution_timeout(error, deadline, clock) else "daily_failed"
+        elif _is_timeout(error, deadline, clock, allow_message=phase == "qr" or isinstance(error, DriverError)):
             code = "command_timeout"
         elif phase == "emulator" and isinstance(error, DriverError):
             code = "emulator_start_failed"

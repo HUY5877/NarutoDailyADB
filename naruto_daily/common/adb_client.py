@@ -5,6 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
+from .execution import check_execution, current_execution, DailyDeadlineExceeded
 
 
 class AdbError(RuntimeError):
@@ -23,13 +24,25 @@ BinaryRunner = Callable[[Sequence[str]], tuple[int, bytes, bytes]]
 
 
 def _run_subprocess(command: Sequence[str]) -> CommandResult:
-    completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    completed = _bounded_subprocess(command, text=True, encoding="utf-8", errors="replace")
     return CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
 
 def _run_subprocess_binary(command: Sequence[str]) -> tuple[int, bytes, bytes]:
-    completed = subprocess.run(command, capture_output=True)
+    completed = _bounded_subprocess(command)
     return completed.returncode, completed.stdout, completed.stderr
+
+
+def _bounded_subprocess(command: Sequence[str], **kwargs):
+    budget = current_execution()
+    if budget is None:
+        return subprocess.run(command, capture_output=True, **kwargs)
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=budget.remaining(), **kwargs)
+    except subprocess.TimeoutExpired as exc:
+        raise DailyDeadlineExceeded("执行总时限已到，已终止 ADB 命令") from exc
+    budget.remaining()
+    return result
 
 
 class AdbClient:
@@ -46,11 +59,13 @@ class AdbClient:
         self._run_binary = run_binary
 
     def _command(self, *arguments: str, use_serial: bool = True) -> CommandResult:
+        check_execution()
         command = [str(self.adb_path)]
         if use_serial and self.serial:
             command.extend(["-s", self.serial])
         command.extend(arguments)
         result = self._run_command(command)
+        check_execution()
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
             raise AdbError(f"ADB 命令执行失败：{detail}")
@@ -84,11 +99,13 @@ class AdbClient:
         self._command("shell", "input", "keyevent", "4")
 
     def screenshot(self) -> bytes:
+        check_execution()
         command = [str(self.adb_path)]
         if self.serial:
             command.extend(["-s", self.serial])
         command.extend(["exec-out", "screencap", "-p"])
         returncode, stdout, stderr = self._run_binary(command)
+        check_execution()
         if returncode != 0:
             detail = stderr.decode("utf-8", errors="replace").strip() or f"退出码 {returncode}"
             raise AdbError(f"ADB 截图失败：{detail}")

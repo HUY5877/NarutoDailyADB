@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.execution import check_execution, retry_observation, stage_timeout
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal.prompts import SURVIVAL_RESET_COUNT
@@ -31,7 +32,7 @@ def _wait_and_click(client, images: ImageRecognition, target: dict, *, deadline:
         center, score = images.match(png, target)
         return center, score, False
 
-    deadline = min(deadline, elapsed() + BUTTON_TIMEOUT_SECONDS)
+    deadline = min(deadline, elapsed() + stage_timeout(BUTTON_TIMEOUT_SECONDS))
     round_number = 0
     score = 0.0
     while elapsed() < deadline:
@@ -67,6 +68,7 @@ def _wait_and_click(client, images: ImageRecognition, target: dict, *, deadline:
 
 def _dismiss_transfer_if_present(client, images: ImageRecognition, target: dict) -> None:
     center, score = images.match(client.screenshot(), target)
+    check_execution()
     if center is None:
         LOGGER.info("未发现包含“传送”的提示界面，继续生存挑战")
         return
@@ -80,7 +82,7 @@ def _start_sweep_and_wait(client, images: ImageRecognition, action: dict, *, dea
                           elapsed: Callable[[], float]) -> str:
     _wait_and_click(client, images, action['start_sweep'], deadline=deadline,
                     poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
-    deadline = min(deadline, elapsed() + BUTTON_TIMEOUT_SECONDS)
+    deadline = min(deadline, elapsed() + stage_timeout(BUTTON_TIMEOUT_SECONDS))
     retry_at = elapsed() + START_SWEEP_RETRY_SECONDS
     retries = 0
 
@@ -128,8 +130,11 @@ def _start_sweep_and_wait(client, images: ImageRecognition, action: dict, *, dea
 
 
 def _read_reset_count(model: MultimodalClient, client, *, timeout_seconds: float) -> int:
-    result = model.complete_json(client.screenshot(), SURVIVAL_RESET_COUNT,
-                                 timeout_seconds=timeout_seconds)
+    result = retry_observation(
+        lambda: model.complete_json(client.screenshot(), SURVIVAL_RESET_COUNT,
+                                    timeout_seconds=stage_timeout(timeout_seconds)),
+        name='生存挑战重置次数',
+    )
     count = result.get("reset_count") if isinstance(result, dict) else None
     if type(count) is not int or count < 0:
         raise VisualError("大模型未能确认生存挑战重置次数，已停止")
@@ -151,7 +156,7 @@ def handle_survival_challenge(
 
     if model is None:
         model = MultimodalClient(action["multimodal"], asset_root=asset_root)
-    deadline = float(action["timeout_seconds"])
+    deadline = elapsed() + stage_timeout(float(action["timeout_seconds"]))
     post_click_wait = float(action.get("post_click_wait_seconds", 1))
     poll_seconds = float(action["poll_seconds"])
 

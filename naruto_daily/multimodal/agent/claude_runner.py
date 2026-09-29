@@ -22,6 +22,7 @@ from claude_agent_sdk import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from naruto_daily.common.visual import VisualError
+from naruto_daily.common.execution import DailyDeadlineExceeded, execution_sleep
 from naruto_daily.multimodal.diagnostics import model_request_context, safe_exception_details
 from naruto_daily.multimodal.transport import MAX_REQUEST_RETRIES, request_budget
 from .completion_watch import CompletionDetected, CompletionWatch
@@ -163,7 +164,7 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
                 raise AgentError('移动动作只能是单个 w/a/s/d')
             joystick.move(client, direction)
             history.append(AgentStep(evidence.observation, direction))
-            sleep(settle_seconds)
+            execution_sleep(settle_seconds, sleep)
             png = client.screenshot()
             watch.check(png)
             return {'content': [
@@ -235,7 +236,7 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
                 watch.run(session()), timeout=request_budget(timeout) * (max_steps + 1 + COMPLETION_RETRIES)))
     except CompletionDetected as exc:
         return result(True, exc.reason)
-    except AgentError:
+    except (AgentError, DailyDeadlineExceeded):
         raise
     except Exception as exc:
         LOGGER.error('导航模型调用失败：场景=导航/ClaudeSDK；%s', safe_exception_details(exc))

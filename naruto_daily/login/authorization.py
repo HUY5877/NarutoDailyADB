@@ -12,6 +12,7 @@ from naruto_daily.multimodal.client import MultimodalClient, MultimodalError
 from naruto_daily.multimodal.prompts import ACCOUNT_NICKNAME
 from naruto_daily.login.account_controls import find_account_control
 from naruto_daily.common.visual import VisualError, find_template_in_png
+from naruto_daily.common.execution import current_execution, stage_timeout
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -30,7 +31,7 @@ def authorize_account(
 ) -> None:
     """模型读取名字，本地严格匹配；图像模板只用于识别弹层和按钮。"""
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
-    deadline = float(action['timeout_seconds'])
+    deadline = images.elapsed + stage_timeout(float(action['timeout_seconds']))
     pre_wait = float(action.get('pre_click_wait_seconds', 3))
     post_wait = float(action.get('post_click_wait_seconds', 3))
     account_chosen = False
@@ -43,13 +44,15 @@ def authorize_account(
             raise MultimodalError('账号识别达到模型调用上限，已停止登录')
         if images.elapsed >= deadline:
             raise MultimodalError('账号识别已超过等待时间，已停止登录')
-        calls += 1
         started = clock()
         try:
-            return model.complete_json(png, prompt, timeout_seconds=deadline - images.elapsed)
+            result = model.complete_json(png, prompt, timeout_seconds=stage_timeout(deadline - images.elapsed))
+            calls += 1
+            return result
         finally:
             # 网络和推理时间同样消耗本阶段预算。
-            images.elapsed += max(0, clock() - started)
+            if current_execution() is None:
+                images.elapsed += max(0, clock() - started)
 
     def probe(png):
         # 列表弹层优先，不能把变暗的背景授权页当成可点击页面。
@@ -61,7 +64,8 @@ def authorize_account(
             try:
                 center = find_account_control(client.ui_hierarchy(), action['account_name'], picker[1] + 25)
             finally:
-                images.elapsed += max(0, clock() - started)
+                if current_execution() is None:
+                    images.elapsed += max(0, clock() - started)
             return ('account_option', center, None) if center else None
         agree, score = images.match(png, action['agree_button'])
         if agree is None:
@@ -126,7 +130,7 @@ def finish_login_authorization(
 ) -> AuthorizationSummary:
     """在同一截图判断授权或开始游戏，未确认时统一补查一次。"""
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
-    deadline = images.elapsed + float(action["timeout_seconds"])
+    deadline = images.elapsed + stage_timeout(float(action["timeout_seconds"]))
     poll_seconds = float(action["poll_seconds"])
     pre_wait = float(action.get("pre_click_wait_seconds", 3))
     post_wait = float(action.get("post_click_wait_seconds", 3))

@@ -9,6 +9,8 @@ import re
 from typing import Mapping
 from urllib.parse import urlsplit
 
+from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SERVICE_TOKEN = "local-development-token"
@@ -37,7 +39,7 @@ class ServiceConfig:
     ldplayer_package: str = "com.tencent.KiHan"
     ldplayer_command_timeout_seconds: int = 20
     daily_config_path: Path = PROJECT_ROOT / "config.example.json"
-    daily_timeout_seconds: int = 7200
+    daily_timeout_seconds: int = DAILY_TIMEOUT_SECONDS
     run_log_retention_seconds: int = 86_400
     run_log_max_entries: int = 2_000
     sweep_interval_ms: int = 250
@@ -47,6 +49,11 @@ class ServiceConfig:
     oss_access_key_id: str = ""
     oss_access_key_secret: str = field(default="", repr=False)
     oss_sts_token: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        # Preserve shorter configured/test limits without letting old 7200s
+        # settings extend the 25-minute execution ceiling.
+        object.__setattr__(self, "daily_timeout_seconds", min(self.daily_timeout_seconds, DAILY_TIMEOUT_SECONDS))
 
 
 def _integer(env: Mapping[str, str], name: str, fallback: int, minimum: int, maximum: int) -> int:
@@ -167,7 +174,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         ldplayer_pool_indices=ldplayer_pool_indices,
         ldplayer_state_dir=state_dir,
         daily_config_path=daily_config_path,
-        daily_timeout_seconds=_integer(env, "DAILY_TIMEOUT_SECONDS", 7200, 1, 86_400),
+        daily_timeout_seconds=_integer(env, "DAILY_TIMEOUT_SECONDS", DAILY_TIMEOUT_SECONDS, 1, 86_400),
         run_log_retention_seconds=_integer(env, "RUN_LOG_RETENTION_SECONDS", 86_400, 60, 604_800),
         run_log_max_entries=_integer(env, "RUN_LOG_MAX_ENTRIES", 2_000, 100, 10_000),
         ldplayer_package=ldplayer_package,

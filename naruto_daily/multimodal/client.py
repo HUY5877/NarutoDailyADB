@@ -13,6 +13,7 @@ from .diagnostics import current_model_scene, safe_exception_details
 from naruto_daily.common.environment import (
     EnvironmentConfigError, read_environment, require_environment, resolve_environment,
 )
+from naruto_daily.common.execution import MODEL_REQUEST_TIMEOUT_SECONDS, current_execution
 
 
 LOGGER = logging.getLogger('naruto_daily')
@@ -31,11 +32,17 @@ class MultimodalClient:
             raise MultimodalError(f'多模态配置错误（API 密钥或环境变量）：{exc}') from None
         if not self._key or any(c.isspace() for c in self._key):
             raise MultimodalError('多模态 API 密钥为空或格式不正确')
+        if current_execution() is not None:
+            self.config = {**self.config, 'timeout_seconds': min(
+                float(self.config['timeout_seconds']), MODEL_REQUEST_TIMEOUT_SECONDS)}
 
     def agent_connection(self) -> dict:
         """供 Python agent 复用连接配置；包含密钥，禁止写入日志。"""
+        timeout = float(self.config['timeout_seconds'])
+        if current_execution() is not None:
+            timeout = min(timeout, MODEL_REQUEST_TIMEOUT_SECONDS)
         return dict(base_url=self.config['base_url'], model=self.config['model'],
-                    timeout_seconds=float(self.config['timeout_seconds']), api_key=self._key)
+                    timeout_seconds=timeout, api_key=self._key)
 
     def complete_json(self, png: bytes, prompt: str, *, timeout_seconds=None,
                       refresh_image: Callable[[], bytes] | None = None) -> dict:

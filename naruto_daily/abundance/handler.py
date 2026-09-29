@@ -8,6 +8,7 @@ from typing import Callable
 
 from naruto_daily.battle import BattleSummary, run_battle
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.execution import retry_observation, stage_timeout
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal.prompts import ABUNDANCE_AFTER_BATTLE
@@ -20,7 +21,7 @@ SERVICE_POPUP_DISMISS = (400, 540)
 
 def _click_confirmed(client, images: ImageRecognition, target: dict, timeout: float, pre_wait: float,
                      click_point: tuple[int, int] | None = None):
-    deadline = images.elapsed + timeout
+    deadline = images.elapsed + stage_timeout(timeout)
     round_number = 0
     while images.elapsed < deadline:
         round_number += 1
@@ -51,20 +52,26 @@ def finish_abundance_result(
     model: MultimodalClient | None = None, clock: Callable[[], float] = time.monotonic,
 ) -> None:
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
-    timeout = float(action['timeout_seconds'])
+    timeout = stage_timeout(float(action['timeout_seconds']))
     if model is not None:
         started = clock()
-        png = client.screenshot()
-        center, _ = images.match(png, action['result_return'])
-        if center is None:
-            remaining = timeout - (clock() - started)
+        def observe():
+            png = client.screenshot()
+            center, _ = images.match(png, action['result_return'])
+            if center is not None:
+                return center, None
+            remaining = stage_timeout(timeout - (clock() - started))
             if remaining <= 0:
                 raise VisualError('丰饶战后页面识别超时，未点击')
-            # 只在结算文字缺失时识别一次当前页面，不能把通用 finished 当成结算页。
             result = model.complete_json(png, ABUNDANCE_AFTER_BATTLE, timeout_seconds=remaining)
-            remaining = timeout - (clock() - started)
+            remaining = stage_timeout(timeout - (clock() - started))
             if remaining <= 0:
                 raise VisualError('丰饶战后页面识别超时，忽略迟到结果，未点击')
+            return None, result
+
+        center, result = retry_observation(observe, name='丰饶战后页面')
+        if center is None:
+            # 只在结算文字缺失时识别当前页面，不能把通用 finished 当成结算页。
             page = result.get('page') if isinstance(result, dict) else None
             if not isinstance(page, str) or page not in {'result', 'service_popup', 'abundance', 'home'}:
                 raise VisualError('无法确认丰饶战后页面，未点击或继续关闭')
@@ -78,7 +85,7 @@ def finish_abundance_result(
             if page in {'abundance', 'home'}:
                 LOGGER.info('已离开丰饶结算页，直接交给后续回主界面检查')
                 return
-        timeout -= clock() - started
+        timeout = stage_timeout(timeout - (clock() - started))
     _click_confirmed(client, images, action['result_return'], timeout,
                      float(action.get('pre_click_wait_seconds', 1)),
                      click_point=SERVICE_POPUP_DISMISS)

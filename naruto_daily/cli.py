@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from naruto_daily.common.adb_client import AdbClient, AdbError
+from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS, DailyDeadlineExceeded, execution_scope
 from .config import ConfigError, Settings, load_settings
 from .runner import ActionRunner
 from .tasks import TaskError, build_all, build_task
@@ -85,19 +86,20 @@ def main(
             print("完整流程将在 5 秒后开始，按 Ctrl+C 可取消。")
             for _ in range(5):
                 sleep(1)
-        summary = ActionRunner(
-            client,
-            sleep=sleep,
-            dry_run=args.dry_run,
-            asset_root=args.config.parent,
-        ).run(actions)
+        with execution_scope(time.monotonic() + DAILY_TIMEOUT_SECONDS, sleep=sleep):
+            summary = ActionRunner(
+                client,
+                sleep=sleep,
+                dry_run=args.dry_run,
+                asset_root=args.config.parent,
+            ).run(actions)
         mode = "模拟运行" if args.dry_run else "执行完成"
         print(f"{mode}：{summary.action_count} 个动作")
         return 0
     except KeyboardInterrupt:
         print("已停止。")
         return 130
-    except (ConfigError, AdbError, TaskError, VisualError) as exc:
+    except (ConfigError, AdbError, TaskError, VisualError, DailyDeadlineExceeded) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
 

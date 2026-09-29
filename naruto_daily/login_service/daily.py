@@ -12,6 +12,7 @@ import time
 from typing import Callable, Sequence
 
 from naruto_daily.common.adb_client import AdbClient, CommandResult
+from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.config import ConfigError, load_settings
@@ -100,7 +101,7 @@ class DailySession:
             raise RuntimeError("日常任务尚未设置截止时间")
         remaining = self._deadline - self._clock()
         if remaining <= 0:
-            raise TimeoutError("日常任务已超过截止时间")
+            raise DailyDeadlineExceeded("日常任务已超过截止时间")
         return remaining
 
     def _run(self, command: Sequence[str], *, text: bool):
@@ -138,49 +139,51 @@ class DailySession:
 
     def wait_for_authorization(self, deadline: float) -> None:
         """观察扫码后的明确页面，立即交接；按钮操作留给登录收尾。"""
-        self._authorized = False
-        self._already_in_game = False
-        self._logged_in = False
-        self._set_deadline(deadline)
-        if not self._login_actions or self._login_actions[0]["type"] != "finish_login_authorization":
-            raise ConfigError("扫码登录必须先确认授权并开始游戏")
-        action = self._login_actions[0]
-        targets = (action["start_game"], action["second_authorization"], self._main_marker)
-        images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
-        LOGGER.info("等待手机扫码确认；识别到授权后的页面即结束二维码等待")
-        while True:
-            self._remaining()
-            png = self.client.screenshot()
-            for index, target in enumerate(targets):
-                center, _ = images.match(png, target, timeout_seconds=self._remaining())
-                if center is not None:
-                    self._remaining()
-                    self._authorized = True
-                    self._already_in_game = index == 2
-                    LOGGER.info("已确认扫码授权，识别到%s，立即结束二维码等待", target.get("name", "游戏主界面"))
-                    return
-            # A missing QR alone is not evidence: loading, cancellation and
-            # network errors must not be mistaken for successful authorization.
-            self._sleep(min(0.5, self._remaining()))
+        with execution_scope(deadline, clock=self._clock, sleep=self._sleep_impl):
+            self._authorized = False
+            self._already_in_game = False
+            self._logged_in = False
+            self._set_deadline(deadline)
+            if not self._login_actions or self._login_actions[0]["type"] != "finish_login_authorization":
+                raise ConfigError("扫码登录必须先确认授权并开始游戏")
+            action = self._login_actions[0]
+            targets = (action["start_game"], action["second_authorization"], self._main_marker)
+            images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
+            LOGGER.info("等待手机扫码确认；识别到授权后的页面即结束二维码等待")
+            while True:
+                self._remaining()
+                png = self.client.screenshot()
+                for index, target in enumerate(targets):
+                    center, _ = images.match(png, target, timeout_seconds=self._remaining())
+                    if center is not None:
+                        self._remaining()
+                        self._authorized = True
+                        self._already_in_game = index == 2
+                        LOGGER.info("已确认扫码授权，识别到%s，立即结束二维码等待", target.get("name", "游戏主界面"))
+                        return
+                # A missing QR alone is not evidence: loading, cancellation and
+                # network errors must not be mistaken for successful authorization.
+                self._sleep(min(0.5, self._remaining()))
 
     def finish_login(self, deadline: float) -> None:
-        """授权后使用独立预算等待加载、清弹窗并确认主界面。"""
-        if not self._authorized:
-            raise RuntimeError("必须先完成扫码授权")
-        self._logged_in = False
-        self._set_deadline(deadline)
-        actions = deepcopy(self._login_actions[1:] if self._already_in_game else self._login_actions)
-        if not self._already_in_game:
-            actions[0]["timeout_seconds"] = self._remaining()
-        LOGGER.info("开始扫码登录收尾，执行登录收尾动作；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
-        self._runner().run(actions)
-        LOGGER.info("登录收尾动作已完成，额外复核主界面；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
-        images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
-        center, _ = images.find(self._main_marker, deadline=images.elapsed + self._remaining())
-        if center is None:
-            raise VisualError("扫码登录后未能确认游戏主界面")
-        self._remaining()
-        self._logged_in = True
+        """授权后沿用日常总截止时间等待加载、清弹窗并确认主界面。"""
+        with execution_scope(deadline, clock=self._clock, sleep=self._sleep_impl):
+            if not self._authorized:
+                raise RuntimeError("必须先完成扫码授权")
+            self._logged_in = False
+            self._set_deadline(deadline)
+            actions = deepcopy(self._login_actions[1:] if self._already_in_game else self._login_actions)
+            if not self._already_in_game:
+                actions[0]["timeout_seconds"] = self._remaining()
+            LOGGER.info("开始扫码登录收尾，执行登录收尾动作；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
+            self._runner().run(actions)
+            LOGGER.info("登录收尾动作已完成，额外复核主界面；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
+            images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
+            center, _ = images.find(self._main_marker, deadline=images.elapsed + self._remaining())
+            if center is None:
+                raise VisualError("扫码登录后未能确认游戏主界面")
+            self._remaining()
+            self._logged_in = True
 
     def wait_for_login(self, deadline: float) -> None:
         """兼容原调用者，在同一预算内完成授权和登录收尾。"""
@@ -189,9 +192,10 @@ class DailySession:
 
     def run_daily(self, deadline: float) -> int:
         """执行所选线路的登录后动作，默认完整日常，始终使用同一设备。"""
-        if not self._logged_in:
-            raise RuntimeError("必须先完成扫码登录并确认主界面")
-        self._set_deadline(deadline)
-        summary = self._runner().run(self._daily_actions)
-        self._remaining()
-        return summary.action_count
+        with execution_scope(deadline, clock=self._clock, sleep=self._sleep_impl):
+            if not self._logged_in:
+                raise RuntimeError("必须先完成扫码登录并确认主界面")
+            self._set_deadline(deadline)
+            summary = self._runner().run(self._daily_actions)
+            self._remaining()
+            return summary.action_count

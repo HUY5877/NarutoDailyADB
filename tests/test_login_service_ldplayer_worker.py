@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from naruto_daily.login_service import ldplayer_worker
+from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS, DailyDeadlineExceeded
 
 
 TASK_ID = "11111111-1111-4111-8111-111111111111"
@@ -337,7 +338,9 @@ def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_l
         def finish_login(self, deadline):
             calls.append("finish_login")
             assert deadline == now + 359
-            assert json.loads(output.flushed.splitlines()[-1]) == {"type": "authorized"}
+            assert json.loads(output.flushed.splitlines()[-1]) == {
+                "type": "authorized", "executionDeadline": deadline,
+            }
             assert not any(json.loads(line)["type"] == "logged_in"
                            for line in output.flushed.splitlines())
             # Clearing post-login popups is allowed to cross the original QR expiry.
@@ -395,9 +398,14 @@ def test_invalid_user_options_fail_before_driver_initialization(monkeypatch, opt
     ("login", RuntimeError("private login detail"), "login_failed"),
     ("login", TimeoutError("private login detail"), "login_timeout"),
     ("login_finish", RuntimeError("private finish detail"), "login_finish_failed"),
-    ("login_finish", TimeoutError("private finish detail"), "login_finish_timeout"),
+    ("login_finish", TimeoutError("private finish detail"), "login_finish_failed"),
+    ("login_finish", DailyDeadlineExceeded("private finish detail"), "login_finish_timeout"),
     ("daily", RuntimeError("private daily detail"), "daily_failed"),
-    ("daily", TimeoutError("private daily detail"), "daily_timeout"),
+    ("daily", TimeoutError("private daily detail"), "daily_failed"),
+    ("daily", DailyDeadlineExceeded("private daily detail"), "daily_timeout"),
+    ("daily", RuntimeError("HTTP 401 request_timeout=15.00s"), "daily_failed"),
+    ("login", RuntimeError("HTTP 401 request_timeout=15.00s"), "login_failed"),
+    ("login_finish", RuntimeError("HTTP 401 request_timeout=15.00s"), "login_finish_failed"),
 ])
 def test_daily_worker_maps_failures_without_leaking_details(monkeypatch, tmp_path, capsys, phase, error, expected):
     calls = []
@@ -537,7 +545,7 @@ def test_daily_timeout_is_a_bounded_finite_number(monkeypatch, tmp_path, timeout
     assert events == [{"type": "error", "code": "configuration_error"}]
 
 
-@pytest.mark.parametrize("timeout", [1, 1.5, 86_400])
+@pytest.mark.parametrize("timeout", [1, 1.5, 1500, 7200, 86_400])
 def test_daily_timeout_accepts_bounds_and_fractional_seconds(monkeypatch, tmp_path, timeout):
     class DailySession:
         def __init__(self, **kwargs):
@@ -550,7 +558,7 @@ def test_daily_timeout_accepts_bounds_and_fractional_seconds(monkeypatch, tmp_pa
             pass
 
         def run_daily(self, deadline):
-            assert deadline == 1_800_000_000.0 + timeout
+            assert deadline == 1_800_000_000.0 + min(timeout, DAILY_TIMEOUT_SECONDS)
             return 0
 
     monkeypatch.setattr(ldplayer_worker, "_load_daily_session", lambda: DailySession)

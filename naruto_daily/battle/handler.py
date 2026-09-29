@@ -5,12 +5,14 @@ import logging
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
+from naruto_daily.common.execution import current_execution, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal.diagnostics import model_request_context
 from naruto_daily.multimodal.prompts import BATTLE_COMPLETION
@@ -43,7 +45,8 @@ def run_battle(
     LOGGER.info('开始战斗模块，四个战斗按钮并发连点 %g 秒后停止点击并检查结算，确认仍在战斗后立即恢复',
                 tap_seconds)
     started, waited = clock(), images.elapsed
-    timeout = float(battle['timeout_seconds'])
+    execution = current_execution()
+    timeout = stage_timeout(float(battle['timeout_seconds']))
     interval = float(battle['tap_interval_seconds'])
     buttons = battle['buttons']
     taps = 0
@@ -53,6 +56,8 @@ def run_battle(
         return max(clock() - started, images.elapsed - waited)
 
     def remaining():
+        if execution is not None:
+            return execution.remaining()
         return timeout - elapsed()
 
     def tap_button(button):
@@ -72,8 +77,9 @@ def run_battle(
                 # 前一批四个输入均已返回，先停止全部点击，再截图/调用模型。
                 initial_check = round_number == 0
                 round_number += 1
-                LOGGER.info('[战斗检查 第%d轮] %s；检查结算，本阶段上限 %g 秒',
-                            round_number, '进入战斗前检查' if initial_check else '已停止全部连点', timeout)
+                LOGGER.info('[战斗检查 第%d轮] %s；检查结算，%s %g 秒',
+                            round_number, '进入战斗前检查' if initial_check else '已停止全部连点',
+                            '任务总时限剩余' if execution is not None else '本阶段上限', remaining())
                 screenshot = client.screenshot()
                 if remaining() <= 0:
                     break
@@ -111,7 +117,7 @@ def run_battle(
             if remaining() <= 0:
                 break
             # 等待本批全部输入返回，避免后台点击越过结算处理，也不积压后续批次。
-            pending = [pool.submit(tap_button, button) for button in buttons]
+            pending = [pool.submit(copy_context().run, tap_button, button) for button in buttons]
             taps += sum(future.result() for future in pending)
             delay = max(0.0, min(interval, remaining(), next_check - elapsed()))
             if delay > 0:

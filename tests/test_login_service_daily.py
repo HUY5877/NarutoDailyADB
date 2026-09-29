@@ -8,6 +8,7 @@ import pytest
 
 from naruto_daily.config import ConfigError, load_settings
 from naruto_daily.common.visual import VisualError
+from naruto_daily.common.execution import DailyDeadlineExceeded, current_execution
 from naruto_daily.login_service.daily import DailySession, _templates
 from naruto_daily.tasks import TASK_ORDER
 
@@ -223,8 +224,10 @@ def test_login_cleanup_logs_extra_main_check_and_preserves_its_failure(tmp_path,
     session._authorized = True
     failure = RuntimeError('main check failed')
     observations = []
+    deadline = clock() + 30
 
     def run(actions):
+        assert current_execution().deadline == deadline
         assert '开始扫码登录收尾' in caplog.text
         assert '登录收尾动作已完成，额外复核主界面' not in caplog.text
         assert actions[0]['type'] == 'finish_login_authorization'
@@ -232,6 +235,8 @@ def test_login_cleanup_logs_extra_main_check_and_preserves_its_failure(tmp_path,
         clock.sleep(4)
 
     def match(png, path, roi, threshold):
+        assert current_execution().deadline == deadline
+        assert current_execution().remaining() == 26
         assert '登录收尾动作已完成，额外复核主界面' in caplog.text
         observations.append(path.name)
         if failed:
@@ -252,6 +257,37 @@ def test_login_cleanup_logs_extra_main_check_and_preserves_its_failure(tmp_path,
     assert '外围剩余时间 30.00 秒' in caplog.text
     assert '外围剩余时间 26.00 秒' in caplog.text
     assert len(calls) == 1 and 'screencap' in calls[0][0]
+    assert current_execution() is None
+
+
+def test_login_finish_and_daily_bind_the_same_deadline_without_renewal(tmp_path, monkeypatch):
+    session, clock, _ = session_for(tmp_path)
+    session.wait_for_authorization(clock() + 10)
+    deadline = clock() + 1500
+    seen = []
+
+    def run(actions):
+        budget = current_execution()
+        seen.append((budget.deadline, budget.remaining()))
+        clock.sleep(20)
+        return SimpleNamespace(action_count=len(actions))
+
+    monkeypatch.setattr(session, "_runner", lambda: SimpleNamespace(run=run))
+    session.finish_login(deadline)
+    session.run_daily(deadline)
+    assert seen == [(deadline, 1500), (deadline, 1480)]
+    assert current_execution() is None
+
+
+def test_expired_daily_scope_never_runs_more_actions(tmp_path, monkeypatch):
+    session, clock, _ = session_for(tmp_path)
+    session._logged_in = True
+    reached = []
+    monkeypatch.setattr(session, "_runner", lambda: reached.append(True))
+    with pytest.raises(DailyDeadlineExceeded):
+        session.run_daily(clock())
+    assert reached == []
+    assert current_execution() is None
 
 
 @pytest.mark.parametrize("marker", [

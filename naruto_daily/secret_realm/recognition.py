@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from naruto_daily.multimodal.client import MultimodalError
 from naruto_daily.multimodal.prompts import SECRET_REALM_TICKETS
+from naruto_daily.common.execution import current_execution, stage_timeout
 
 
 LOGGER = logging.getLogger('naruto_daily')
@@ -30,7 +31,7 @@ def parse_tickets(result: dict) -> int | None:
 
 
 def wait_for_tickets(images, model, action, *, clock=time.monotonic):
-    deadline = images.elapsed + action['timeout_seconds']
+    deadline = images.elapsed + stage_timeout(action['timeout_seconds'])
     calls = 0
 
     def probe(png):
@@ -42,12 +43,14 @@ def wait_for_tickets(images, model, action, *, clock=time.monotonic):
             raise MultimodalError('秘境挑战券读取超时')
         if calls >= action['multimodal']['max_calls']:
             raise MultimodalError('秘境挑战券读取达到模型调用上限')
-        calls += 1
         start = clock()
         try:
-            result = model.complete_json(png, SECRET_REALM_TICKETS, timeout_seconds=deadline-images.elapsed)
+            result = model.complete_json(png, SECRET_REALM_TICKETS,
+                                         timeout_seconds=stage_timeout(deadline-images.elapsed))
+            calls += 1
         finally:
-            images.elapsed += max(0, clock()-start)
+            if current_execution() is None:
+                images.elapsed += max(0, clock()-start)
         if images.elapsed >= deadline:
             raise MultimodalError('秘境挑战券读取超时，忽略迟到的结果')
         count = parse_tickets(result)

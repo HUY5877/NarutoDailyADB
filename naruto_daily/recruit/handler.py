@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.execution import current_execution
 from naruto_daily.multimodal.client import MultimodalClient
 from .free_button import click_free_recruit
 from naruto_daily.common.visual import VisualError, find_template_in_png
@@ -52,7 +53,8 @@ def _find_ordinary_targets(images: ImageRecognition, action: dict) -> tuple[dict
         LOGGER.info('普通招募尚未显示，手指向上短滑120像素，让列表向下滚，第%d/%d次；停稳后重新识别',
                     swipes, ORDINARY_MAX_SWIPES)
         images.client.swipe(*ORDINARY_SCROLL)
-        images.elapsed += ORDINARY_SCROLL[-1] / 1000
+        if current_execution() is None:
+            images.elapsed += ORDINARY_SCROLL[-1] / 1000
         images.sleep(wait)
 
 

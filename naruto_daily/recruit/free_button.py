@@ -7,6 +7,7 @@ import time
 
 from naruto_daily.multimodal.client import MultimodalError
 from naruto_daily.multimodal.prompts import FREE_RECRUIT
+from naruto_daily.common.execution import current_execution, stage_timeout
 
 
 LOGGER = logging.getLogger('naruto_daily')
@@ -38,7 +39,7 @@ def parse_free_recruit(result: dict, target: dict, category: str):
 def click_free_recruit(client, target: dict, *, category: str, guard: dict, images, model,
                        timeout_seconds: float, poll_seconds: float, pre_click_wait: float,
                        post_click_wait: float, max_calls: int, clock=time.monotonic) -> bool:
-    deadline = images.elapsed + timeout_seconds
+    deadline = images.elapsed + stage_timeout(timeout_seconds)
     calls = 0
     no_red_dot = object()
 
@@ -51,12 +52,13 @@ def click_free_recruit(client, target: dict, *, category: str, guard: dict, imag
             raise MultimodalError(f'{category}免费按钮识别超时')
         if calls >= max_calls:
             raise MultimodalError(f'{category}免费按钮识别达到模型调用上限')
-        calls += 1
         started = clock()
         try:
-            result = model.complete_json(png, FREE_RECRUIT, timeout_seconds=deadline - images.elapsed)
+            result = model.complete_json(png, FREE_RECRUIT, timeout_seconds=stage_timeout(deadline - images.elapsed))
+            calls += 1
         finally:
-            images.elapsed += max(0, clock() - started)
+            if current_execution() is None:
+                images.elapsed += max(0, clock() - started)
         if images.elapsed >= deadline:
             raise MultimodalError(f'{category}免费按钮识别超时，忽略迟到的模型结果')
         button = parse_free_recruit(result, target, category)

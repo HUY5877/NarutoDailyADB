@@ -115,11 +115,11 @@ def test_invalid_step_budget_fails_before_screenshot(limit):
     assert not device.events
 
 
-def test_model_error_after_move_does_not_continue():
+def test_model_error_after_move_does_not_continue(retry_waits):
     device = Device()
     with pytest.raises(AgentError):
         run(device, Model([decision('w'), RuntimeError('offline')]))
-    assert device.events == ['screenshot', (200, 800, 200, 720, 300), 'screenshot']
+    assert device.events == ['screenshot', (200, 800, 200, 720, 300)] + ['screenshot'] * 4
 
 
 def test_wait_happens_before_post_move_screenshot():
@@ -294,15 +294,15 @@ def retry_waits(monkeypatch):
     return waits
 
 
-def test_http_retries_reuse_same_frame_without_replaying_moves(retry_waits):
+def test_http_retries_refresh_frame_without_replaying_moves(retry_waits):
     device = Device()
     model = Model([{'http_status': 429}, decision('w'),
                    {'http_status': 503}, decision(reached=True)])
     result = run(device, model)
     assert result.reached and result.steps == 1
     assert retry_waits == [10, 10]
-    assert [png for png, _ in model.requests] == [b'frame-1', b'frame-1', b'frame-2', b'frame-2']
-    assert device.events == ['screenshot', (200, 800, 200, 720, 300), 'screenshot']
+    assert [png for png, _ in model.requests] == [b'frame-1', b'frame-2', b'frame-3', b'frame-4']
+    assert device.events == ['screenshot', 'screenshot', (200, 800, 200, 720, 300), 'screenshot', 'screenshot']
 
 
 def test_agent_sdk_does_not_add_retries_after_shared_limit(retry_waits):
@@ -312,4 +312,4 @@ def test_agent_sdk_does_not_add_retries_after_shared_limit(retry_waits):
         run(device, model)
     assert len(model.requests) == 4
     assert retry_waits == [10, 10, 10]
-    assert device.events == ['screenshot']
+    assert device.events == ['screenshot'] * 4

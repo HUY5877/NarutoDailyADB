@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .recognition import ImageRecognition
 from .visual import VisualError, find_template_in_png
+from .execution import current_execution, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient, MultimodalRequestError
 from naruto_daily.multimodal.diagnostics import model_request_context
 
@@ -25,13 +26,17 @@ class ModelWorkflow:
         return max(self.images.elapsed, time.monotonic() - self.started)
 
     def remaining(self):
+        execution = current_execution()
+        if execution is not None:
+            return execution.remaining()
         remaining = self.action['timeout_seconds'] - self.elapsed()
         if remaining <= 0:
             raise VisualError('日常页面处理超时，已停止点击')
         return remaining
 
     def read(self, name, prompt, validate, *, timeout=None):
-        deadline = None if timeout is None else self.elapsed() + min(timeout, self.remaining())
+        deadline = (None if timeout is None or current_execution() is not None
+                    else self.elapsed() + min(timeout, self.remaining()))
 
         def remaining_budget():
             remaining = self.remaining()
@@ -52,11 +57,14 @@ class ModelWorkflow:
                 configured_timeout = self.action['multimodal'].get('timeout_seconds')
                 call_timeout = (min(remaining, configured_timeout)
                                 if isinstance(configured_timeout, (int, float)) else remaining)
-                LOGGER.info('[%s 第%d/%d次] 模型请求开始：阶段剩余 %.2f 秒，调用超时 %.2f 秒',
-                            name, attempt, max_calls, remaining, call_timeout)
+                LOGGER.info('[%s 第%d/%d次] 模型请求开始：%s %.2f 秒，调用超时 %.2f 秒',
+                            name, attempt, max_calls,
+                            '任务总时限剩余' if current_execution() is not None else '阶段剩余',
+                            remaining, call_timeout)
                 request_started = time.monotonic()
                 with model_request_context(name):
-                    result = self.model.complete_json(png, prompt, timeout_seconds=remaining)
+                    options = {'refresh_image': self.client.screenshot} if current_execution() is not None else {}
+                    result = self.model.complete_json(png, prompt, timeout_seconds=remaining, **options)
                 LOGGER.info('[%s 第%d/%d次] 模型请求返回：耗时 %.2f 秒',
                             name, attempt, max_calls, time.monotonic() - request_started)
                 remaining_budget()  # 迟到的模型响应不能触发后续点击。
@@ -83,7 +91,7 @@ class ModelWorkflow:
 
     def button(self, key, *, click=True, timeout=20):
         target = self.action[key]
-        deadline = self.elapsed() + min(timeout, self.remaining())
+        deadline = self.elapsed() + min(stage_timeout(timeout), self.remaining())
         while self.elapsed() < deadline:
             center, score = self.images.match(self.client.screenshot(), target)
             self.remaining()

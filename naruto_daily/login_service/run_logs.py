@@ -40,7 +40,7 @@ SAFE_RUN_ERRORS = {
     "login_failed": "未能确认游戏登录成功，请重新申请。",
     "login_finish_timeout": SAFE_DRIVER_ERRORS["login_finish_timeout"],
     "login_finish_failed": SAFE_DRIVER_ERRORS["login_finish_failed"],
-    "daily_timeout": "日常任务执行超时，本次任务已停止。",
+    "daily_timeout": SAFE_DRIVER_ERRORS["daily_timeout"],
     "daily_failed": "日常任务执行失败，本次任务已停止。",
     "protocol_error": "执行进程返回的数据异常，任务已停止，请联系管理员。",
     "instance_cleanup_failed": "任务结束后未能关闭模拟器，请联系管理员检查执行服务器。",

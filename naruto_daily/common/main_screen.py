@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from .visual import VisualError
+from .execution import current_execution, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal.diagnostics import model_request_context
 
@@ -91,7 +92,7 @@ class MainScreenRecognition:
         self.timeout = config['timeout_seconds']
 
     def match(self, png, target, timeout_seconds=None):
-        budget = self.timeout if timeout_seconds is None else min(self.timeout, timeout_seconds)
+        budget = stage_timeout(self.timeout if timeout_seconds is None else min(self.timeout, timeout_seconds))
         started = time.monotonic()
         menu = target['main_menu']
         try:
@@ -102,13 +103,16 @@ class MainScreenRecognition:
                 raise VisualError('主界面截图无法解析')
             height, width = frame.shape[:2]
             preview, centers = button_candidates(frame, menu)
-            remaining = budget - (time.monotonic() - started)
+            remaining = stage_timeout(budget - (time.monotonic() - started))
             if remaining <= 0:
                 raise VisualError('主界面截图处理超时，未继续点击')
             LOGGER.info('主界面模型识别：%s，调用预算 %.2f 秒', target['name'], budget)
             with model_request_context(f'主界面识别/{menu}'):
                 result = self.model.complete_json(preview, main_screen_prompt(menu), timeout_seconds=remaining)
-            if time.monotonic() - started >= budget:
+            execution = current_execution()
+            if execution is not None:
+                execution.remaining()
+            elif time.monotonic() - started >= budget:
                 raise VisualError('主界面模型响应已超时，忽略结果，未继续点击')
             center, score = parse_main_screen(result, menu, width, height, centers)
         except Exception as exc:

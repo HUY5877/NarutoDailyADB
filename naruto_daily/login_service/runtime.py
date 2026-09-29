@@ -7,6 +7,7 @@ import base64
 from datetime import datetime
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import secrets
@@ -15,6 +16,8 @@ import sys
 import tempfile
 import time
 from typing import TYPE_CHECKING
+
+from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS
 
 from .config import ServiceConfig
 from .ldplayer import LDPlayerError, LDPlayerPoolFull
@@ -214,6 +217,16 @@ class LoginRuntime:
         record = self._lookup(task_id)
         return record is not None and record.status == "qr_ready"
 
+    def _execution_deadline(self, event: dict[str, object], now: float) -> float:
+        duration = min(self.config.daily_timeout_seconds, DAILY_TIMEOUT_SECONDS)
+        # Older children omit this field; their compatibility budget is still
+        # capped at 25 minutes and must not reset after logged_in.
+        deadline = event.get("executionDeadline", now + duration)
+        if (isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+                or not math.isfinite(deadline) or deadline <= 0 or deadline > now + duration):
+            raise ValueError("Invalid daily execution deadline")
+        return float(deadline)
+
     async def _run_child(
         self, record: TaskRecord, command: list[str], message: dict[str, object],
         *, daily: bool = False,
@@ -285,8 +298,11 @@ class LoginRuntime:
                                 or record.daily_started_at is not None
                                 or record.expires_at_ms <= time.time() * 1000):
                             raise ValueError("Unexpected authorization confirmation")
-                        record.authorized_at = time.time()
-                        timeout.reschedule(asyncio.get_running_loop().time() + self.config.daily_timeout_seconds)
+                        now = time.time()
+                        record.execution_deadline = self._execution_deadline(event, now)
+                        record.authorized_at = record.execution_deadline - self.config.daily_timeout_seconds
+                        timeout.reschedule(asyncio.get_running_loop().time()
+                                           + max(0, record.execution_deadline - time.time()))
                         self._set_daily_status(record, "finishing_login")
                     elif daily and event.get("type") == "logged_in":
                         if (not record.qr_published or record.daily_started_at is not None
@@ -295,7 +311,9 @@ class LoginRuntime:
                         record.daily_started_at = time.time()
                         if record.authorized_at is None:
                             # Older children combine authorization and final login.
-                            timeout.reschedule(asyncio.get_running_loop().time() + self.config.daily_timeout_seconds)
+                            record.execution_deadline = self._execution_deadline(event, record.daily_started_at)
+                            timeout.reschedule(asyncio.get_running_loop().time()
+                                               + max(0, record.execution_deadline - time.time()))
                         self._set_daily_status(record, "running_daily")
                     elif daily and event.get("type") == "daily_completed":
                         count = event.get("actionCount")
@@ -441,7 +459,8 @@ class LoginRuntime:
         result = {
             "taskId": record.id, "status": status, "updatedAt": time.time(),
             "startedAt": record.daily_started_at, "authorizedAt": record.authorized_at,
-            "deadline": (record.authorized_at + self.config.daily_timeout_seconds
+            "deadline": (record.execution_deadline if record.execution_deadline is not None else
+                         record.authorized_at + self.config.daily_timeout_seconds
                          if record.authorized_at is not None else
                          record.daily_started_at + self.config.daily_timeout_seconds
                          if record.daily_started_at is not None else record.expires_at_ms / 1000),
