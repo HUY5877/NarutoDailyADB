@@ -180,14 +180,10 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
                              asset_root=Path('.'), sleep=time.sleep):
     flow = ModelWorkflow(client, action, model=model, template_matcher=template_matcher,
                          asset_root=asset_root, sleep=sleep)
-    previous_advance = None
     for round_number in range(1, action['max_rounds'] + 1):
         overview = flow.read('最低进阶装备识别', prompts.EQUIPMENT, _overview)
         slot = lowest_equipment(overview)
         levels = tuple(overview['progressions'])
-        if previous_advance == levels:
-            raise VisualError('进阶后装备等级未变化，未重复点击')
-        previous_advance = None
         LOGGER.info('[装备养成 第%d轮] 选择第%d件装备，进阶+%d', round_number, slot, levels[slot - 1])
         flow.tap(EQUIPMENT_POINTS[slot - 1])
         operated = False
@@ -211,7 +207,7 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
         if can_advance:
             LOGGER.info('六格材料遍历完成，模型确认进阶按钮可用，执行进阶')
             flow.tap(ADVANCE)
-            previous_advance = levels
+            LOGGER.info('已点击进阶，下一轮重新选择最低进阶装备并遍历六格材料')
         elif not operated:
             LOGGER.info('六格材料均无可用操作，当前装备也不能进阶，结束装备任务')
             return

@@ -152,14 +152,15 @@ def test_uncertain_advance_or_wrong_equipment_never_clicks_advance(bad):
     assert ADVANCE not in client.taps
 
 
-def test_advance_without_level_change_does_not_repeat_click():
-    client = Client()
-    with pytest.raises(VisualError, match='进阶.*未变化'):
-        handle_equipment_upgrade(client, action(), model=Model(
-            overview(), *filled_slots(), advance(True), overview()),
-            template_matcher=matcher, sleep=lambda _: None)
-    assert client.taps.count(ADVANCE) == 1
-    assert [p for p in client.taps if p in MATERIAL_POINTS] == list(MATERIAL_POINTS)
+@pytest.mark.parametrize('advance_rounds', [1, 2])
+def test_advance_without_level_change_continues_full_material_round(advance_rounds):
+    client, model = run(
+        *([overview(), *filled_slots(), advance(True)] * advance_rounds),
+        overview(), *filled_slots(), advance(False),
+    )
+    round_taps = [EQUIPMENT_POINTS[4]] + [p for slot in MATERIAL_POINTS for p in (slot, BLANK)]
+    assert client.taps == (round_taps + [ADVANCE]) * advance_rounds + round_taps
+    assert model.prompts.count(prompts.ADVANCE) == advance_rounds + 1
 
 
 def test_sweep_with_partial_materials_rechecks_stamina_on_same_slot_then_finishes():
