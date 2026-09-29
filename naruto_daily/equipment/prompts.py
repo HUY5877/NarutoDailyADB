@@ -44,8 +44,14 @@ auto_stop只读取最前方弹层底部“材料足够后自动停止”文字�
 
 SWEEP_RESULT = BASE + '''只读取最前方的扫荡结果层，不能读取背景材料详情的按钮。
 返回{"page":"sweep_result","completed_runs":6,"stamina":5,"animation_finished":true}。
+优先规则：最前方出现“某某已足够”（如“海之玉已足够”，材料名不限），就确认本次扫荡成功结束，
+必须返回page="sweep_result"、animation_finished=true；不要求显示“第N次”列表或“继续扫荡”按钮，不能因它们缺失返回unknown。
+扫荡设置中的“材料足够后自动停止”选项说明不属于“某某已足够”的结果提示。
+这只表示本次扫荡结束，不代表所有合成材料都已齐全；即使背景仍显示“一键扫荡”，前景也仍是sweep_result。
 completed_runs读取左上“扫荡N次”的N；stamina读取右上体力碗旁分数的分子。
-animation_finished仅在最后一条已显示的“第N次”和左上总次数一致，且没有覆盖画面的“扫荡完成”动画时为true。
+例如前景显示“扫荡1次”、体力“7/200”和“海之玉已足够”，返回{"page":"sweep_result","completed_runs":1,"stamina":7,"animation_finished":true}。
+次数和体力必须按当前截图读取，不照抄示例；字段看不清返回null，但不得因此否定已确认的结果页面或“已足够”完成状态。
+没有“某某已足够”提示时，animation_finished仅在最后一条已显示的“第N次”和左上总次数一致，且没有覆盖画面的“扫荡完成”动画时为true。
 例如左上扫荡24次，列表只播放到第1次/第2次，此时为false；播放到第23次/第24次且无完成动画才为true。
 “继续扫荡”按钮可能在动画期间提前出现，也可能在材料足够后消失，不能仅凭按钮判断结束。
 看不清的字段返回null；不是扫荡结果层返回{"page":"unknown"}。'''
@@ -53,6 +59,7 @@ animation_finished仅在最后一条已显示的“第N次”和左上总次数�
 PAGE = BASE + '''只判断当前前景页面，返回{"page":"equipment|material|material_info|sweep_setup|sweep_result|unknown"}。
 equipment=无遮挡的装备总览；material=左侧合成树及右侧获取途径的材料详情；
 material_info=左侧或中央的单张成品说明卡，仅有物品说明和增加属性，没有合成树或操作按钮；
-sweep_setup=含开始扫荡按钮的设置弹层；sweep_result=显示扫荡次数、奖励列表或“扫荡完成”动画的结果层，
+sweep_setup=含开始扫荡按钮的设置弹层；sweep_result=显示扫荡次数、奖励列表、“某某已足够”或“扫荡完成”动画的结果层，
+前景出现任意材料的“已足够”提示就归为sweep_result，即使没有“第N次”列表也不能判成unknown。
 即使“继续扫荡”按钮消失、背景合成按钮露出，也仍是sweep_result，不能判成material。
 其它弹窗或不确定返回unknown。'''
