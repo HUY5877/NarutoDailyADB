@@ -734,14 +734,16 @@ def test_daily_configuration_defaults_and_relative_path(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     config = load_config({})
     assert config.daily_config_path == PROJECT_ROOT / "config.example.json"
-    assert config.daily_timeout_seconds == 1500
+    assert config.daily_timeout_seconds == 2100
     configured = load_config({"DAILY_CONFIG_PATH": "config.example.json", "DAILY_TIMEOUT_SECONDS": "300"})
     assert configured.daily_config_path == PROJECT_ROOT / "config.example.json"
     assert configured.daily_timeout_seconds == 300
 
 
-@pytest.mark.parametrize("configured,expected", [(1, 1), (1500, 1500), (7200, 1500), (86400, 1500)])
-def test_old_daily_timeout_settings_cannot_extend_25_minute_ceiling(configured, expected):
+@pytest.mark.parametrize("configured,expected", [
+    (1, 1), (1500, 1500), (2100, 2100), (2101, 2100), (7200, 2100), (86400, 2100),
+])
+def test_old_daily_timeout_settings_cannot_extend_35_minute_ceiling(configured, expected):
     assert load_config({"DAILY_TIMEOUT_SECONDS": str(configured)}).daily_timeout_seconds == expected
     assert ServiceConfig(daily_timeout_seconds=configured).daily_timeout_seconds == expected
 
@@ -770,7 +772,7 @@ def test_parent_uses_child_absolute_deadline_without_reset_at_logged_in(monkeypa
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("deadline", [None, True, "1500", -1, float("nan"), float("inf"), 2501])
+@pytest.mark.parametrize("deadline", [None, True, "2100", -1, float("nan"), float("inf"), 3101])
 def test_child_cannot_supply_invalid_or_overlong_execution_deadline(tmp_path, deadline):
     runtime = LoginRuntime(ServiceConfig(daily_timeout_seconds=7200), MemoryStorage())
     with pytest.raises(ValueError, match="execution deadline"):
@@ -779,7 +781,8 @@ def test_child_cannot_supply_invalid_or_overlong_execution_deadline(tmp_path, de
 
 def test_legacy_protocol_and_delayed_deadline_do_not_extend_execution_budget():
     runtime = LoginRuntime(ServiceConfig(daily_timeout_seconds=7200), MemoryStorage())
-    assert runtime._execution_deadline({}, 1000) == 2500
+    assert runtime._execution_deadline({}, 1000) == 3100
+    assert runtime._execution_deadline({"executionDeadline": 3100}, 1000) == 3100
     assert runtime._execution_deadline({"executionDeadline": 999}, 1000) == 999
 
 

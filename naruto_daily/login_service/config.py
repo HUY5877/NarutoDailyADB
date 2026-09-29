@@ -52,7 +52,7 @@ class ServiceConfig:
 
     def __post_init__(self) -> None:
         # Preserve shorter configured/test limits without letting old 7200s
-        # settings extend the 25-minute execution ceiling.
+        # settings extend the 35-minute execution ceiling.
         object.__setattr__(self, "daily_timeout_seconds", min(self.daily_timeout_seconds, DAILY_TIMEOUT_SECONDS))
 
 

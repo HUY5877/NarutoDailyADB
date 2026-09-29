@@ -220,7 +220,7 @@ class LoginRuntime:
     def _execution_deadline(self, event: dict[str, object], now: float) -> float:
         duration = min(self.config.daily_timeout_seconds, DAILY_TIMEOUT_SECONDS)
         # Older children omit this field; their compatibility budget is still
-        # capped at 25 minutes and must not reset after logged_in.
+        # capped at 35 minutes and must not reset after logged_in.
         deadline = event.get("executionDeadline", now + duration)
         if (isinstance(deadline, bool) or not isinstance(deadline, (int, float))
                 or not math.isfinite(deadline) or deadline <= 0 or deadline > now + duration):

@@ -9,7 +9,7 @@ import time
 from typing import Callable, Iterator, TypeVar
 
 
-DAILY_TIMEOUT_SECONDS = 25 * 60
+DAILY_TIMEOUT_SECONDS = 35 * 60
 MODEL_REQUEST_TIMEOUT_SECONDS = 30
 LOGGER = logging.getLogger("naruto_daily")
 T = TypeVar("T")
@@ -28,7 +28,7 @@ class ExecutionBudget:
     def remaining(self) -> float:
         remaining = self.deadline - self.clock()
         if remaining <= 0:
-            raise DailyDeadlineExceeded("执行总时限已到，停止全部操作（日常总时限最多 25 分钟）")
+            raise DailyDeadlineExceeded("执行总时限已到，停止全部操作（日常总时限最多 35 分钟）")
         return remaining
 
     def sleep(self, seconds: float) -> None:
