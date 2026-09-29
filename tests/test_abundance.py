@@ -11,9 +11,10 @@ from naruto_daily.common.visual import VisualError
 @pytest.fixture(autouse=True)
 def battle_clock(monkeypatch):
     from naruto_daily.abundance import handler
-    from naruto_daily.battle import run_battle
+    from naruto_daily.battle import run_battle_without_first_skill
     # 这些流程测试用注入的 sleep 推进时间；实际 ADB 耗时在战斗模块测试中覆盖。
-    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw: run_battle(*a, **kw, clock=lambda: 0))
+    monkeypatch.setattr(handler, 'run_battle_without_first_skill',
+                        lambda *a, **kw: run_battle_without_first_skill(*a, **kw, clock=lambda: 0))
 
 
 def target(name):
@@ -54,9 +55,9 @@ def test_challenge_waits_ten_seconds_before_battle_and_dismisses_result():
     summary=handle_abundance(client,action(),template_matcher=matcher,sleep=lambda s:events.append(('sleep',s)))
     assert client.taps[0] == (50, 50)
     assert client.taps[-1] == SERVICE_POPUP_DISMISS
-    assert Counter(client.taps[1:-1]) == Counter({(1,1):120, (2,2):120, (3,3):120, (4,4):120})
+    assert Counter(client.taps[1:-1]) == Counter({(2,2):120, (3,3):120, (4,4):120})
     assert events[:3]==[('sleep',1),('tap',50,50),('sleep',10)]
-    assert summary.taps==480
+    assert summary.taps==360
 
 
 def test_missing_challenge_aborts_before_loading_or_attack():
@@ -79,7 +80,7 @@ def test_disappearing_result_prompt_is_not_clicked():
     with pytest.raises(VisualError):
         handle_abundance(client,action(),template_matcher=matcher,sleep=waits.append)
     assert client.taps[0] == (50,50)
-    assert Counter(client.taps[1:]) == Counter({(1,1):120, (2,2):120, (3,3):120, (4,4):120})
+    assert Counter(client.taps[1:]) == Counter({(2,2):120, (3,3):120, (4,4):120})
 
 
 class AfterBattleModel:
@@ -177,7 +178,7 @@ def test_abundance_passes_shared_model_to_result_handler(monkeypatch):
         return BattleSummary(4, 'multimodal')
     def finish(*args, **kwargs):
         assert kwargs.get('model') is model
-    monkeypatch.setattr(handler, 'run_battle', battle)
+    monkeypatch.setattr(handler, 'run_battle_without_first_skill', battle)
     monkeypatch.setattr(handler, 'finish_abundance_result', finish)
     handle_abundance(Client(), config, template_matcher=lambda *a: ((50, 50), .99),
                      sleep=lambda _: None)

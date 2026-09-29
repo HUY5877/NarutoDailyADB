@@ -40,15 +40,15 @@ def run_battle(
             or not math.isfinite(check_interval_seconds) or check_interval_seconds <= 0):
         raise ValueError('战斗检查间隔必须是正数')
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
-    # 调用方已经完成加载等待；一批四个输入完成后再开始下一批。
+    # 调用方已经完成加载等待；一批全部输入完成后再开始下一批。
     tap_seconds = float(check_interval_seconds)
-    LOGGER.info('开始战斗模块，四个战斗按钮并发连点 %g 秒后停止点击并检查结算，确认仍在战斗后立即恢复',
-                tap_seconds)
+    buttons = battle['buttons']
+    LOGGER.info('开始战斗模块，%d 个战斗按钮（%s）并发连点 %g 秒后停止点击并检查结算，确认仍在战斗后立即恢复',
+                len(buttons), '、'.join(button['name'] for button in buttons), tap_seconds)
     started, waited = clock(), images.elapsed
     execution = current_execution()
     timeout = stage_timeout(float(battle['timeout_seconds']))
     interval = float(battle['tap_interval_seconds'])
-    buttons = battle['buttons']
     taps = 0
 
     def elapsed():
@@ -74,7 +74,7 @@ def run_battle(
     with ThreadPoolExecutor(max_workers=len(buttons), thread_name_prefix='battle-tap') as pool:
         while remaining() > 0:
             if elapsed() >= next_check:
-                # 前一批四个输入均已返回，先停止全部点击，再截图/调用模型。
+                # 前一批全部输入均已返回，先停止全部点击，再截图/调用模型。
                 initial_check = round_number == 0
                 round_number += 1
                 LOGGER.info('[战斗检查 第%d轮] %s；检查结算，%s %g 秒',
@@ -123,3 +123,19 @@ def run_battle(
             if delay > 0:
                 images.sleep(delay)
     raise VisualError(f'战斗等待结束超时（{timeout:g} 秒），已停止点击')
+
+
+def run_battle_without_first_skill(
+    client, battle: dict, *, template_matcher: Callable = find_template_in_png,
+    asset_root: Path = Path('.'), sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    model: MultimodalClient | None = None,
+    check_interval_seconds: float = BATTLE_CHECK_INTERVAL_SECONDS,
+) -> BattleSummary:
+    """丰饶之间使用：跳过一技能，避免退出战斗后误点超影免费扫荡。"""
+    filtered_battle = dict(battle, buttons=[
+        button for button in battle['buttons'] if button['name'] != '一技能'
+    ])
+    return run_battle(client, filtered_battle, template_matcher=template_matcher,
+                      asset_root=asset_root, sleep=sleep, clock=clock, model=model,
+                      check_interval_seconds=check_interval_seconds)

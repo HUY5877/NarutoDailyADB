@@ -27,9 +27,10 @@ def main_model(monkeypatch):
 
 def test_real_screens_follow_abundance_from_main_page_through_result_and_back(monkeypatch):
     from naruto_daily.abundance import handler
-    from naruto_daily.battle import run_battle
+    from naruto_daily.battle import run_battle_without_first_skill
     now = [0.0]
-    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw: run_battle(*a, **kw, clock=lambda: now[0]))
+    monkeypatch.setattr(handler, 'run_battle_without_first_skill',
+                        lambda *a, **kw: run_battle_without_first_skill(*a, **kw, clock=lambda: now[0]))
     settings = load_settings(ROOT / 'config.example.json')
     frames = {name: (ROOT / 'tests/fixtures' / path).read_bytes() for name, path in {
         'home': 'main_page_reward_dot.png', 'cards': 'abundance_card.png',
@@ -58,12 +59,14 @@ def test_real_screens_follow_abundance_from_main_page_through_result_and_back(mo
                 self.challenge_clicks += 1
                 self.state = 'battle'
             elif self.state == 'battle':
+                assert (x, y) != (1500, 960), '丰饶战斗不能点击一技能'
                 now[0] += .25
                 self.battle_taps.append((x, y))
-                if len(self.battle_taps) == 4:
+                if len(self.battle_taps) == 3:
                     self.state = 'result'
             else:
                 if x > 1300:
+                    assert (x, y) != (1500, 960), '结算检查前不能误点超影免费扫荡'
                     # 示例配置没有模型，结算模板仍在下一个战斗检查周期才发现。
                     now[0] += .25
                     self.result_extra_taps += 1
@@ -76,8 +79,8 @@ def test_real_screens_follow_abundance_from_main_page_through_result_and_back(mo
     result = ActionRunner(client, asset_root=ROOT, sleep=waits.append).run(build_task(settings, 'abundance'))
     assert result.action_count == 5 and client.state == 'home'
     assert client.challenge_clicks == 1
-    assert client.result_extra_taps == 116
-    assert sorted(client.battle_taps) == sorted([(1500, 960), (1535, 750), (1725, 650), (1715, 885)])
+    assert client.result_extra_taps == 117
+    assert sorted(client.battle_taps) == sorted([(1535, 750), (1725, 650), (1715, 885)])
     assert now[0] == 30
     assert waits.count(10) == 1
 

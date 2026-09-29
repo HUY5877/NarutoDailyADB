@@ -1,9 +1,10 @@
 from collections import Counter
+from copy import deepcopy
 from threading import Barrier, Lock
 
 import pytest
 
-from naruto_daily.battle import run_battle
+from naruto_daily.battle import run_battle, run_battle_without_first_skill
 from naruto_daily.common.adb_client import AdbError
 from naruto_daily.common.visual import VisualError
 
@@ -124,10 +125,16 @@ def test_invalid_check_interval_fails_before_device_access(seconds):
     assert not client.frames and not client.taps
 
 
-def test_four_buttons_run_concurrently_and_finish_before_result_check():
+@pytest.mark.parametrize('runner, expected_buttons', [
+    (run_battle, [(1, 1), (2, 2), (3, 3), (4, 4)]),
+    (run_battle_without_first_skill, [(2, 2), (3, 3), (4, 4)]),
+])
+def test_selected_buttons_run_concurrently_and_finish_before_result_check(runner, expected_buttons, caplog):
     clock, waits = Clock(), []
     client = Client(clock)
-    barrier = Barrier(4, timeout=3)
+    config = battle_config()
+    original = deepcopy(config)
+    barrier = Barrier(len(expected_buttons), timeout=3)
     def tap(x, y):
         client.taps.append((x, y))
         if barrier.wait() == 0:
@@ -135,10 +142,13 @@ def test_four_buttons_run_concurrently_and_finish_before_result_check():
     client.tap = tap
     def matcher(png, *args):
         return ((50, 50), .99) if int(png) == 2 else (None, .2)
-    result = run_battle(client, battle_config(), template_matcher=matcher,
+    with caplog.at_level('INFO', logger='naruto_daily'):
+        result = runner(client, config, template_matcher=matcher,
                         sleep=waits.append, clock=clock)
-    assert result.taps == 4 and sorted(client.taps) == [(1, 1), (2, 2), (3, 3), (4, 4)]
+    assert result.taps == len(expected_buttons) and sorted(client.taps) == expected_buttons
     assert client.frames == [0, 30] and waits == []
+    assert config == original
+    assert f'{len(expected_buttons)} 个战斗按钮' in caplog.text
 
 
 def test_result_visible_on_entry_stops_without_attacks_or_sleep():

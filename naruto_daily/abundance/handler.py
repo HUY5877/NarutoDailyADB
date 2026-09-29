@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from naruto_daily.battle import BattleSummary, run_battle
+from naruto_daily.battle import BattleSummary, run_battle_without_first_skill
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.execution import retry_observation, stage_timeout
 from naruto_daily.common.visual import VisualError, find_template_in_png
@@ -104,8 +104,8 @@ def handle_abundance(
     images.sleep(float(action['load_wait_seconds']))
     model = (MultimodalClient(action["multimodal"], asset_root=asset_root)
              if action.get("multimodal") else None)
-    summary = run_battle(client, action['battle'], template_matcher=template_matcher,
-                         asset_root=asset_root, sleep=sleep, model=model)
+    summary = run_battle_without_first_skill(client, action['battle'], template_matcher=template_matcher,
+                                             asset_root=asset_root, sleep=sleep, model=model)
     finish_abundance_result(client, action, template_matcher=template_matcher,
                             asset_root=asset_root, sleep=sleep, model=model)
     return summary
