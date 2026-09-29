@@ -76,6 +76,7 @@ async def eventually(predicate):
 def test_large_stderr_is_drained_with_full_chinese_text_and_never_sent_to_redis(monkeypatch, tmp_path, caplog):
     caplog.set_level(logging.INFO, logger=LOGGER)
     monkeypatch.setenv("MULTIMODAL_API_KEY", "private-model-key")
+    (tmp_path / '.env').write_text('MULTIMODAL_API_KEY=private-root-key', encoding='utf-8')
     program = r'''
 import json,os,sys
 message=json.loads(sys.stdin.readline())
@@ -85,7 +86,8 @@ for index in range(400):
 print(message['ordinary'], file=sys.stderr)
 print('WARNING '+message['warning'], file=sys.stderr)
 print('ERROR '+message['error'], file=sys.stderr)
-print('INFO known-secret='+os.environ['MULTIMODAL_API_KEY']+' private-oss-key private-sts-key', file=sys.stderr)
+assert 'MULTIMODAL_API_KEY' not in os.environ
+print('INFO known-secret=private-model-key private-root-key private-oss-key private-sts-key', file=sys.stderr)
 print('INFO '+message['public'], file=sys.stderr)
 sys.stderr.buffer.write(b'invalid-utf8: \xff\xfe\n')
 print('INFO '+'L'*1600+'full-line-tail', file=sys.stderr, flush=True)
@@ -108,6 +110,7 @@ for event in message['events']:
         assert any(len(item) > 1600 and item.endswith("full-line-tail") for item in messages)
         assert sum("公开动作节点" in item for item in messages) == 1
         assert all("private-model-key" not in item and "private-oss-key" not in item and "private-sts-key" not in item for item in messages)
+        assert all("private-root-key" not in item for item in messages)
         assert any(item.levelno == logging.WARNING and "识别重试警告" in item.getMessage() for item in caplog.records)
         assert any(item.levelno == logging.ERROR and "示例诊断错误" in item.getMessage() for item in caplog.records)
         assert all("detail-burst" not in event.get("message", "") and "普通print" not in event.get("message", "")

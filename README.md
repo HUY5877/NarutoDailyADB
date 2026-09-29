@@ -4,11 +4,11 @@
 
 ## 扫码登录 worker（Python）
 
-新增的 [login_service](naruto_daily/login_service/README.md) 使用 Python 实现，与现有日常自动化独立运行。配置 `REDIS_URL` 后，它作为常驻 worker 从真实 Redis 队列消费登录任务，每个任务启动独立 Python 子进程模拟雷电及游戏登录步骤，生成二维码后写入 OSS，并回写 Redis 会话状态。当前二维码仅用于联调，不能授权真实账号；真实雷电与游戏点击尚未实现。
+[login_service](naruto_daily/login_service/README.md) 使用 Python 实现，与现有日常自动化独立运行。配置 `REDIS_URL` 和 `EMULATOR_DRIVER=ldplayer` 后，它作为常驻 worker 消费 Redis 登录任务，为每个任务分配雷电实例并启动独立 Python 子进程，打开游戏、生成真实 QQ 授权二维码，写入 OSS 后回写 Redis 状态。用户扫码授权后，同一子进程继续执行日常任务。`mock` 驱动仅生成联调用模拟二维码。
 
 客户端前后端位于 [NarutoLoginClient](https://github.com/HUY5877/NarutoLoginClient)，仍使用 TSX + TypeScript。网站/Vercel 后端投递 Redis 任务、查询状态并读取 OSS；Python worker 不开放 HTTP 端口，网站无需连接本机 Python。两边必须使用相同的 Redis 数据库、队列和 OSS 配置；默认队列为 `naruto:login:tasks`，OSS 前缀为 `login`。
 
-在本项目根目录执行 `python -m pip install -e ".[login-service]"`，在服务专用 `naruto_daily/login_service/.env` 中设置 `REDIS_URL` 并保留已有 OSS 配置，再执行 `python -m naruto_daily.login_service`。本机可直接运行 `.\.venv-login-service\Scripts\python.exe -m naruto_daily.login_service`。进程会持续消费任务，断线自动重连，按 `Ctrl+C` 优雅停止；强制终止后已取出的任务可能需要重新申请。`REDIS_URL` 为必填项，未配置或为空时会明确报错并以退出码 1 结束，不启动本地 Web 服务，详见模块文档。
+按下方安装步骤创建虚拟环境并安装依赖，在项目根目录 `.env` 中填写模型、Redis、OSS 和雷电配置，然后双击 `启动扫码服务.cmd`，或运行 `.\.venv\Scripts\python.exe -m naruto_daily.login_service`。已有 `.venv-login-service` 也可继续使用，启动脚本优先选择它。进程会持续消费任务，断线自动重连，按 `Ctrl+C` 优雅停止；强制终止后已取出的任务可能需要重新申请。`REDIS_URL` 为必填项，未配置或为空时会明确报错并以退出码 1 结束，不启动本地 Web 服务，详见模块文档。
 
 ---
 
@@ -48,6 +48,7 @@ naruto_daily/
 ├── common/                  # ADB、图像识别、卡片查找、共用结果类型
 ├── multimodal/              # client.py：模型调用；prompts.py：提示词模板；agent/：通用视觉导航
 ├── login/                   # 账号控件、昵称确认、授权、登录弹窗
+├── login_service/           # Redis 扫码服务、真实二维码导航和实例池管理
 ├── ichiraku.py              # 一乐外卖可领取判断及领取
 ├── equipment/              # 最低进阶装备的材料扫荡、合成、装备和进阶
 ├── fortune/                 # 金币招财
@@ -59,20 +60,24 @@ naruto_daily/
 └── recruit/                 # 免费招募
 ```
 
-各功能包的 `__init__.py` 导出任务入口，实现放在包内；跨功能共用能力集中在 `common/`。图片仍放在项目的 `assets/`，流程参数保留在 JSON，接口和账号配置集中在同目录的 `.env`，命令行用法不变。
+各功能包的 `__init__.py` 导出任务入口，实现放在包内；跨功能共用能力集中在 `common/`。流程参数保留在 JSON，模型、账号、Redis、OSS 和雷电配置统一放在项目根目录 `.env`。图片统一放在根目录 `assets/`：扫码专用的 8 张模板使用 `login_*.png` 文件名，QQ 安卓登录、切换账号和开始游戏继续复用原有三张图片。
 
 ## 安装
 
+新电脑先安装 Python 3.11+、Git 和雷电模拟器 9。clone 本仓库后进入 `NarutoDailyADB` 根目录，再执行以下首次安装命令；虚拟环境和真实 `.env` 不随 Git 下载。已有配置文件时直接编辑，保留其中的密钥，不要再次复制覆盖。
+
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+.\.venv\Scripts\python.exe -m pip install -e ".[test,login-service]"
 Copy-Item config.example.json config.local.json
 Copy-Item .env.example .env
 ```
 
+只需复制根目录这一份 `.env.example`。随后按本机雷电安装路径修改 `config.local.json` 的 ADB 配置；运行扫码服务时，在根目录 `.env` 中填写 Redis、OSS、雷电控制台路径和实例池索引。服务入口及 `pool_admin` 默认都读取这同一份文件。
+
 导航依赖随上述 pip 安装一起完成。默认网关使用 OpenAI 兼容接口，秘境任务通过 Pydantic AI 自动调用视觉导航 agent；Claude Messages 接口仍由 `claude-agent-sdk`（锁定 0.2.152）支持。
 
-编辑 `.env`，填写以下配置；已有 `.env` 时直接编辑，不要用示例覆盖：
+编辑项目根目录的 `.env`，填写以下配置；已有 `.env` 时直接编辑，不要用示例覆盖：
 
 ```dotenv
 MULTIMODAL_API_KEY=你的API密钥
@@ -81,7 +86,9 @@ MULTIMODAL_MODEL=deepseek-v4.1-flash
 LOGIN_ACCOUNT_NAME="你要登录的完整昵称"
 ```
 
-`MULTIMODAL_BASE_URL` 填基础地址，不包含 `/chat/completions`。`.env` 按 `--config` 指定的 JSON 所在目录读取，不依赖启动命令时的工作目录；系统环境变量优先。昵称中有空格或 `#` 时请加引号。修改后下次运行会重新读取；缺少必需变量时会报出变量名，不输出密钥。真实 `.env` 已加入 Git 忽略，只提交 `.env.example`。
+`MULTIMODAL_BASE_URL` 填基础地址，不包含 `/chat/completions`。`MULTIMODAL_API_KEY`、`MULTIMODAL_BASE_URL`、`MULTIMODAL_MODEL` 三项统一只从项目根目录的 `.env` 读取，适用于普通脚本、本地扫码秘境和扫码服务子任务；进程环境及 `--env-file` 指定文件中的同名值均不覆盖它们。模型配置不随 `--config` 或启动工作目录改变；修改后请重启正在运行的任务或常驻扫码服务。
+
+`LOGIN_ACCOUNT_NAME` 等其他任务变量也统一从项目根目录 `.env` 读取，进程环境优先，不随 JSON 所在目录变化。扫码服务和实例池管理保留 `--env-file <路径>`，供显式选择另一套服务变量；模型配置仍固定使用根目录文件。昵称中有空格或 `#` 时请加引号。缺少必需变量时会报出变量名，不输出密钥。真实 `.env` 已加入 Git 忽略，只提交 `.env.example`。
 
 先打开雷电模拟器，再检查 ADB 和安卓分辨率：
 
@@ -109,7 +116,7 @@ LOGIN_ACCOUNT_NAME="你要登录的完整昵称"
 
 通用导航位于 `naruto_daily/multimodal/agent/`，使用 Pydantic AI 的 `Agent` 管理会话和工具循环，移动工具负责截图和 ADB。`secret_realm/pre_battle.py` 在通用 `battle.run_battle()` 之前执行检查：阴阳秘境退出；毒风秘境由 `secret_realm/navigation.py` 传入目标和完成条件。agent 每一步在同一次工具调用中读取页面、提示文字和 BOSS/交战证据，再决定移动或结束；待解封提示明确消失且有 BOSS 或实际交战证据时，才进入战斗。不会在 agent 结束后再调用模型复核。最多移动 50 步，步数用尽仍未解封则退出；识别到失败/结算或页面不确定则停止。退出后回房间重新读券，不计为通关；无需额外传命令行参数。详见 [agent 使用说明](naruto_daily/multimodal/agent/README.md)。
 
-默认使用 [鱼玩 LLM 网关](https://llm-proxy.yuwan-game.com/)：`.env` 中设置 `MULTIMODAL_BASE_URL=https://llm-proxy.yuwan-game.com/v1`、`MULTIMODAL_MODEL=deepseek-v4.1-flash`，并将 `MULTIMODAL_API_KEY` 填为该网关的有效密钥。基础地址保留 `/v1`，程序会拼接 `/chat/completions`，视觉导航也使用 OpenAI 兼容客户端。若扫码服务的 `naruto_daily/login_service/.env` 或进程环境配置了同名变量，也需保持一致，因为服务会将这些值传给日常子进程并覆盖日常 `.env`。
+默认使用 [鱼玩 LLM 网关](https://llm-proxy.yuwan-game.com/)：项目根目录 `.env` 中设置 `MULTIMODAL_BASE_URL=https://llm-proxy.yuwan-game.com/v1`、`MULTIMODAL_MODEL=deepseek-v4.1-flash`，并将 `MULTIMODAL_API_KEY` 填为该网关的有效密钥。基础地址保留 `/v1`，程序会拼接 `/chat/completions`，视觉导航也使用 OpenAI 兼容客户端。扫码服务也读取这同一份模型配置；Redis、OSS 和雷电服务参数与它们放在同一份根目录 `.env` 中。
 
 JSON 中的 `account_name`、`multimodal.base_url` 和 `multimodal.model` 分别使用 `${LOGIN_ACCOUNT_NAME}`、`${MULTIMODAL_BASE_URL}` 和 `${MULTIMODAL_MODEL}` 引用环境配置。`naruto_daily/common/environment.py` 统一读取和解析环境变量，多模态客户端调用前单独读取 `MULTIMODAL_API_KEY`，密钥不会放进任务动作列表。旧的 `api_key_file` 配置已移除。授权截图会发送至配置的模型服务。默认单次请求上限 20 秒，每次授权最多 6 次调用；网络耗时计入 40 秒阶段预算。昵称未能读取时仍使用统一的等待 1 秒重新截图补查逻辑。
 

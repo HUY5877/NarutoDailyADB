@@ -789,7 +789,7 @@ def load_settings(path: Path, *, skip_account_login: bool = False) -> Settings:
         # 扫码已经替代账号选择；先移除旧登录前缀，避免要求保存账号的环境变量。
         tasks["login"] = login[start:]
     try:
-        payload = resolve_environment(payload, read_environment(Path(path).parent))
+        payload = resolve_environment(payload, read_environment())
     except EnvironmentConfigError as exc:
         raise ConfigError(str(exc)) from None
     if not isinstance(payload, dict):

@@ -24,7 +24,7 @@ class MultimodalClient:
         self._open = open_request
         self._sleep, self._clock = sleep, clock
         try:
-            environment = read_environment(Path(asset_root))
+            environment = read_environment()
             self.config = resolve_environment(config, environment)
             self._key = require_environment(environment, 'MULTIMODAL_API_KEY')
         except EnvironmentConfigError as exc:

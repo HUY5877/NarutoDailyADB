@@ -10,6 +10,8 @@ from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
+from naruto_daily.common import environment
+
 
 async def run_worker(config) -> None:
     from .runtime import LoginRuntime
@@ -41,11 +43,11 @@ async def run_worker(config) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Python 扫码登录任务服务")
     parser.add_argument(
-        "--env-file", type=Path, default=Path(__file__).with_name(".env"),
-        help="服务专用环境文件，默认读取本模块旁的 .env；环境变量优先",
+        "--env-file", type=Path, default=environment.PROJECT_ROOT / ".env",
+        help="默认读取项目根目录的 .env；Redis/OSS 等服务变量支持进程环境覆盖",
     )
     args = parser.parse_args(argv)
-    load_dotenv(args.env_file, override=False)
+    load_dotenv(args.env_file, override=False, encoding="utf-8-sig")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if not os.environ.get("REDIS_URL", "").strip():

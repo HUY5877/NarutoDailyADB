@@ -42,7 +42,6 @@ def response_for(image):
 
 
 def model_for(tmp_path, clock, request, sleep):
-    (tmp_path / '.env').write_text('MULTIMODAL_API_KEY=offline-key', encoding='utf-8')
     config = dict(base_url='https://example.test/v1', model='offline', timeout_seconds=30, max_calls=3)
     return MultimodalClient(config, asset_root=tmp_path, open_request=request, clock=clock, sleep=sleep)
 

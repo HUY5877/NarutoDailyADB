@@ -227,10 +227,7 @@ class LoginRuntime:
             if key.upper() in _CHILD_ENV_ALLOWLIST
         }
         child_env["PYTHONIOENCODING"] = "utf-8"
-        if daily:
-            for name in ("MULTIMODAL_BASE_URL", "MULTIMODAL_MODEL", "MULTIMODAL_API_KEY"):
-                if name in os.environ:
-                    child_env[name] = os.environ[name]
+        # 模型配置由子进程直接读取项目根目录 .env，服务环境不得覆盖。
         child = subprocess.Popen(
             command,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -340,10 +337,10 @@ class LoginRuntime:
 
     async def _relay_child_stderr(self, record: TaskRecord, stream) -> None:
         """Show full diagnostics locally without publishing them to Redis."""
-        from .log_events import sanitize_log_message
+        from .log_events import model_log_secrets, sanitize_log_message
 
         known_secrets = (
-            os.environ.get("MULTIMODAL_API_KEY", ""), self.config.oss_access_key_id,
+            *model_log_secrets(), self.config.oss_access_key_id,
             self.config.oss_access_key_secret, self.config.oss_sts_token or "",
             self.config.service_token, record.access_token,
         )

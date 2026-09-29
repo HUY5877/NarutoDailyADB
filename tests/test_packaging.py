@@ -15,6 +15,10 @@ SERVICE_TEMPLATES = {
     "add_account", "game_back", "other_login", "qr_heading", "scan_login",
     "web_qr_heading", "web_qr_instruction", "web_qr_expired",
 }
+PACKAGED_TEMPLATES = {
+    **SHARED_TEMPLATES,
+    **{name: f"login_{name}.png" for name in SERVICE_TEMPLATES},
+}
 
 
 def copy_build_project(tmp_path):
@@ -66,7 +70,7 @@ def test_sdist_rebuilds_wheel_with_shared_templates_usable_outside_checkout(tmp_
     source_root = next(extracted_source.iterdir())
     assert (source_root / "setup.py").is_file()
     assert (source_root / "assets" / "__init__.py").is_file()
-    for filename in SHARED_TEMPLATES.values():
+    for filename in PACKAGED_TEMPLATES.values():
         assert (source_root / "assets" / filename).read_bytes() == (
             build_root / "assets" / filename
         ).read_bytes()
@@ -79,12 +83,11 @@ def test_sdist_rebuilds_wheel_with_shared_templates_usable_outside_checkout(tmp_
     installed_root = tmp_path / "安装副本"
     with ZipFile(wheel) as archive:
         expected_pngs = {
-            *(f"naruto_daily/assets/{filename}" for filename in SHARED_TEMPLATES.values()),
-            *(f"naruto_daily/login_service/templates/{name}.png" for name in SERVICE_TEMPLATES),
+            f"naruto_daily/assets/{filename}" for filename in PACKAGED_TEMPLATES.values()
         }
         actual_pngs = {name for name in archive.namelist() if name.endswith(".png")}
         assert actual_pngs == expected_pngs
-        for filename in SHARED_TEMPLATES.values():
+        for filename in PACKAGED_TEMPLATES.values():
             assert archive.read(f"naruto_daily/assets/{filename}") == (
                 build_root / "assets" / filename
             ).read_bytes()

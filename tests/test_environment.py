@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from naruto_daily.common import environment
 from naruto_daily.config import ConfigError, load_settings
 
 
@@ -25,10 +26,10 @@ def configured_file(tmp_path):
     return path
 
 
-def write_env(tmp_path, nickname="另一个测试昵称 #1"):
+def write_env(tmp_path, nickname="另一个测试昵称 #1", *, model='test-vision', base_url='https://example.test/v1'):
     (tmp_path / ".env").write_text(
-        '# 测试配置\nMULTIMODAL_BASE_URL="https://example.test/v1"\n'
-        'MULTIMODAL_MODEL=test-vision\nMULTIMODAL_API_KEY=test-secret\n'
+        f'# 测试配置\nMULTIMODAL_BASE_URL="{base_url}"\n'
+        f'MULTIMODAL_MODEL={model}\nMULTIMODAL_API_KEY=test-secret\n'
         f'LOGIN_ACCOUNT_NAME="{nickname}"\n', encoding="utf-8-sig")
 
 
@@ -36,7 +37,7 @@ def authorization(settings):
     return next(a for a in settings.tasks["login"] if a["type"] == "authorize_account")
 
 
-def test_config_reads_env_beside_config_not_working_directory(tmp_path, monkeypatch):
+def test_config_reads_root_env_not_working_directory(tmp_path, monkeypatch):
     path = configured_file(tmp_path)
     write_env(tmp_path)
     other = tmp_path / "elsewhere"
@@ -50,11 +51,52 @@ def test_config_reads_env_beside_config_not_working_directory(tmp_path, monkeypa
     assert "test-secret" not in repr(result)
 
 
-def test_process_environment_overrides_dotenv(tmp_path, monkeypatch):
+def test_process_environment_still_overrides_account_dotenv(tmp_path, monkeypatch):
     path = configured_file(tmp_path)
     write_env(tmp_path)
     monkeypatch.setenv("LOGIN_ACCOUNT_NAME", "进程环境中的昵称")
     assert authorization(load_settings(path))["account_name"] == "进程环境中的昵称"
+
+
+def test_model_config_uses_project_root_despite_external_config_process_and_cwd(tmp_path, monkeypatch):
+    root, service, elsewhere = (tmp_path / name for name in ('project', 'service', 'elsewhere'))
+    for directory in (root, service, elsewhere):
+        directory.mkdir()
+    monkeypatch.setattr(environment, 'PROJECT_ROOT', root)
+    write_env(root, '根目录账号', model='root-model', base_url='https://root.test/v1')
+    write_env(service, '服务目录账号', model='service-model', base_url='https://service.test/v1')
+    write_env(elsewhere, '工作目录账号', model='cwd-model', base_url='https://cwd.test/v1')
+    monkeypatch.setenv('MULTIMODAL_MODEL', 'process-model')
+    monkeypatch.setenv('MULTIMODAL_BASE_URL', 'https://process.test/v1')
+    monkeypatch.setenv('MULTIMODAL_API_KEY', 'process-key')
+    monkeypatch.chdir(elsewhere)
+
+    result = authorization(load_settings(configured_file(service)))
+
+    assert result['account_name'] == '根目录账号'
+    assert result['multimodal']['base_url'] == 'https://root.test/v1'
+    assert result['multimodal']['model'] == 'root-model'
+    assert environment.read_environment()['MULTIMODAL_API_KEY'] == 'test-secret'
+
+
+def test_reloading_external_config_reads_edited_root_model_values(tmp_path, monkeypatch):
+    root, service = tmp_path / 'project', tmp_path / 'service'
+    root.mkdir()
+    service.mkdir()
+    monkeypatch.setattr(environment, 'PROJECT_ROOT', root)
+    write_env(service, '服务账号')
+    path = configured_file(service)
+
+    write_env(root, model='first-model', base_url='https://first.test/v1')
+    first = authorization(load_settings(path))
+    write_env(root, model='second-model', base_url='https://second.test/v1')
+    second = authorization(load_settings(path))
+
+    assert first['multimodal']['model'] == 'first-model'
+    assert first['multimodal']['base_url'] == 'https://first.test/v1'
+    assert second['multimodal']['model'] == 'second-model'
+    assert second['multimodal']['base_url'] == 'https://second.test/v1'
+    assert first['account_name'] == second['account_name'] == '另一个测试昵称 #1'
 
 
 def test_reload_reads_edited_dotenv_without_stale_values(tmp_path):
@@ -68,8 +110,6 @@ def test_reload_reads_edited_dotenv_without_stale_values(tmp_path):
 @pytest.mark.parametrize("value", [None, "", "   "])
 def test_missing_or_empty_nickname_fails_clearly(tmp_path, monkeypatch, value):
     path = configured_file(tmp_path)
-    monkeypatch.setenv("MULTIMODAL_BASE_URL", "https://example.test/v1")
-    monkeypatch.setenv("MULTIMODAL_MODEL", "test-vision")
     if value is not None:
         monkeypatch.setenv("LOGIN_ACCOUNT_NAME", value)
     with pytest.raises(ConfigError, match="LOGIN_ACCOUNT_NAME"):

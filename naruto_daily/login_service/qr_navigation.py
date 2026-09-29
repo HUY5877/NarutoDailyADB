@@ -87,14 +87,12 @@ def _template(name: str) -> np.ndarray:
         "switch_account": "qq_account_switch_account.png",
         "start_game": "start_game_button.png",
     }
-    if name in shared:
-        # Keep one source image in assets/; wheels install it as naruto_daily.assets.
-        package_root = Path(__file__).resolve().parents[1]
-        path = package_root / "assets" / shared[name]
-        if not path.is_file():
-            path = package_root.parent / "assets" / shared[name]
-    else:
-        path = Path(__file__).with_name("templates") / f"{name}.png"
+    filename = shared.get(name, f"login_{name}.png")
+    # All source images live in assets/; wheels install them as naruto_daily.assets.
+    package_root = Path(__file__).resolve().parents[1]
+    path = package_root / "assets" / filename
+    if not path.is_file():
+        path = package_root.parent / "assets" / filename
     data = path.read_bytes()
     return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_GRAYSCALE)
 

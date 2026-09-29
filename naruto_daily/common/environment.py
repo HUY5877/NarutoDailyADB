@@ -1,4 +1,4 @@
-"""从配置目录的 .env 和进程环境读取配置，不修改全局环境。"""
+"""统一读取项目根目录 .env，不随配置 JSON 或启动目录改变。"""
 from __future__ import annotations
 
 import os
@@ -9,22 +9,37 @@ from typing import Any, Mapping
 from dotenv import dotenv_values
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MULTIMODAL_ENV_NAMES = ('MULTIMODAL_API_KEY', 'MULTIMODAL_BASE_URL', 'MULTIMODAL_MODEL')
+
+
 class EnvironmentConfigError(ValueError):
     """环境配置缺失或无法读取。"""
 
 
-def read_environment(directory: Path) -> dict[str, str | None]:
+def _read_root_dotenv() -> dict[str, str | None]:
     try:
-        values = dotenv_values(Path(directory) / '.env', encoding='utf-8-sig', interpolate=False)
+        return dict(dotenv_values(PROJECT_ROOT / '.env', encoding='utf-8-sig', interpolate=False))
     except (OSError, UnicodeError):
-        raise EnvironmentConfigError('无法读取配置目录中的 .env 文件') from None
-    return {**values, **os.environ}
+        raise EnvironmentConfigError('无法读取项目根目录中的 .env 文件') from None
+
+
+def read_multimodal_environment() -> dict[str, str | None]:
+    """每次读取根目录文件；缺失值也不得回退到服务或进程中的旧配置。"""
+    values = _read_root_dotenv()
+    return {name: values.get(name) for name in MULTIMODAL_ENV_NAMES}
+
+
+def read_environment() -> dict[str, str | None]:
+    values = _read_root_dotenv()
+    return {**values, **os.environ, **{name: values.get(name) for name in MULTIMODAL_ENV_NAMES}}
 
 
 def require_environment(values: Mapping[str, str | None], name: str) -> str:
     value = values.get(name)
     if value is None or not value.strip():
-        raise EnvironmentConfigError(f'请在 .env 或进程环境中配置非空的 {name}')
+        source = '项目根目录的 .env' if name in MULTIMODAL_ENV_NAMES else '项目根目录的 .env 或进程环境'
+        raise EnvironmentConfigError(f'请在{source}中配置非空的 {name}')
     return value.strip()
 
 

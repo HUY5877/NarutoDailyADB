@@ -14,13 +14,15 @@
 
 ## 配置和启动
 
-需要 Python 3.11+，服务端无需 Node.js。在项目根目录安装依赖：
+需要 Python 3.11+ 和雷电模拟器 9，服务端无需 Node.js。在新电脑 clone 本仓库后，进入项目根目录创建虚拟环境、安装依赖，并只复制根目录的配置示例：
 
 ```powershell
-python -m pip install -e ".[login-service]"
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[login-service]"
+Copy-Item .env.example .env
 ```
 
-配置文件位于 `naruto_daily/login_service/.env`。首次配置可复制本目录的 `.env.example`；已有 `.env` 时直接编辑，保留其中的 OSS 配置。最少添加：
+已有 `.env` 时直接编辑，不要重复复制覆盖。模型、账号、Redis、OSS 和雷电配置统一放在项目根目录 `.env`，无需在服务模块内另建配置文件。运行 Redis worker 至少设置：
 
 ```dotenv
 REDIS_URL=redis://127.0.0.1:6379/0
@@ -31,12 +33,20 @@ REDIS_URL=redis://127.0.0.1:6379/0
 在项目根目录使用独立环境启动，也可双击 `启动扫码服务.cmd`：
 
 ```powershell
-.\.venv-login-service\Scripts\python.exe -m naruto_daily.login_service
+.\.venv\Scripts\python.exe -m naruto_daily.login_service
 ```
 
-其他环境使用 `python -m naruto_daily.login_service`，安装后的 `naruto-login-service` 命令也可用。worker 会持续等待并消费任务；暂时断线会自动重连，停止时按 `Ctrl+C`。
+已有 `.venv-login-service` 时也可继续用该环境的 Python，双击脚本会优先选择它。激活其他已安装依赖的环境后可使用 `python -m naruto_daily.login_service`，安装后的 `naruto-login-service` 命令也可用。worker 会持续等待并消费任务；暂时断线会自动重连，停止时按 `Ctrl+C`。
 
-也可用 `--env-file <路径>` 指定服务配置文件，进程环境变量优先。Redis/OSS 配置从服务环境读取；日常任务通过 `DAILY_CONFIG_PATH` 加载 JSON，并沿用原规则读取该 JSON 所在目录的 `.env`。多模态配置也可以放在服务环境中，三项 `MULTIMODAL_BASE_URL`、`MULTIMODAL_MODEL`、`MULTIMODAL_API_KEY` 会单独传给日常子进程。凭据不放进浏览器或提交到仓库。
+服务入口和实例池管理命令 `python -m naruto_daily.login_service.pool_admin` 默认都读取项目根目录 `.env`，不依赖启动工作目录。需要另一套服务参数时，可显式传入 `--env-file <路径>`；Redis、OSS 等非模型变量继续以进程环境优先。日常任务通过 `DAILY_CONFIG_PATH` 加载 JSON，账号等普通任务变量也读取根目录 `.env`，不随 JSON 路径改变。
+
+模型配置统一只读取项目根目录 `.env` 中的 `MULTIMODAL_BASE_URL`、`MULTIMODAL_MODEL`、`MULTIMODAL_API_KEY`，与普通脚本共用同一份。进程环境及 `--env-file` 指定文件均不能覆盖这三项。修改配置后，请重启正在运行的任务或常驻 worker。凭据不放进浏览器或提交到仓库。
+
+查看固定实例池占用也使用同一环境和配置：
+
+```powershell
+.\.venv\Scripts\python.exe -m naruto_daily.login_service.pool_admin list
+```
 
 | 变量 | 默认值与用途 |
 | --- | --- |
@@ -146,7 +156,7 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 | `ldplayer.py` / `ldplayer_worker.py` | 固定实例分配、持久绑定、启动和隔离工作进程 |
 | `daily.py` | 在任务绑定的 ADB 设备上复用原登录收尾和 `ActionRunner` 日常流程 |
 | `log_events.py` / `run_logs.py` | 子进程日志脱敏、结构化输出，以及父进程有界缓冲和 Redis 执行记录发布 |
-| `qr_navigation.py` / `templates/` | 页面识别、ADB 点击和真实二维码裁剪；QQ 安卓登录、切换账号、开始游戏三张模板复用项目 `assets/`，其余模板放在本模块 `templates/`；不调用多模态 API |
+| `qr_navigation.py` / 根目录 `assets/` | 页面识别、ADB 点击和真实二维码裁剪；8 张扫码专用模板平铺为 `assets/login_*.png`，QQ 安卓登录、切换账号、开始游戏继续复用原有三张图片；不调用多模态 API |
 | `pool_admin.py` | 查看实例占用，按任务 ID 显式释放实例 |
 | `storage.py` | 本地与阿里云 OSS 存储适配 |
 
@@ -156,13 +166,13 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 
 配置 `LDPLAYER_POOL_INDICES=0,1,2`、`WORKER_CONCURRENCY=3` 时，最多有三个任务同时占用实例，等待扫码和执行日常都计入占用。第四个任务保持在 Redis 的 `queued` 状态，直到已有任务结束并释放槽位；排队期间仍遵守客户端会话 TTL。并发数不能扩大实际实例池容量，冷启动管理操作仍通过锁依次执行。
 
-真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，不传 Redis URL 或 OSS 密钥；仅额外允许日常所需的三项多模态环境变量。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
+真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，不传 Redis URL、OSS 密钥或服务环境中的模型配置；子进程从项目根目录 `.env` 读取模型配置。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
 
 ## 对象存储
 
 默认 `STORAGE_DRIVER=local`，可用于本机验证。本地目录为项目根目录下的 `.data/login-service/objects`，对象键为 `login/{id}/qr.png`，旁边的 `metadata.json` 保存过期时间。写入使用临时文件与原子替换；过期对象及上次运行遗留的过期对象会定期清理。Redis worker 不提供本地文件的 HTTP 访问，因此网站/Vercel 链路应使用真实 OSS。
 
-真实 OSS 使用 Python `oss2` SDK，在服务专用 `.env` 中保留或填写以下配置，并与客户端使用同一 Bucket 和地域：
+真实 OSS 使用 Python `oss2` SDK，在项目根目录 `.env` 中保留或填写以下配置，并与客户端使用同一 Bucket 和地域：
 
 ```dotenv
 STORAGE_DRIVER=oss
@@ -182,8 +192,8 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 ## 验证
 
 ```powershell
-python -m pip install -e ".[login-service,login-service-test]"
-python -m pytest tests/test_login_service_runtime.py tests/test_login_service_http.py tests/test_login_service_storage.py tests/test_login_service_redis.py tests/test_login_service_worker.py tests/test_packaging.py
+.\.venv\Scripts\python.exe -m pip install -e ".[login-service,login-service-test]"
+.\.venv\Scripts\python.exe -m pytest tests/test_login_service_runtime.py tests/test_login_service_http.py tests/test_login_service_storage.py tests/test_login_service_redis.py tests/test_login_service_worker.py tests/test_packaging.py
 ```
 
 Redis worker 的验证应包括 FIFO 消费、消息校验、会话状态与 TTL 保留、重连及关闭处理；HTTP 模式继续验证接口隔离、并发、PNG 输出、过期清理与 OSS 适配。实际网站联调需要客户端与 Python 使用同一 Redis 和 OSS 配置。

@@ -26,8 +26,8 @@ def config(tmp_path, **changes):
 def install_fakes(monkeypatch, configured, statuses=()):
     observed = {"loads": [], "managers": [], "closed": []}
 
-    def load_dotenv(path, override=False):
-        observed["loads"].append((path, override))
+    def load_dotenv(path, override=False, encoding='utf-8'):
+        observed["loads"].append((path, override, encoding))
 
     class Manager:
         def __init__(self, **kwargs):
@@ -55,7 +55,7 @@ def test_list_loads_selected_env_and_prints_only_pool_status(monkeypatch, tmp_pa
 
     assert pool_admin.main(["--env-file", str(env_file), "list"]) == 0
 
-    assert observed["loads"] == [(env_file, False)]
+    assert observed["loads"] == [(env_file, False, 'utf-8-sig')]
     assert observed["managers"] == [{
         "console_path": tmp_path / "ldconsole.exe",
         "template": "",
@@ -64,6 +64,15 @@ def test_list_loads_selected_env_and_prints_only_pool_status(monkeypatch, tmp_pa
         "pool_indices": (0, 2),
     }]
     assert json.loads(capsys.readouterr().out) == statuses
+
+
+def test_default_pool_admin_loads_root_env_from_another_working_directory(monkeypatch, tmp_path):
+    observed = install_fakes(monkeypatch, config(tmp_path))
+    elsewhere = tmp_path / '其他启动目录'
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert pool_admin.main(['list']) == 0
+    assert observed['loads'] == [(tmp_path / '.env', False, 'utf-8-sig')]
 
 
 def test_release_requires_uuid_and_calls_manager_close(monkeypatch, tmp_path, capsys):

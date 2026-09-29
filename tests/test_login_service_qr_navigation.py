@@ -12,8 +12,7 @@ from naruto_daily.login_service.qr_navigation import (
 )
 
 
-ASSETS = Path(__file__).parents[1] / "naruto_daily/login_service/templates"
-SHARED_ASSETS = Path(__file__).parents[1] / "assets"
+ASSETS = Path(__file__).parents[1] / "assets"
 SHARED_TEMPLATES = {
     "qq_android": "qq_android_button.png",
     "switch_account": "qq_account_switch_account.png",
@@ -23,7 +22,7 @@ SHARED_TEMPLATES = {
 
 def frame_with(name, x, y):
     frame = np.full((1080, 1920, 3), 255, np.uint8)
-    path = SHARED_ASSETS / SHARED_TEMPLATES[name] if name in SHARED_TEMPLATES else ASSETS / f"{name}.png"
+    path = ASSETS / SHARED_TEMPLATES.get(name, f"login_{name}.png")
     template = cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), 1)
     h, w = template.shape[:2]
     frame[y:y+h, x:x+w] = template
@@ -86,12 +85,19 @@ def test_checked_game_agreement_is_green_and_must_not_be_toggled_off():
     assert choose_action(frame, "").name == "qq_android"
 
 
-def test_shared_templates_work_outside_project_directory(monkeypatch, tmp_path):
+def test_all_login_templates_work_outside_project_directory(monkeypatch, tmp_path):
     from naruto_daily.login_service.qr_navigation import _template
 
     monkeypatch.chdir(tmp_path)
     _template.cache_clear()
     try:
+        for name in (*SHARED_TEMPLATES, 'add_account', 'game_back', 'other_login', 'qr_heading',
+                     'scan_login', 'web_qr_heading', 'web_qr_instruction', 'web_qr_expired'):
+            loaded = _template(name)
+            expected_path = ASSETS / SHARED_TEMPLATES.get(name, f'login_{name}.png')
+            expected = cv2.imdecode(np.frombuffer(expected_path.read_bytes(), np.uint8), cv2.IMREAD_GRAYSCALE)
+            assert loaded is not None and np.array_equal(loaded, expected)
+
         frame = frame_with("switch_account", 820, 900)
         assert choose_action(frame, "").name == "switch_account"
 

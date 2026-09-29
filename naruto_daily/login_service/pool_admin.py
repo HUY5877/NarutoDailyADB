@@ -8,6 +8,8 @@ from pathlib import Path
 import sys
 from uuid import UUID
 
+from naruto_daily.common import environment
+
 
 def _task_id(value: str) -> str:
     try:
@@ -22,8 +24,8 @@ def _task_id(value: str) -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="LDPlayer 固定实例池管理")
     parser.add_argument(
-        "--env-file", type=Path, default=Path(__file__).with_name(".env"),
-        help="服务专用环境文件，默认读取本模块旁的 .env；环境变量优先",
+        "--env-file", type=Path, default=environment.PROJECT_ROOT / ".env",
+        help="默认读取项目根目录的 .env；Redis/OSS 等服务变量支持进程环境覆盖",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="列出固定池实例及任务绑定")
@@ -53,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     from dotenv import load_dotenv
 
-    load_dotenv(args.env_file, override=False)
+    load_dotenv(args.env_file, override=False, encoding="utf-8-sig")
     try:
         from .config import load_config
 

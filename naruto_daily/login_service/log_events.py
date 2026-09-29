@@ -9,6 +9,8 @@ import os
 import re
 from typing import Callable, Iterable, Iterator, TextIO
 
+from naruto_daily.common.environment import EnvironmentConfigError, read_multimodal_environment
+
 
 MAX_LOG_MESSAGE_LENGTH = 1_000
 _REDACTED = "[REDACTED]"
@@ -23,6 +25,16 @@ _SECRET_FIELD = re.compile(
     r"[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&}\]\)]+)"
 )
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def model_log_secrets() -> tuple[str, ...]:
+    """保护实际使用的根目录密钥，同时继续遮蔽进程中残留的旧密钥。"""
+    try:
+        key = read_multimodal_environment().get("MULTIMODAL_API_KEY") or ""
+    except EnvironmentConfigError:
+        # 配置错误由模型调用方报告，日志处理不得掩盖原始异常。
+        key = ""
+    return key.strip(), os.environ.get("MULTIMODAL_API_KEY", "")
 
 
 def sanitize_log_message(message: str, *, secrets: Iterable[str] = (),
@@ -50,7 +62,7 @@ class DiagnosticLogHandler(logging.StreamHandler):
         super().__init__(stream)
         self.setLevel(logging.INFO)
         self.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
-        self._secrets = tuple(secrets) + (os.environ.get("MULTIMODAL_API_KEY", ""),)
+        self._secrets = tuple(secrets) + model_log_secrets()
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -73,7 +85,7 @@ class ProtocolLogHandler(logging.Handler):
     ) -> None:
         super().__init__(level=logging.INFO)
         self._send_event = send_event
-        self._secrets = tuple(secrets) + (os.environ.get("MULTIMODAL_API_KEY", ""),)
+        self._secrets = tuple(secrets) + model_log_secrets()
 
     def emit(self, record: logging.LogRecord) -> None:
         try:

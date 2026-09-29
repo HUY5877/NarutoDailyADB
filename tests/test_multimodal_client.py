@@ -6,13 +6,19 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
+from naruto_daily.common import environment
 from naruto_daily.multimodal import client as mm
 
 
 def config(tmp_path):
-    (tmp_path / '.env').write_text('MULTIMODAL_API_KEY=test-secret', encoding='utf-8')
     return dict(base_url='https://api.stepfun.com/step_plan/v1', model='step-3.7-flash',
                 timeout_seconds=20)
+
+
+def write_model_env(directory, *, key='root-key', base_url='https://root.test/v1', model='root-model'):
+    (directory / '.env').write_text(
+        f'MULTIMODAL_API_KEY="{key}"\nMULTIMODAL_BASE_URL={base_url}\nMULTIMODAL_MODEL={model}\n',
+        encoding='utf-8')
 
 
 def response(content, finish='stop'):
@@ -53,11 +59,16 @@ def test_api_errors_do_not_expose_credentials(tmp_path, error):
     assert 'test-secret' not in str(raised.value)
 
 
-def test_missing_key_fails_before_network(tmp_path):
+def test_missing_root_env_does_not_fall_back_to_service_or_process_key(tmp_path, monkeypatch):
     settings = config(tmp_path)
     (tmp_path / '.env').unlink()
+    service = tmp_path / 'service'
+    service.mkdir()
+    write_model_env(service, key='service-key')
+    monkeypatch.setenv('MULTIMODAL_API_KEY', 'process-key')
     with pytest.raises(mm.MultimodalError, match='密钥'):
-        mm.MultimodalClient(settings, asset_root=tmp_path)
+        mm.MultimodalClient(settings, asset_root=service,
+                            open_request=lambda *args, **kwargs: pytest.fail('缺少根配置时不得请求'))
 
 
 @pytest.mark.parametrize('content,finish,reason', [
@@ -83,33 +94,85 @@ def test_invalid_response_logs_safe_details_with_transport_request_id(tmp_path, 
         assert private not in caplog.text
 
 
-def test_client_resolves_model_url_and_key_from_environment(tmp_path, monkeypatch):
-    (tmp_path / '.env').write_text(
-        'MULTIMODAL_API_KEY=file-key\nMULTIMODAL_BASE_URL=https://file.test/v1\n'
-        'MULTIMODAL_MODEL=file-model\n', encoding='utf-8')
+def test_client_sends_root_model_url_and_key_despite_service_process_and_cwd(tmp_path, monkeypatch):
+    root, service, elsewhere = (tmp_path / name for name in ('project', 'service', 'elsewhere'))
+    for directory in (root, service, elsewhere):
+        directory.mkdir()
+    monkeypatch.setattr(environment, 'PROJECT_ROOT', root)
+    write_model_env(root)
+    write_model_env(service, key='service-key', base_url='https://service.test/v1', model='service-model')
+    write_model_env(elsewhere, key='cwd-key', base_url='https://cwd.test/v1', model='cwd-model')
     monkeypatch.setenv('MULTIMODAL_API_KEY', 'environment-key')
     monkeypatch.setenv('MULTIMODAL_BASE_URL', 'https://environment.test/v1')
     monkeypatch.setenv('MULTIMODAL_MODEL', 'environment-model')
+    monkeypatch.chdir(elsewhere)
 
     def open_request(request, timeout):
-        assert request.full_url == 'https://environment.test/v1/chat/completions'
-        assert request.get_header('Authorization') == 'Bearer environment-key'
-        assert json.loads(request.data)['model'] == 'environment-model'
+        assert request.full_url == 'https://root.test/v1/chat/completions'
+        assert request.get_header('Authorization') == 'Bearer root-key'
+        assert json.loads(request.data)['model'] == 'root-model'
         return response('{}')
 
     client = mm.MultimodalClient(
         dict(base_url='${MULTIMODAL_BASE_URL}', model='${MULTIMODAL_MODEL}', timeout_seconds=20),
-        asset_root=tmp_path, open_request=open_request,
+        asset_root=service, open_request=open_request,
     )
     assert client.complete_json(b'png', 'prompt') == {}
+    assert client.agent_connection() == dict(base_url='https://root.test/v1', model='root-model',
+                                            timeout_seconds=20, api_key='root-key')
 
 
 @pytest.mark.parametrize('key', ['', 'invalid key'])
-def test_invalid_environment_key_does_not_fall_back_to_file(tmp_path, monkeypatch, key):
+def test_invalid_root_key_does_not_fall_back_to_process(tmp_path, monkeypatch, key):
     settings = config(tmp_path)
-    monkeypatch.setenv('MULTIMODAL_API_KEY', key)
+    write_model_env(tmp_path, key=key)
+    monkeypatch.setenv('MULTIMODAL_API_KEY', 'valid-process-key')
     with pytest.raises(mm.MultimodalError, match='密钥'):
         mm.MultimodalClient(settings, asset_root=tmp_path)
+
+
+@pytest.mark.parametrize('name', ['MULTIMODAL_API_KEY', 'MULTIMODAL_BASE_URL', 'MULTIMODAL_MODEL'])
+@pytest.mark.parametrize('value', [None, ''])
+def test_missing_root_variable_never_uses_service_or_process_fallback(tmp_path, monkeypatch, name, value):
+    root, service = tmp_path / 'project', tmp_path / 'service'
+    root.mkdir()
+    service.mkdir()
+    monkeypatch.setattr(environment, 'PROJECT_ROOT', root)
+    values = dict(MULTIMODAL_API_KEY='root-key', MULTIMODAL_BASE_URL='https://root.test/v1',
+                  MULTIMODAL_MODEL='root-model')
+    for variable in values:
+        monkeypatch.setenv(variable, 'https://process.test/v1' if variable == 'MULTIMODAL_BASE_URL' else 'process-value')
+    if value is None:
+        values.pop(name)
+    else:
+        values[name] = value
+    (root / '.env').write_text('\n'.join(f'{variable}={setting}' for variable, setting in values.items()), encoding='utf-8')
+    write_model_env(service, key='service-key', base_url='https://service.test/v1', model='service-model')
+
+    with pytest.raises(mm.MultimodalError, match=name):
+        mm.MultimodalClient(
+            dict(base_url='${MULTIMODAL_BASE_URL}', model='${MULTIMODAL_MODEL}', timeout_seconds=20),
+            asset_root=service, open_request=lambda *a, **k: pytest.fail('缺少根配置时不得请求'))
+
+
+def test_new_client_reloads_changed_root_url_model_and_key(tmp_path):
+    service = tmp_path / 'service'
+    service.mkdir()
+    write_model_env(service, key='service-key', base_url='https://service.test/v1', model='service-model')
+    sent = []
+
+    def open_request(request, timeout):
+        sent.append((request.full_url, json.loads(request.data)['model'], request.get_header('Authorization')))
+        return response('{}')
+
+    settings = dict(base_url='${MULTIMODAL_BASE_URL}', model='${MULTIMODAL_MODEL}', timeout_seconds=20)
+    for version in ('first', 'second'):
+        write_model_env(tmp_path, key=f'{version}-key', base_url=f'https://{version}.test/v1', model=f'{version}-model')
+        client = mm.MultimodalClient(settings, asset_root=service, open_request=open_request)
+        assert client.complete_json(b'png', 'prompt') == {}
+
+    assert sent == [('https://first.test/v1/chat/completions', 'first-model', 'Bearer first-key'),
+                    ('https://second.test/v1/chat/completions', 'second-model', 'Bearer second-key')]
 
 
 def test_client_rebuilds_image_on_each_retry_preserving_prompt_model_and_authorization(tmp_path):

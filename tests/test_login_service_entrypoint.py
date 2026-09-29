@@ -1,6 +1,7 @@
 """The command-line entrypoint must require Redis and never start a web demo."""
 
 import logging
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,9 +55,10 @@ def test_configured_redis_runs_worker(monkeypatch, source):
     calls = []
     env_file = Path("entrypoint-test.env")
 
-    def fake_load_dotenv(path, *, override):
+    def fake_load_dotenv(path, *, override, encoding):
         assert path == env_file
         assert override is False
+        assert encoding == 'utf-8-sig'
         if source == "env_file":
             monkeypatch.setenv("REDIS_URL", redis_url)
 
@@ -72,6 +74,26 @@ def test_configured_redis_runs_worker(monkeypatch, source):
     entrypoint.main(["--env-file", str(env_file)])
 
     assert calls == [config]
+
+
+def test_default_entrypoint_loads_root_env_from_another_working_directory(monkeypatch, tmp_path):
+    from dotenv import load_dotenv
+
+    (tmp_path / '.env').write_text('REDIS_URL=redis://root.example:6379/3\n', encoding='utf-8-sig')
+    elsewhere = tmp_path / '其他启动目录'
+    elsewhere.mkdir()
+    (elsewhere / '.env').write_text('REDIS_URL=redis://wrong.example:6379/0', encoding='utf-8')
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(entrypoint, 'load_dotenv', load_dotenv)
+    monkeypatch.setattr(service_config, 'load_config', lambda: SimpleNamespace(redis_url=os.environ['REDIS_URL']))
+    calls = []
+
+    async def run(config):
+        calls.append(config.redis_url)
+
+    monkeypatch.setattr(entrypoint, 'run_worker', run)
+    entrypoint.main([])
+    assert calls == ['redis://root.example:6379/3']
 
 
 def test_keyboard_interrupt_stops_worker_normally(monkeypatch, caplog):

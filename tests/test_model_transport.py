@@ -170,7 +170,6 @@ def test_late_response_is_rejected():
 
 
 def test_workflow_does_not_multiply_exhausted_http_retries(tmp_path):
-    (tmp_path / '.env').write_text('MULTIMODAL_API_KEY=offline-key', encoding='utf-8')
     clock = Clock()
     requests = []
     screenshots = []

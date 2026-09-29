@@ -21,13 +21,13 @@ from naruto_daily.login_service.qr_navigation import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TEMPLATES = ROOT / "naruto_daily/login_service/templates"
+TEMPLATES = ROOT / "assets"
 PAYLOAD = "naruto-web-qr-unit-test"
 GAME_PACKAGE = "com.tencent.KiHan"
 
 
 def paste(frame, name, x, y, *, shared=False):
-    path = ROOT / "assets" / name if shared else TEMPLATES / f"{name}.png"
+    path = TEMPLATES / name if shared else TEMPLATES / f"login_{name}.png"
     template = cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
     height, width = template.shape[:2]
     frame[y:y + height, x:x + width] = template
@@ -124,7 +124,7 @@ def test_expired_web_overlay_is_rejected_without_accessibility_text(background):
     # Mimic the SDK's white expiry message over a dimmed QR. The template only
     # contains public UI glyphs; the underlying QR is still the synthetic fixture.
     image[300:550, 820:1070] = (image[300:550, 820:1070].astype(np.float32) * 0.4).astype(np.uint8)
-    mask = cv2.imdecode(np.frombuffer((TEMPLATES / "web_qr_expired.png").read_bytes(), np.uint8), cv2.IMREAD_GRAYSCALE)
+    mask = cv2.imdecode(np.frombuffer((TEMPLATES / "login_web_qr_expired.png").read_bytes(), np.uint8), cv2.IMREAD_GRAYSCALE)
     height, width = mask.shape
     overlay = np.full((height, width, 3), background, dtype=np.uint8)
     overlay[mask > 220] = (255, 255, 255)

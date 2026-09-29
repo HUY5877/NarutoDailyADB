@@ -26,7 +26,8 @@ def test_launcher_from_chinese_path_forwards_arguments(tmp_path, filename, task,
     # The GUI interpreter avoids opening a test window; CMD still launches
     # the exact executable path and arguments used by the real launcher.
     shutil.copy2(Path(sys.executable).with_name('pythonw.exe'), scripts / 'python.exe')
-    shutil.copy2(root / '.venv' / 'pyvenv.cfg', project / '.venv' / 'pyvenv.cfg')
+    # Use the environment running the tests, including .venv-login-service.
+    shutil.copy2(Path(sys.prefix) / 'pyvenv.cfg', project / '.venv' / 'pyvenv.cfg')
     (project / 'config.local.json').write_text('{}')
     package = project / 'naruto_daily'
     package.mkdir()

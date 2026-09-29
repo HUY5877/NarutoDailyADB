@@ -63,6 +63,16 @@ def test_model_secret_loaded_after_handler_creation_is_still_redacted(monkeypatc
     assert events[0]["message"] == "model response repeated [REDACTED]"
 
 
+def test_root_model_key_is_redacted_from_protocol_and_diagnostic_logs(tmp_path, monkeypatch):
+    (tmp_path / '.env').write_text('MULTIMODAL_API_KEY=private-root-key', encoding='utf-8')
+    monkeypatch.setenv('MULTIMODAL_API_KEY', 'stale-process-key')
+    events, terminal = [], StringIO()
+    with forward_task_logs(events.append, diagnostic_stream=terminal):
+        logging.getLogger('naruto_daily').info('response echoed private-root-key stale-process-key')
+    assert events[0]['message'] == 'response echoed [REDACTED] [REDACTED]'
+    assert terminal.getvalue() == 'INFO response echoed [REDACTED] [REDACTED]\n'
+
+
 def test_log_event_keeps_only_safe_fields_and_normalizes_level_and_time():
     events = []
     handler = ProtocolLogHandler(events.append)
