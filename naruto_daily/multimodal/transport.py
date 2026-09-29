@@ -51,7 +51,8 @@ def request_budget(timeout):
 
 
 def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_request=None,
-                       sleep=None, clock=None, max_response_bytes=1_048_576, cancel_event=None):
+                       sleep=None, clock=None, max_response_bytes=1_048_576, cancel_event=None,
+                       refresh_request=None):
     open_request = open_request or build_opener(NoRedirect).open
     sleep, clock = sleep or time.sleep, clock or time.monotonic
     budget = request_budget(request_timeout) if timeout_seconds is None else float(timeout_seconds)
@@ -70,6 +71,25 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
             raise MultimodalRequestError('多模态调用已超过本阶段剩余时间')
         status_code = None
         diagnostic.begin(attempt + 1, min(request_timeout, remaining))
+        if attempt > 0 and refresh_request is not None:
+            diagnostic.phase = 'refresh_image'
+            refreshed_at = clock()
+            diagnostic.log(logging.INFO, '刷新截图', '重试前重新截图并重建请求')
+            # 与网络异常处理分开：截图失败必须停止，不能回退到旧请求或继续接口重试。
+            try:
+                request = refresh_request()
+            except Exception as exc:
+                diagnostic.failure(exc)
+                diagnostic.stop('refresh_failed')
+                raise MultimodalRequestError('多模态重试截图或请求刷新失败，已停止；' + diagnostic.summary()) from None
+            check_cancelled()
+            remaining = deadline - clock()
+            if remaining <= 0:
+                diagnostic.stop('budget_exhausted')
+                raise MultimodalRequestError('多模态重试截图后已超过本阶段剩余时间，未发送请求；' + diagnostic.summary())
+            diagnostic.request_timeout = min(request_timeout, remaining)
+            diagnostic.log(logging.INFO, '截图已刷新', f'refresh_elapsed={max(0, clock() - refreshed_at):.2f}s')
+            diagnostic.phase = 'send_or_wait_headers'
         try:
             with open_request(request, timeout=min(request_timeout, remaining)) as response:
                 diagnostic.phase = 'read_body'

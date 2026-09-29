@@ -220,7 +220,7 @@ class CompletionModel:
         self.config = {'max_calls': 3}
         self.result = result
         self.calls = 0
-    def complete_json(self, png, prompt, *, timeout_seconds=None):
+    def complete_json(self, png, prompt, *, timeout_seconds=None, refresh_image=None):
         self.calls += 1
         return self.result
 
@@ -441,7 +441,7 @@ def test_model_response_after_timeout_cannot_resume_clicking_or_report_success(f
     budgets = []
 
     class Model:
-        def complete_json(self, *args, timeout_seconds):
+        def complete_json(self, *args, timeout_seconds, refresh_image=None):
             budgets.append(timeout_seconds)
             if clock() == 0:
                 return {'finished': False, 'page': 'battle', 'reason': '测试'}

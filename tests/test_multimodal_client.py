@@ -110,3 +110,95 @@ def test_invalid_environment_key_does_not_fall_back_to_file(tmp_path, monkeypatc
     monkeypatch.setenv('MULTIMODAL_API_KEY', key)
     with pytest.raises(mm.MultimodalError, match='密钥'):
         mm.MultimodalClient(settings, asset_root=tmp_path)
+
+
+def test_client_rebuilds_image_on_each_retry_preserving_prompt_model_and_authorization(tmp_path):
+    now = [0]
+    events = []
+    requests = []
+    fresh_frames = iter([b'fresh-1', b'fresh-2', b'fresh-3'])
+
+    def refresh():
+        frame = next(fresh_frames)
+        events.append(('screenshot', now[0], frame))
+        return frame
+
+    def sleep(seconds):
+        events.append(('wait', seconds))
+        now[0] += seconds
+
+    def open_request(request, timeout):
+        payload = json.loads(request.data)
+        content = payload['messages'][0]['content']
+        frame = base64.b64decode(content[1]['image_url']['url'].split(',')[1])
+        requests.append((request, payload, frame))
+        events.append(('send', now[0], frame))
+        if len(requests) < 4:
+            raise TimeoutError()
+        return response('{"finished":true}')
+
+    settings = config(tmp_path)
+    client = mm.MultimodalClient(settings, asset_root=tmp_path, open_request=open_request,
+                                 sleep=sleep, clock=lambda: now[0])
+    assert client.complete_json(b'initial', 'same prompt', refresh_image=refresh) == {'finished': True}
+
+    assert [item[2] for item in requests] == [b'initial', b'fresh-1', b'fresh-2', b'fresh-3']
+    assert events == [('send', 0, b'initial'), ('wait', 10), ('screenshot', 10, b'fresh-1'),
+                      ('send', 10, b'fresh-1'), ('wait', 10), ('screenshot', 20, b'fresh-2'),
+                      ('send', 20, b'fresh-2'), ('wait', 10), ('screenshot', 30, b'fresh-3'),
+                      ('send', 30, b'fresh-3')]
+    original = requests[0][1]
+    for request, payload, _ in requests:
+        assert request.full_url == settings['base_url'] + '/chat/completions'
+        assert request.get_header('Authorization') == 'Bearer test-secret'
+        assert request.get_header('Content-type') == 'application/json'
+        assert payload['model'] == settings['model']
+        assert payload['messages'][0]['content'][0] == {'type': 'text', 'text': 'same prompt'}
+        # Only the screenshot changes; response format and generation settings stay fixed.
+        payload['messages'][0]['content'][1] = original['messages'][0]['content'][1]
+        assert payload == original
+
+
+def test_client_successful_first_attempt_does_not_capture_again(tmp_path):
+    client = mm.MultimodalClient(config(tmp_path), asset_root=tmp_path,
+                                 open_request=lambda *a, **k: response('{}'))
+    assert client.complete_json(
+        b'initial', 'prompt', refresh_image=lambda: pytest.fail('首次请求不得补截图')) == {}
+
+
+def test_client_refresh_failure_never_resends_old_image(tmp_path):
+    sent = []
+    refreshes = []
+    waits = []
+
+    def open_request(request, timeout):
+        sent.append(json.loads(request.data))
+        raise TimeoutError()
+
+    def refresh():
+        refreshes.append(1)
+        raise OSError('screenshot failed')
+
+    client = mm.MultimodalClient(config(tmp_path), asset_root=tmp_path, open_request=open_request,
+                                 sleep=waits.append, clock=lambda: 0)
+    with pytest.raises(mm.MultimodalRequestError, match='刷新失败'):
+        client.complete_json(b'initial', 'prompt', refresh_image=refresh)
+
+    assert len(sent) == 1 and refreshes == [1] and waits == [10]
+
+
+def test_client_retry_without_refresh_callback_keeps_original_image(tmp_path):
+    sent = []
+    waits = []
+
+    def open_request(request, timeout):
+        sent.append(request)
+        if len(sent) == 1:
+            raise TimeoutError()
+        return response('{}')
+
+    client = mm.MultimodalClient(config(tmp_path), asset_root=tmp_path, open_request=open_request,
+                                 sleep=waits.append, clock=lambda: 0)
+    assert client.complete_json(b'initial', 'prompt') == {}
+    assert len(sent) == 2 and sent[0] is sent[1]
+    assert waits == [10]

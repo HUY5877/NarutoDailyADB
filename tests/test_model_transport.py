@@ -349,3 +349,184 @@ def test_response_body_timeout_preserves_http_status_and_read_phase(caplog):
     assert 'error_type=TimeoutError' in final_log
     assert 'private-response-body' not in caplog.text
     assert response.closed and not clock.sleeps
+
+
+def test_retry_refreshes_request_after_wait_without_refreshing_first_attempt():
+    clock = Clock()
+    initial = Request('https://example.test', data=b'initial')
+    requests = []
+    events = []
+
+    def refresh():
+        events.append(('refresh', clock.now))
+        return Request('https://example.test', data=f'fresh-{len(requests)}'.encode())
+
+    def request(current, timeout):
+        requests.append(current)
+        events.append(('send', clock.now))
+        if len(requests) < 4:
+            raise TimeoutError()
+        return io.BytesIO(b'success')
+
+    result = transport.request_with_retry(
+        initial, request_timeout=30, open_request=request, refresh_request=refresh,
+        sleep=clock.sleep, clock=clock)
+
+    assert result.body == b'success'
+    assert requests[0] is initial
+    assert [item.data for item in requests] == [b'initial', b'fresh-1', b'fresh-2', b'fresh-3']
+    assert events == [('send', 0), ('refresh', 10), ('send', 10),
+                      ('refresh', 20), ('send', 20), ('refresh', 30), ('send', 30)]
+    assert clock.sleeps == [10, 10, 10]
+
+
+@pytest.mark.parametrize('stop', ['permanent_http', 'insufficient_budget', 'wait_exhausted_budget'])
+def test_retry_never_refreshes_after_permanent_error_or_expired_budget(stop):
+    clock = Clock()
+    calls = []
+
+    def request(*args, **kwargs):
+        calls.append(1)
+        raise failure(401 if stop == 'permanent_http' else 503)
+
+    def sleep(seconds):
+        clock.sleep(seconds + 10 if stop == 'wait_exhausted_budget' else seconds)
+
+    with pytest.raises(transport.MultimodalRequestError):
+        transport.request_with_retry(
+            Request('https://example.test'), request_timeout=30,
+            timeout_seconds=5 if stop == 'insufficient_budget' else 15,
+            open_request=request, sleep=sleep, clock=clock,
+            refresh_request=lambda: pytest.fail('停止重试后不得重新截图'))
+
+    assert calls == [1]
+    assert clock.sleeps == ([20] if stop == 'wait_exhausted_budget' else [])
+
+
+def test_refresh_time_reduces_retry_request_timeout():
+    clock = Clock()
+    timeouts = []
+    refreshes = []
+
+    def refresh():
+        refreshes.append(clock.now)
+        clock.now += 4
+        return Request('https://example.test', data=b'fresh')
+
+    def request(current, timeout):
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            raise TimeoutError()
+        assert current.data == b'fresh'
+        return io.BytesIO(b'success')
+
+    result = transport.request_with_retry(
+        Request('https://example.test', data=b'initial'), request_timeout=30, timeout_seconds=20,
+        open_request=request, refresh_request=refresh, sleep=clock.sleep, clock=clock)
+
+    assert result.body == b'success'
+    assert timeouts == [20, 6]
+    assert refreshes == [10] and clock.sleeps == [10]
+
+
+def test_refresh_exhausting_budget_never_sends_stale_or_fresh_request():
+    clock = Clock()
+    calls = []
+    refreshes = []
+
+    def request(current, **kwargs):
+        calls.append(current.data)
+        raise TimeoutError()
+
+    def refresh():
+        refreshes.append(clock.now)
+        clock.now += 5
+        return Request('https://example.test', data=b'fresh')
+
+    with pytest.raises(transport.MultimodalRequestError, match='剩余时间'):
+        transport.request_with_retry(
+            Request('https://example.test', data=b'initial'), request_timeout=30, timeout_seconds=15,
+            open_request=request, refresh_request=refresh, sleep=clock.sleep, clock=clock)
+
+    assert calls == [b'initial'] and refreshes == [10]
+    assert clock.sleeps == [10]
+
+
+@pytest.mark.parametrize('error_type', [TimeoutError, OSError])
+def test_refresh_failure_is_not_retried_as_a_model_network_error(error_type, caplog):
+    clock = Clock()
+    calls = []
+    refreshes = []
+    screenshot_error = error_type('private-screenshot-error')
+
+    def request(current, **kwargs):
+        calls.append(current.data)
+        raise TimeoutError()
+
+    def refresh():
+        refreshes.append(1)
+        raise screenshot_error
+
+    with pytest.raises(transport.MultimodalRequestError, match='刷新失败') as caught:
+        transport.request_with_retry(
+            Request('https://example.test', data=b'initial'), request_timeout=30,
+            open_request=request, refresh_request=refresh, sleep=clock.sleep, clock=clock)
+
+    assert calls == [b'initial'] and refreshes == [1]
+    assert clock.sleeps == [10]
+    assert f'error_type={error_type.__name__}' in caplog.text
+    assert 'private-screenshot-error' not in caplog.text + str(caught.value)
+
+
+@pytest.mark.parametrize('cancel_at', ['before_refresh', 'during_refresh'])
+def test_cancelled_retry_never_sends_request_or_refreshes_after_cancel(cancel_at):
+    clock = Clock()
+    calls = []
+    refreshes = []
+
+    class CancelEvent(threading.Event):
+        def wait(self, timeout=None):
+            clock.sleep(timeout)
+            if cancel_at == 'before_refresh':
+                self.set()
+            return self.is_set()
+
+    cancelled = CancelEvent()
+
+    def request(current, **kwargs):
+        calls.append(current.data)
+        raise TimeoutError()
+
+    def refresh():
+        refreshes.append(1)
+        cancelled.set()
+        return Request('https://example.test', data=b'fresh')
+
+    with pytest.raises(transport.MultimodalRequestError, match='已取消'):
+        transport.request_with_retry(
+            Request('https://example.test', data=b'initial'), request_timeout=30,
+            open_request=request, refresh_request=refresh, cancel_event=cancelled,
+            sleep=clock.sleep, clock=clock)
+
+    assert calls == [b'initial']
+    assert refreshes == ([] if cancel_at == 'before_refresh' else [1])
+    assert clock.sleeps == [10]
+
+
+def test_retry_without_refresh_factory_reuses_original_request():
+    clock = Clock()
+    initial = Request('https://example.test', data=b'initial')
+    calls = []
+
+    def request(current, **kwargs):
+        calls.append(current)
+        if len(calls) < 4:
+            raise TimeoutError()
+        return io.BytesIO(b'success')
+
+    result = transport.request_with_retry(
+        initial, request_timeout=30, open_request=request, sleep=clock.sleep, clock=clock)
+
+    assert result.body == b'success'
+    assert len(calls) == 4 and all(item is initial for item in calls)
+    assert clock.sleeps == [10, 10, 10]

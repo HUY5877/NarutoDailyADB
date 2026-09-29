@@ -92,7 +92,8 @@ def run_battle(
                     model_calls += 1
                     with model_request_context('战斗完成检查'):
                         result = model.complete_json(screenshot, BATTLE_COMPLETION,
-                                                     timeout_seconds=remaining())
+                                                     timeout_seconds=remaining(),
+                                                     refresh_image=client.screenshot)
                     if remaining() <= 0:
                         break
                     finished = result.get('finished')

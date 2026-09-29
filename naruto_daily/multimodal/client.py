@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 from pathlib import Path
+from typing import Callable
 from urllib.request import Request
 
 from .transport import MultimodalError, MultimodalRequestError, request_with_retry
@@ -36,23 +37,30 @@ class MultimodalClient:
         return dict(base_url=self.config['base_url'], model=self.config['model'],
                     timeout_seconds=float(self.config['timeout_seconds']), api_key=self._key)
 
-    def complete_json(self, png: bytes, prompt: str, *, timeout_seconds=None) -> dict:
-        payload = {
-            'model': self.config['model'], 'reasoning_effort': 'low', 'max_tokens': 4096,
-            'response_format': {'type': 'json_object'},
-            'messages': [{'role': 'user', 'content': [
-                {'type': 'text', 'text': prompt},
-                {'type': 'image_url', 'image_url': {
-                    'url': 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
-                }},
-            ]}],
-        }
-        request = Request(self.config['base_url'].rstrip('/') + '/chat/completions',
-                          data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
-                          headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self._key})
+    def complete_json(self, png: bytes, prompt: str, *, timeout_seconds=None,
+                      refresh_image: Callable[[], bytes] | None = None) -> dict:
+        """首次识别给定截图；提供刷新函数时，每次接口重试都改用新截图。"""
+        def build_request(image):
+            payload = {
+                'model': self.config['model'], 'reasoning_effort': 'low', 'max_tokens': 4096,
+                'response_format': {'type': 'json_object'},
+                'messages': [{'role': 'user', 'content': [
+                    {'type': 'text', 'text': prompt},
+                    {'type': 'image_url', 'image_url': {
+                        'url': 'data:image/png;base64,' + base64.b64encode(image).decode('ascii')
+                    }},
+                ]}],
+            }
+            return Request(self.config['base_url'].rstrip('/') + '/chat/completions',
+                           data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+                           headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self._key})
+
+        # 截图发生在重试等待之后；不能预先缓存下一次请求的图片。
+        refresh_request = (lambda: build_request(refresh_image())) if refresh_image is not None else None
         response = request_with_retry(
-            request, request_timeout=float(self.config['timeout_seconds']), timeout_seconds=timeout_seconds,
+            build_request(png), request_timeout=float(self.config['timeout_seconds']), timeout_seconds=timeout_seconds,
             open_request=self._open, sleep=self._sleep, clock=self._clock,
+            refresh_request=refresh_request,
         )
         body = response.body
 
