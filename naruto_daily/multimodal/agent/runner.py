@@ -58,7 +58,7 @@ class NavigationEvidence(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     observation: str = Field(min_length=1, max_length=2000, pattern=r'\S')
 
-    def state(self) -> Literal['pending', 'reached', 'blocked']:
+    def state(self) -> Literal['pending', 'reached', 'finished', 'blocked']:
         raise NotImplementedError
 
 

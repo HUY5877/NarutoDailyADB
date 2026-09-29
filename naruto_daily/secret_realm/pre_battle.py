@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+from enum import Enum
 
 from naruto_daily.common.visual import VisualError
 from naruto_daily.multimodal.client import MultimodalError
@@ -20,6 +21,12 @@ QUESTION = dict(name='退出本次战斗确认提示', template='assets/secret_e
                 left=650, top=390, right=1270, bottom=550, threshold=.85)
 CONFIRM = dict(name='退出战斗确定按钮', template='assets/secret_exit_confirm.png',
                left=600, top=570, right=970, bottom=800, threshold=.85)
+
+
+class BattlePreparation(Enum):
+    READY = 'ready'
+    EXITED = 'exited'
+    FINISHED = 'finished'
 
 
 def _wait_and_click(images, target, action, *, guard=None):
@@ -94,22 +101,25 @@ def exit_secret_battle(images, action):
     _wait_and_click(images, CONFIRM, action, guard=QUESTION)
 
 
-def prepare_secret_battle(images, model, action, *, clock=time.monotonic):
-    """返回 True 表示已执行退出；False 才允许调用通用战斗模块。"""
+def prepare_secret_battle(images, model, action, *, clock=time.monotonic) -> BattlePreparation:
+    """区分可开始战斗、已主动退出和导航期间已出现结算。"""
     name = identify_battle_realm(images, model, action, clock=clock)
     if name == '阴阳秘境':
         LOGGER.info('确认阴阳秘境，执行暂停→退出战斗→确定')
         exit_secret_battle(images, action)
-        return True
+        return BattlePreparation.EXITED
     if name == '毒风秘境':
         LOGGER.info('确认毒风秘境，先调用导航 agent 走到封印处，再开始战斗')
         result = navigate_to_poison_seal(images, model)
+        if result.status == 'finished':
+            LOGGER.info('毒风导航期间已出现失败或胜利结算，停止导航并返回房间重新检查挑战券：%s', result.observation)
+            return BattlePreparation.FINISHED
         if result.reached:
             LOGGER.info('毒风 agent 本轮证据满足解封条件：%s；共移动 %d 步，进入战斗模块', result.observation, result.steps)
-            return False
+            return BattlePreparation.READY
         if result.status == 'max_steps':
             LOGGER.info('毒风导航 %d 步后仍未到达封印，执行暂停→退出战斗→确定', result.steps)
             exit_secret_battle(images, action)
-            return True
+            return BattlePreparation.EXITED
         raise VisualError('毒风导航未确认到达，停止且不进入战斗')
-    return False
+    return BattlePreparation.READY

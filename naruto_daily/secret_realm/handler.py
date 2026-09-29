@@ -10,8 +10,9 @@ from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalClient
 from .recognition import wait_for_tickets
-from .pre_battle import prepare_secret_battle
+from .pre_battle import BattlePreparation, prepare_secret_battle
 from .deployment import wait_after_deploy
+from .result_detection import secret_failure_visible
 
 
 LOGGER = logging.getLogger('naruto_daily')
@@ -41,11 +42,11 @@ def _enter_room(client, images, action):
     raise VisualError('秘境创建房间超时')
 
 
-def finish_secret_result(client, images, action, *, exited_battle=False):
-    """奖励弹层点空白处、翻牌结算点返回，逐轮检查直到回房间。"""
+def finish_secret_result(client, images, action, *, exited_battle=False, result_confirmed=False):
+    """失败和奖励弹层点空白处、翻牌结算点返回，逐轮检查直到回房间。"""
     deadline = images.elapsed + action['timeout_seconds']
     return_clicked = False
-    dismiss_enabled = exited_battle
+    dismiss_enabled = exited_battle or result_confirmed
 
     def probe(png):
         if images.match(png, action['deploy_button'])[0] is not None:
@@ -58,6 +59,8 @@ def finish_secret_result(client, images, action, *, exited_battle=False):
             center, _ = images.match(png, action['result_return'])
             if center is not None:
                 return 'result', center
+        if secret_failure_visible(png):
+            return 'failure', None
         return None
 
     def check():
@@ -90,8 +93,10 @@ def finish_secret_result(client, images, action, *, exited_battle=False):
             LOGGER.info('返回到秘境大厅，重新创建房间后继续核对挑战券')
             _enter_room(client, images, action)
             return
-        if state and state[0] == 'reward':
+        if state and state[0] in ('reward', 'failure'):
             dismiss_enabled = True
+            if state[0] == 'failure':
+                LOGGER.info('已确认秘境失败结算，点击空白处回房间后重新核对挑战券')
         if dismiss_enabled and images.elapsed < deadline:
             # 避开奖励物品所在的中间一排；此空白坐标已经实机验证可关闭奖励弹层。
             client.tap(960, 900)
@@ -121,13 +126,15 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
         client.tap(*confirmed.deploy_center)
         LOGGER.info('已点击出战，等待 %g 秒加载并检查继续挑战提示；加载完成前不再点击出战', action['load_wait_seconds'])
         wait_after_deploy(images, action, confirmed_tickets=confirmed.tickets)
-        skipped = prepare_secret_battle(images, model, action)
-        if not skipped:
+        preparation = prepare_secret_battle(images, model, action)
+        if preparation is BattlePreparation.READY:
             # 秘境结算仅停留约20秒，缩短连点窗口以便回房间前识别结束。
             run_battle(client, action['battle'], template_matcher=template_matcher,
                        asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18)
-        finish_secret_result(client, images, action, exited_battle=skipped)
-        if skipped:
+        finish_secret_result(client, images, action,
+                             exited_battle=preparation is BattlePreparation.EXITED,
+                             result_confirmed=preparation is BattlePreparation.FINISHED)
+        if preparation is BattlePreparation.EXITED:
             LOGGER.info('已主动退出本次秘境；回房间重新读券后继续')
         else:
             completed += 1

@@ -62,13 +62,15 @@ class PoisonEvidence(NavigationEvidence):
                     '明确未交战为no，不确定为unknown。仅可用yes/no/unknown字符串，不能覆盖结束页面或待解封提示。')
     visible_text: str = Field(max_length=2000, description='逐字抄写当前可见文字，不加入推测；无可读文字可为空')
 
-    def state(self) -> Literal['pending', 'reached', 'blocked']:
+    def state(self) -> Literal['pending', 'reached', 'finished', 'blocked']:
+        if self.page == 'result':
+            return 'finished'
         if self.page != 'battle':
             return 'blocked'
         # 仅检查模型已抄写文字和事实字段是否矛盾，不增加 OCR 或模型请求。
         text = re.sub(r'\W+', '', self.visible_text).casefold()
         if any(marker in text for marker in ('失败', '胜利', '结算', '点击任意位置关闭')):
-            return 'blocked'
+            return 'finished'
         if self.seal_prompt_visible != 'no':
             return 'pending'
         if any(marker in text for marker in ('解开封印召唤boss', '解除封印召唤boss',

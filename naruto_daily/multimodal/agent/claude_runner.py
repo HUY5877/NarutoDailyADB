@@ -69,7 +69,7 @@ class NavigationEvidence(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     observation: str = Field(min_length=1, max_length=2000, pattern=r'\S')
 
-    def state(self) -> Literal['pending', 'reached', 'blocked']:
+    def state(self) -> Literal['pending', 'reached', 'finished', 'blocked']:
         raise NotImplementedError
 
 
@@ -122,8 +122,8 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
     watch = CompletionWatch(client, completion_probe, on_complete=lambda: _stop_owned_cli(active_sdk))
     initial_png = client.screenshot()
 
-    def result(reached: bool, observation: str) -> AgentResult:
-        return AgentResult(reached, len(history), 'reached' if reached else 'max_steps',
+    def result(reached: bool, observation: str, *, status: str | None = None) -> AgentResult:
+        return AgentResult(reached, len(history), status or ('reached' if reached else 'max_steps'),
                            observation, tuple(history))
 
     def parse(args: dict[str, Any], *, direction: bool) -> NavigationEvidence:
@@ -143,7 +143,7 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
         state = evidence.state()
         if state == 'blocked':
             raise AgentError(f'当前画面不可导航，停止且不进入战斗：{evidence.observation}')
-        if state not in ('pending', 'reached'):
+        if state not in ('pending', 'reached', 'finished'):
             raise AgentError('导航观察返回无效状态，已停止')
         return evidence
 
@@ -154,10 +154,16 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
               {**{name: str for name in evidence_type.model_fields}, 'direction': str})
         async def move(args: dict[str, Any]) -> dict[str, Any]:
             nonlocal final_result
+            if final_result is not None and final_result.status == 'finished':
+                return {'content': [{'type': 'text', 'text': '本局已结束，导航结果已记录，禁止继续移动。'}], 'is_error': True}
             watch.check_fresh()
             evidence = parse(args, direction=True)
-            if evidence.state() == 'reached' or len(history) >= max_steps:
-                final_result = result(evidence.state() == 'reached', evidence.observation)
+            state = evidence.state()
+            if state == 'finished':
+                final_result = result(False, evidence.observation, status='finished')
+                return {'content': [{'type': 'text', 'text': '本局已结束，导航结果已记录，禁止继续移动。'}]}
+            if state == 'reached' or len(history) >= max_steps:
+                final_result = result(state == 'reached', evidence.observation)
                 return {'content': [{'type': 'text', 'text': '目标已确定或已达到步数上限，请调用 finish。'}], 'is_error': True}
             direction = args['direction']
             if direction not in ('w', 'a', 's', 'd'):
@@ -176,13 +182,16 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
               {name: str for name in evidence_type.model_fields})
         async def finish(args: dict[str, Any]) -> dict[str, Any]:
             nonlocal final_result
+            if final_result is not None and final_result.status == 'finished':
+                return {'content': [{'type': 'text', 'text': '本局已结束，导航结果已记录。'}]}
             watch.check_fresh()
             evidence = parse(args, direction=False)
             state = evidence.state()
             if state == 'pending' and len(history) < max_steps:
                 return {'content': [{'type': 'text', 'text':
                     f'事实仍未满足完成条件；请继续调用 move，剩余 {max_steps - len(history)} 步。'}], 'is_error': True}
-            final_result = result(state == 'reached', evidence.observation)
+            final_result = result(state == 'reached', evidence.observation,
+                                  status='finished' if state == 'finished' else None)
             return {'content': [{'type': 'text', 'text': '导航结果已记录。'}]}
 
         server = create_sdk_mcp_server(name='navigation', version='1.0.0', tools=[move, finish])

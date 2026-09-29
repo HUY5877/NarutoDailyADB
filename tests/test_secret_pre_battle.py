@@ -6,6 +6,7 @@ import pytest
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError
 from naruto_daily.config import load_settings
+from naruto_daily.secret_realm.pre_battle import BattlePreparation
 
 
 ROOT = Path(__file__).parents[1]
@@ -48,7 +49,7 @@ def test_yinyang_uses_model_then_pause_exit_confirm_on_reference_frames():
     client = BattleClient()
     model = SimpleNamespace(complete_json=lambda *a, **kw: {'page': 'battle', 'realm_name': '阴阳秘境'})
     assert prepare_secret_battle(ImageRecognition(client, asset_root=ROOT, sleep=lambda _: None),
-                              model, action())
+                              model, action()) is BattlePreparation.EXITED
     assert len(client.taps) == 3 and client.state == 'secret_result'
 
 
@@ -56,8 +57,8 @@ def test_other_realm_proceeds_to_battle_without_pause_or_exit():
     from naruto_daily.secret_realm.pre_battle import prepare_secret_battle
     client = BattleClient('flame')
     model = SimpleNamespace(complete_json=lambda *a, **kw: {'page': 'battle', 'realm_name': '烈炎秘境'})
-    assert not prepare_secret_battle(ImageRecognition(client, asset_root=ROOT, sleep=lambda _: None),
-                                  model, action())
+    assert prepare_secret_battle(ImageRecognition(client, asset_root=ROOT, sleep=lambda _: None),
+                                 model, action()) is BattlePreparation.READY
     assert client.taps == []
 
 
@@ -134,7 +135,8 @@ def test_obscured_name_retries_new_frame_before_quitting():
                     {'page': 'battle', 'realm_name': '阴阳秘境'}])
     waits = []
     model = SimpleNamespace(complete_json=lambda *a, **kw: next(replies))
-    assert prepare_secret_battle(ImageRecognition(client, asset_root=ROOT, sleep=waits.append), model, action())
+    assert prepare_secret_battle(ImageRecognition(client, asset_root=ROOT, sleep=waits.append),
+                                 model, action()) is BattlePreparation.EXITED
     assert waits[0] == 1 and len(client.taps) == 3
 
 
@@ -144,6 +146,6 @@ def test_already_settled_does_not_read_name_or_click_pause():
     client.state = 'secret_result'
     def fail(*a, **kw):
         raise AssertionError('结算页无需再调用模型')
-    assert not prepare_secret_battle(ImageRecognition(client, asset_root=ROOT, sleep=lambda _: None),
-                                  SimpleNamespace(complete_json=fail), action())
+    assert prepare_secret_battle(ImageRecognition(client, asset_root=ROOT, sleep=lambda _: None),
+                                 SimpleNamespace(complete_json=fail), action()) is BattlePreparation.READY
     assert client.taps == []

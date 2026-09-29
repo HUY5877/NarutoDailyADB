@@ -221,6 +221,9 @@ def run_agent(
         state = evidence.state()
         LOGGER.info('[导航观察 %d/%d] 状态=%s，证据=%s', len(history), max_steps,
                     state, evidence.model_dump_json())
+        if state == 'finished':
+            raise _NavigationDone(AgentResult(False, len(history), 'finished',
+                                               evidence.observation, tuple(history)))
         if state == 'blocked':
             raise AgentError(f'当前画面不可导航，停止且不进入战斗：{evidence.observation}')
         if state not in ('pending', 'reached'):
