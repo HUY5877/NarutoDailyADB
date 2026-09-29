@@ -67,7 +67,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 6
         }
       },
@@ -141,7 +141,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -170,7 +170,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -204,7 +204,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 3
         }
       },
@@ -229,7 +229,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 3
         }
       },
@@ -246,7 +246,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -275,7 +275,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -309,7 +309,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 3
         }
       },
@@ -324,7 +324,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 3
         }
       },
@@ -338,7 +338,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 3
         }
       },
@@ -355,7 +355,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -382,7 +382,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 3
         }
       },
@@ -467,7 +467,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -492,7 +492,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 3
         }
       },
@@ -551,7 +551,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -576,7 +576,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 3
         }
       },
@@ -664,7 +664,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 6
         }
       }
@@ -683,7 +683,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -708,7 +708,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 3
         }
       },
@@ -818,7 +818,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -850,7 +850,7 @@
             "multimodal": {
               "base_url": "${MULTIMODAL_BASE_URL}",
               "model": "${MULTIMODAL_MODEL}",
-              "timeout_seconds": 15,
+              "timeout_seconds": 30,
               "max_calls": 3
             }
           },
@@ -875,7 +875,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -929,7 +929,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 6
         },
         "battle": {
@@ -1038,7 +1038,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -1070,7 +1070,7 @@
             "multimodal": {
               "base_url": "${MULTIMODAL_BASE_URL}",
               "model": "${MULTIMODAL_MODEL}",
-              "timeout_seconds": 15,
+              "timeout_seconds": 30,
               "max_calls": 3
             }
           },
@@ -1099,7 +1099,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 10
         }
       }
@@ -1118,7 +1118,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },
@@ -1143,7 +1143,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 3
         }
       },
@@ -1242,7 +1242,7 @@
         "multimodal": {
           "base_url": "${MULTIMODAL_BASE_URL}",
           "model": "${MULTIMODAL_MODEL}",
-          "timeout_seconds": 15,
+          "timeout_seconds": 30,
           "max_calls": 10
         },
         "sweep_prompt": {
@@ -1268,7 +1268,7 @@
           "multimodal": {
             "base_url": "${MULTIMODAL_BASE_URL}",
             "model": "${MULTIMODAL_MODEL}",
-            "timeout_seconds": 15,
+            "timeout_seconds": 30,
             "max_calls": 3
           }
         },

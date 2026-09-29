@@ -192,7 +192,7 @@ def test_battle_more_than_three_retries_keep_all_taps_stopped(tmp_path, late):
     device = Device(clock, lambda now: 'room')
 
     def request(req, *, timeout):
-        assert timeout <= 15
+        assert timeout <= 30
         requests.append(request_image(req))
         assert not device.taps
         if len(requests) <= 4:
@@ -211,7 +211,7 @@ def test_battle_more_than_three_retries_keep_all_taps_stopped(tmp_path, late):
 
     assert not device.taps
     assert requests == [frame for _, frame in device.frames] and len(requests) == 5
-    assert [at for at, _ in device.frames] == [0, 25, 50, 75, 100]
+    assert [at for at, _ in device.frames] == [0, 40, 80, 120, 160]
 
 
 def test_battle_tap_threads_inherit_budget_and_resume_only_after_check(tmp_path):
@@ -244,9 +244,9 @@ def test_workflow_read_ignores_stage_cap_and_retries_new_frames(tmp_path):
             raise TimeoutError('offline timeout')
         return response_for(b'room')
 
-    action = dict(timeout_seconds=.1, multimodal=dict(max_calls=1, timeout_seconds=15))
+    action = dict(timeout_seconds=.1, multimodal=dict(max_calls=1, timeout_seconds=30))
     model = model_for(tmp_path, clock, request, clock.advance)
-    with execution_scope(150, clock=clock, sleep=clock.advance):
+    with execution_scope(200, clock=clock, sleep=clock.advance):
         workflow = ModelWorkflow(device, action, model=model)
         result = workflow.read('页面', 'offline', lambda data: data['finished'], timeout=.01)
     assert result is True and requests == device.frames and len(requests) == 5

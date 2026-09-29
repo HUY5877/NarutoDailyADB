@@ -10,7 +10,7 @@ from typing import Callable, Iterator, TypeVar
 
 
 DAILY_TIMEOUT_SECONDS = 25 * 60
-MODEL_REQUEST_TIMEOUT_SECONDS = 15
+MODEL_REQUEST_TIMEOUT_SECONDS = 30
 LOGGER = logging.getLogger("naruto_daily")
 T = TypeVar("T")
 

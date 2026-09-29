@@ -78,7 +78,7 @@ def test_late_observation_result_is_rejected():
 
 def test_action_legacy_timeouts_are_replaced_without_changing_input_intervals_or_config():
     action = {'timeout_seconds': 30, 'sweep_timeout_seconds': 120,
-              'multimodal': {'timeout_seconds': 30, 'max_calls': 3},
+              'multimodal': {'timeout_seconds': 60, 'max_calls': 3},
               'battle': {'start_timeout_seconds': 60, 'timeout_seconds': 300,
                          'tap_interval_seconds': .15, 'check_interval_seconds': 18}}
     saved = deepcopy(action)
@@ -89,7 +89,7 @@ def test_action_legacy_timeouts_are_replaced_without_changing_input_intervals_or
     assert result['battle']['start_timeout_seconds'] == result['battle']['timeout_seconds'] == 1000
     assert result['battle']['tap_interval_seconds'] == .15
     assert result['battle']['check_interval_seconds'] == 18
-    assert result['multimodal'] == {'timeout_seconds': 15, 'max_calls': 3}
+    assert result['multimodal'] == {'timeout_seconds': 30, 'max_calls': 3}
 
 
 def test_deadline_blocks_adb_input_and_cleans_context():

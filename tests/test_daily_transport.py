@@ -55,13 +55,13 @@ def test_daily_sync_retries_more_than_three_times_with_fresh_frames(error, caplo
 
     with execution_scope(200, clock=clock, sleep=clock.sleep):
         result = transport.request_with_retry(
-            Request(URL, data=b'initial'), request_timeout=30, timeout_seconds=.01,
+            Request(URL, data=b'initial'), request_timeout=60, timeout_seconds=.01,
             open_request=send,
             refresh_request=lambda: Request(URL, data=f'fresh-{len(requests)}'.encode()))
 
     assert result.body == b'success'
     assert requests == [b'initial', b'fresh-1', b'fresh-2', b'fresh-3', b'fresh-4', b'fresh-5']
-    assert timeouts == [15] * 6 and clock.waits == [10] * 5
+    assert timeouts == [30] * 6 and clock.waits == [10] * 5
     assert 'attempt=6/unlimited' in caplog.text
     assert 'remaining=144.00s' in caplog.text
     assert 'private-error' not in caplog.text and 'private-body' not in caplog.text
@@ -119,7 +119,7 @@ def test_daily_sync_deadline_stops_without_sending_or_accepting_late_frame(phase
 
     def send(request, timeout):
         requests.append(request.data)
-        assert timeout == min(15, deadline)
+        assert timeout == min(30, deadline)
         if phase == 'response_headers':
             clock.now = deadline
             return io.BytesIO(b'late-success')
@@ -170,7 +170,7 @@ def test_daily_sync_refresh_failure_is_not_retried_or_replaced_with_old_frame(fa
 
 def test_daily_client_caps_connection_and_ignores_old_stage_timeout():
     clock, calls = Clock(), []
-    config = dict(base_url=URL.removesuffix('/chat/completions'), model='test-model', timeout_seconds=30)
+    config = dict(base_url=URL.removesuffix('/chat/completions'), model='test-model', timeout_seconds=60)
 
     def send(request, timeout):
         calls.append((timeout, json.loads(request.data)))
@@ -179,13 +179,13 @@ def test_daily_client_caps_connection_and_ignores_old_stage_timeout():
         ]}).encode())
 
     client = MultimodalClient(config, open_request=send)
-    assert client.agent_connection()['timeout_seconds'] == 30
+    assert client.agent_connection()['timeout_seconds'] == 60
     with execution_scope(200, clock=clock, sleep=clock.sleep):
-        assert client.agent_connection()['timeout_seconds'] == 15
-        assert MultimodalClient(config).config['timeout_seconds'] == 15
+        assert client.agent_connection()['timeout_seconds'] == 30
+        assert MultimodalClient(config).config['timeout_seconds'] == 30
         assert client.complete_json(b'png', 'prompt', timeout_seconds=.001) == {'ok': True}
 
-    assert calls[0][0] == 15
+    assert calls[0][0] == 30
     assert base64.b64decode(calls[0][1]['messages'][0]['content'][1]['image_url']['url'].split(',')[1]) == b'png'
 
 
@@ -219,9 +219,9 @@ def test_daily_async_retries_more_than_three_times_preserving_history(monkeypatc
         return refresh(request)
 
     async def run():
-        async with transport.ModelAsyncClient(request_timeout=30, transport=httpx.MockTransport(send),
+        async with transport.ModelAsyncClient(request_timeout=60, transport=httpx.MockTransport(send),
                                              refresh_request=arefresh if refresh_async else refresh) as client:
-            assert client.request_timeout == 15
+            assert client.request_timeout == 30
             response = await client.post(URL, json={'history': history, 'frame': 'initial'},
                                          headers={'Authorization': 'Bearer private-key'})
             assert response.json() == {'ok': True}
@@ -234,6 +234,29 @@ def test_daily_async_retries_more_than_three_times_preserving_history(monkeypatc
     assert refreshes == [11, 22, 33, 44, 55] and clock.waits == [10] * 5
     assert 'attempt=6/unlimited' in caplog.text and 'remaining=144.00s' in caplog.text
     assert 'private-key' not in caplog.text and 'private-error' not in caplog.text
+
+
+@pytest.mark.parametrize('configured,remaining,expected', [(60, 200, 30), (60, 12, 12), (5, 200, 5)])
+def test_daily_async_request_timeout_obeys_cap_and_remaining_budget(monkeypatch, configured, remaining, expected):
+    clock, timeouts = Clock(), []
+    original_timeout = asyncio.timeout
+
+    def timeout(seconds):
+        timeouts.append(seconds)
+        return original_timeout(seconds)
+
+    async def send(request):
+        return httpx.Response(200, json={'ok': True})
+
+    async def run():
+        async with transport.ModelAsyncClient(request_timeout=configured, transport=httpx.MockTransport(send)) as client:
+            assert (await client.post(URL, json={})).json() == {'ok': True}
+
+    monkeypatch.setattr(transport.asyncio, 'timeout', timeout)
+    with execution_scope(remaining, clock=clock, sleep=clock.sleep):
+        asyncio.run(run())
+
+    assert timeouts == [expected]
 
 
 @pytest.mark.parametrize('status', ['timeout', 503, 401, 403])
@@ -328,14 +351,14 @@ def test_injected_sync_request_rejects_attempt_late_success_before_daily_deadlin
     class Response(io.BytesIO):
         def read(self, size):
             if phase == 'body':
-                clock.now += 14
+                clock.now += 29
             else:
                 pytest.fail('Headers already used the request deadline; do not read the body')
             return super().read(size)
 
     def send(request, timeout):
-        assert timeout == 15
-        clock.now += 16 if phase == 'headers' else 14
+        assert timeout == 30
+        clock.now += 31 if phase == 'headers' else 29
         return Response(b'late-success')
 
     with execution_scope(200, clock=clock, sleep=clock.sleep):
@@ -343,7 +366,7 @@ def test_injected_sync_request_rejects_attempt_late_success_before_daily_deadlin
             transport.request_with_retry(Request(URL), request_timeout=30, open_request=send)
 
     assert caught.value.retryable and caught.value.error_kind == 'timeout'
-    assert clock.now == (16 if phase == 'headers' else 28)
+    assert clock.now == (31 if phase == 'headers' else 58)
     assert not clock.waits
 
 
