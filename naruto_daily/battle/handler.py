@@ -35,6 +35,7 @@ def run_battle(
     clock: Callable[[], float] = time.monotonic,
     model: MultimodalClient | None = None,
     check_interval_seconds: float = BATTLE_CHECK_INTERVAL_SECONDS,
+    end_detector: Callable[[bytes], str | None] | None = None,
 ) -> BattleSummary:
     if (isinstance(check_interval_seconds, bool) or not isinstance(check_interval_seconds, (int, float))
             or not math.isfinite(check_interval_seconds) or check_interval_seconds <= 0):
@@ -83,6 +84,13 @@ def run_battle(
                 screenshot = client.screenshot()
                 if remaining() <= 0:
                     break
+                if end_detector is not None:
+                    name = end_detector(screenshot)
+                    if remaining() <= 0:
+                        break
+                    if name is not None:
+                        LOGGER.info('发现战斗结束页面：%s，停止战斗点击，共点击 %d 次', name, taps)
+                        return BattleSummary(taps, name)
                 for target in targets:
                     center, _ = images.match(screenshot, target)
                     if remaining() <= 0:

@@ -271,3 +271,40 @@ def test_navigation_failure_returns_to_room_and_rereads_tickets_before_redeploy(
     assert len(calls) == 3 + 2 * next_tickets
     assert client.taps == [(1443, 791), (1787, 920), (960, 900)] + \
         ([(1787, 920), (960, 900)] if next_tickets else [])
+
+
+@pytest.mark.parametrize('next_tickets', [0, 1])
+def test_ninja_selection_returns_to_room_and_rechecks_tickets_before_next_battle(monkeypatch, next_tickets):
+    from naruto_daily.secret_realm import handler
+
+    class NinjaClient(SecretClient):
+        selecting = False
+
+        def screenshot(self):
+            return b'ninja' if self.selecting else super().screenshot()
+
+        def tap(self, x, y):
+            super().tap(x, y)
+            if (x, y) == (150, 1000):
+                self.selecting = False
+
+    client, battles = NinjaClient(), []
+    counts = [1, 1, next_tickets] + ([1, 0] if next_tickets else [])
+    calls = fake_model(monkeypatch, counts)
+    monkeypatch.setattr(handler, 'prepare_secret_battle', lambda *a, **kw: BattlePreparation.READY)
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == b'ninja' else None)
+
+    def battle(*args, **kwargs):
+        battles.append(True)
+        client.selecting = True
+        assert kwargs['end_detector'](client.screenshot()) == '秘境更换忍者页'
+        assert kwargs['end_detector'](b'room') is None
+
+    monkeypatch.setattr(handler, 'run_battle', battle)
+    assert handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher,
+                                       sleep=lambda _: None) == 1 + next_tickets
+    assert len(battles) == 1 + next_tickets
+    assert len(calls) == 3 + 2 * next_tickets
+    assert client.taps == [(1443, 791), (1787, 920), (150, 1000)] + \
+        ([(1787, 920), (150, 1000)] if next_tickets else [])

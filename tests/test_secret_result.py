@@ -218,6 +218,50 @@ def test_confirmed_result_already_returned_to_room_does_not_tap():
     assert client.taps == []
 
 
+@pytest.mark.parametrize('confirmed', [False, True])
+def test_ninja_selection_rechecks_and_clicks_latest_back_position(monkeypatch, confirmed):
+    from naruto_daily.secret_realm import handler
+    first, latest = {'ninja_old'}, {'ninja_new'}
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == first else (160, 1010) if png == latest else None)
+    client = Client([first, latest, ROOM])
+    handler.finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                                 action(), result_confirmed=confirmed)
+    assert client.taps == [(160, 1010)]
+
+
+def test_ninja_selection_disappears_before_click_without_tapping_room_back(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    ninja = {'ninja'}
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == ninja else None)
+    client = Client([ninja, ROOM])
+    handler.finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None), action())
+    assert client.taps == []
+
+
+def test_ninja_selection_does_not_inherit_blank_taps_after_return(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    ninja = {'ninja'}
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == ninja else None)
+    client = Client([ninja, ninja, set(), set(), ROOM])
+    handler.finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                                 action(), result_confirmed=True)
+    assert client.taps == [(150, 1000)]
+
+
+def test_result_recheck_switching_to_ninja_selection_never_taps_blank(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    ninja = {'ninja'}
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == ninja else None)
+    client = Client([RESULT, ninja, ninja, ninja, ROOM])
+    handler.finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                                 action(), result_confirmed=True)
+    assert client.taps == [(150, 1000)]
+
+
 def test_unconfirmed_unknown_page_never_taps_blank():
     from naruto_daily.secret_realm.handler import finish_secret_result
     client = Client([set()])
@@ -253,3 +297,31 @@ def test_regular_battle_failure_stops_then_dismisses_to_room_without_another_mod
     assert summary.taps == 0 and client.taps == []
     finish_secret_result(client, ImageRecognition(client, asset_root=ROOT, sleep=lambda _: None), config)
     assert client.taps == [(960, 900)] and calls == [True]
+
+
+@pytest.mark.parametrize('fixture', ['secret_ninja_selected.png', 'secret_ninja_loading.png'])
+def test_real_ninja_selection_stops_battle_and_returns_to_room_without_model(fixture):
+    from types import SimpleNamespace
+    from naruto_daily.battle import run_battle
+    from naruto_daily.secret_realm import handler
+
+    selection = (ROOT / 'tests/fixtures' / fixture).read_bytes()
+    room = (ROOT / 'tests/fixtures/secret_reward_room.png').read_bytes()
+    back = handler.find_ninja_selection_return(selection)
+    assert back is not None
+
+    class NinjaClient(Client):
+        def screenshot(self):
+            return room if self.taps else selection
+
+    def unexpected_model(*args, **kwargs):
+        raise AssertionError('更换忍者页应通过本地图片识别，不调用模型')
+
+    config = action()
+    client = NinjaClient([])
+    summary = run_battle(client, config['battle'], asset_root=ROOT, sleep=lambda _: None,
+                         model=SimpleNamespace(complete_json=unexpected_model),
+                         end_detector=handler._ninja_selection_end)
+    assert summary.taps == 0 and summary.end_target == '秘境更换忍者页' and client.taps == []
+    handler.finish_secret_result(client, ImageRecognition(client, asset_root=ROOT, sleep=lambda _: None), config)
+    assert client.taps == [back]

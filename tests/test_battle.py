@@ -160,6 +160,45 @@ def test_result_visible_on_entry_stops_without_attacks_or_sleep():
     assert client.frames == [0] and client.taps == [] and waits == []
 
 
+@pytest.mark.parametrize('finished_frame', [1, 2])
+def test_extra_end_detector_stops_before_templates_or_model(finished_frame):
+    clock = Clock()
+    client = Client(clock)
+    checked = []
+
+    def detect(png):
+        checked.append(png)
+        return '更换忍者' if int(png) == finished_frame else None
+
+    def matcher(png, *args):
+        assert int(png) < finished_frame
+        return None, .2
+
+    class Model:
+        def complete_json(self, png, *args, **kwargs):
+            assert int(png) < finished_frame
+            return {'finished': False, 'page': 'battle', 'reason': '战斗中'}
+
+    result = run_battle(client, battle_config(), template_matcher=matcher,
+                        sleep=clock.advance, clock=clock, model=Model(), end_detector=detect)
+    assert result.end_target == '更换忍者'
+    assert len(client.taps) == result.taps == (finished_frame - 1) * 120
+    assert checked == [str(i).encode() for i in range(1, finished_frame + 1)]
+
+
+def test_extra_end_detector_cannot_accept_result_after_timeout():
+    clock = Clock()
+    client = Client(clock)
+
+    def detect(png):
+        clock.advance(66)
+        return '更换忍者'
+
+    with pytest.raises(VisualError, match='战斗.*超时'):
+        run_battle(client, battle_config(), sleep=clock.advance, clock=clock, end_detector=detect)
+    assert not client.taps
+
+
 def test_timeout_shorter_than_check_interval_stops_without_extra_screenshot():
     clock, waits = Clock(), []
     client = Client(clock)

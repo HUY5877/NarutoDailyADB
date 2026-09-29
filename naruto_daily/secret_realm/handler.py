@@ -13,9 +13,16 @@ from .recognition import wait_for_tickets
 from .pre_battle import BattlePreparation, prepare_secret_battle
 from .deployment import wait_after_deploy
 from .result_detection import secret_failure_visible
+from .ninja_selection import find_ninja_selection_return
 
 
 LOGGER = logging.getLogger('naruto_daily')
+
+
+def _ninja_selection_end(png):
+    if find_ninja_selection_return(png) is not None:
+        return '秘境更换忍者页'
+    return None
 
 
 def _enter_room(client, images, action):
@@ -43,12 +50,15 @@ def _enter_room(client, images, action):
 
 
 def finish_secret_result(client, images, action, *, exited_battle=False, result_confirmed=False):
-    """失败和奖励弹层点空白处、翻牌结算点返回，逐轮检查直到回房间。"""
+    """处理结算或误入的更换忍者页，逐轮检查直到回房间。"""
     deadline = images.elapsed + action['timeout_seconds']
     return_clicked = False
     dismiss_enabled = exited_battle or result_confirmed
 
     def probe(png):
+        center = find_ninja_selection_return(png)
+        if center is not None:
+            return 'ninja_selection', center
         if images.match(png, action['deploy_button'])[0] is not None:
             return 'room', None
         if images.match(png, action['create_room'])[0] is not None:
@@ -74,11 +84,26 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
                     '继续检查房间、奖励弹层和结算返回；未返回则点击空白处' if dismiss_enabled else '先确认房间，否则识别奖励弹层或结算返回',
                     deadline-images.elapsed)
         state = check()
+        if state and state[0] == 'ninja_selection':
+            # 更换忍者页不能沿用结算弹层的空白处点击；重新截图后只点该页返回。
+            dismiss_enabled = False
+            if images.elapsed + action['pre_click_wait_seconds'] >= deadline:
+                break
+            images.sleep(action['pre_click_wait_seconds'])
+            state = check()
+            if state and state[0] == 'ninja_selection' and images.elapsed < deadline:
+                LOGGER.info('再次确认秘境更换忍者页，点击左下角返回 (%d, %d)，回房间后重新核对挑战券', *state[1])
+                client.tap(*state[1])
+                images.sleep(action['post_click_wait_seconds'])
+                continue
         if state and state[0] == 'result' and not return_clicked:
             if images.elapsed + action['pre_click_wait_seconds'] >= deadline:
                 break
             images.sleep(action['pre_click_wait_seconds'])
             state = check()
+            if state and state[0] == 'ninja_selection':
+                dismiss_enabled = False
+                continue
             if state and state[0] == 'result' and images.elapsed < deadline:
                 LOGGER.info('再次确认秘境结算页，点击左下角返回 (%d, %d)', *state[1])
                 client.tap(*state[1])
@@ -130,7 +155,8 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
         if preparation is BattlePreparation.READY:
             # 秘境结算仅停留约20秒，缩短连点窗口以便回房间前识别结束。
             run_battle(client, action['battle'], template_matcher=template_matcher,
-                       asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18)
+                       asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18,
+                       end_detector=_ninja_selection_end)
         finish_secret_result(client, images, action,
                              exited_battle=preparation is BattlePreparation.EXITED,
                              result_confirmed=preparation is BattlePreparation.FINISHED)
