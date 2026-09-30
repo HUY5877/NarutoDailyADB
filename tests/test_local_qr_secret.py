@@ -39,7 +39,7 @@ def test_local_scan_reuses_login_then_secret_on_same_device(monkeypatch, failure
     def run():
         return local.run_local_qr_secret(Path('test.json'), Path('adb.exe'), 'emulator-5554', clock=lambda: now[0])
 
-    expected = [('qr', 220), ('authorization', 390), ('finish', 2370), ('secret', 2370)]
+    expected = [('qr', 220), ('authorization', 390), ('finish', 3270), ('secret', 3270)]
     if failure:
         with pytest.raises(TimeoutError, match=failure):
             run()

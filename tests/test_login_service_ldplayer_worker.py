@@ -545,7 +545,7 @@ def test_daily_timeout_is_a_bounded_finite_number(monkeypatch, tmp_path, timeout
     assert events == [{"type": "error", "code": "configuration_error"}]
 
 
-@pytest.mark.parametrize("timeout", [1, 1.5, 1500, 2100, 2101, 7200, 86_400])
+@pytest.mark.parametrize("timeout", [1, 1.5, 1500, 2100, 2101, 3000, 3001, 7200, 86_400])
 def test_daily_timeout_accepts_bounds_and_fractional_seconds(monkeypatch, tmp_path, timeout):
     class DailySession:
         def __init__(self, **kwargs):
