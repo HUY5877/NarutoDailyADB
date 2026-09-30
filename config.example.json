@@ -185,11 +185,6 @@
         }
       },
       {
-        "type": "tap",
-        "x": 960,
-        "y": 200
-      },
-      {
         "type": "wait",
         "seconds": 1
       },
@@ -288,11 +283,6 @@
           "bottom": 300,
           "threshold": 0.95
         }
-      },
-      {
-        "type": "tap",
-        "x": 960,
-        "y": 200
       },
       {
         "type": "wait",
