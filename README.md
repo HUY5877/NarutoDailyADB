@@ -240,3 +240,4 @@ JSON 中的 `account_name`、`multimodal.base_url` 和 `multimodal.model` 分别
 
 自测后发现的不兼容情况：
 用户退游太久，就直接用游戏脚本刷日常的，脚本现在还不兼容这种情况
+雷电实例DPI需保持240
