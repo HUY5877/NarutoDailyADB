@@ -92,9 +92,12 @@ def run_battle(
                         LOGGER.info('发现战斗结束页面：%s，停止战斗点击，共点击 %d 次', name, taps)
                         return BattleSummary(taps, name)
                 for target in targets:
-                    center, _ = images.match(screenshot, target)
+                    center, score = images.match(screenshot, target)
                     if remaining() <= 0:
                         break
+                    LOGGER.info('[战斗检查 第%d轮] %s：%s，相似度 %.3f，阈值 %.3f',
+                                round_number, target['name'], '已匹配' if center is not None else '未匹配',
+                                score, float(target['threshold']))
                     if center is not None:
                         name = target['name']
                         LOGGER.info('发现战斗结束标记：%s，停止战斗点击，共点击 %d 次', name, taps)
