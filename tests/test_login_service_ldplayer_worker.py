@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from naruto_daily.login_service import ldplayer_worker
-from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS, DailyDeadlineExceeded
+from naruto_daily.common.execution import DailyDeadlineExceeded
 
 
 TASK_ID = "11111111-1111-4111-8111-111111111111"
@@ -545,8 +545,11 @@ def test_daily_timeout_is_a_bounded_finite_number(monkeypatch, tmp_path, timeout
     assert events == [{"type": "error", "code": "configuration_error"}]
 
 
-@pytest.mark.parametrize("timeout", [1, 1.5, 1500, 2100, 2101, 3000, 3001, 7200, 86_400])
-def test_daily_timeout_accepts_bounds_and_fractional_seconds(monkeypatch, tmp_path, timeout):
+@pytest.mark.parametrize("timeout,expected", [
+    (1, 1), (1.5, 1.5), (1500, 1500), (2100, 2100), (2101, 2101),
+    (2999, 2999), (3000, 3000), (3001, 3000), (7200, 3000), (86_400, 3000),
+])
+def test_daily_timeout_accepts_bounds_and_fractional_seconds(monkeypatch, tmp_path, timeout, expected):
     class DailySession:
         def __init__(self, **kwargs):
             pass
@@ -558,7 +561,7 @@ def test_daily_timeout_accepts_bounds_and_fractional_seconds(monkeypatch, tmp_pa
             pass
 
         def run_daily(self, deadline):
-            assert deadline == 1_800_000_000.0 + min(timeout, DAILY_TIMEOUT_SECONDS)
+            assert deadline == 1_800_000_000.0 + expected
             return 0
 
     monkeypatch.setattr(ldplayer_worker, "_load_daily_session", lambda: DailySession)

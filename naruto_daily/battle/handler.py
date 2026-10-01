@@ -105,7 +105,7 @@ def run_battle(
                 if remaining() <= 0:
                     break
                 if model is not None:
-                    # 正常的“仍在战斗”由总时限约束，不累计消耗其他阶段的识别次数上限。
+                    # 战斗与未知状态均由总时限约束，不消耗其他阶段的识别次数上限。
                     model_calls += 1
                     with model_request_context('战斗完成检查'):
                         result = model.complete_json(screenshot, BATTLE_COMPLETION,
@@ -120,8 +120,13 @@ def run_battle(
                         raise VisualError('战斗完成识别返回格式无效，已停止点击')
                     LOGGER.info('[战斗完成模型 第%d次] page=%s finished=%s reason=%s',
                                 model_calls, page, finished, reason)
-                    if finished or page != 'battle':
+                    if finished and page == 'finished':
                         return BattleSummary(taps, 'multimodal')
+                    if finished or page != 'battle':
+                        # 未知或字段矛盾时保持停止点击，重新截图检查本地标记和模型。
+                        LOGGER.info('战斗状态尚未确定，保持停止点击，1 秒后重新截图识别')
+                        images.sleep(min(1.0, remaining()))
+                        continue
                 next_check = elapsed() + tap_seconds
                 if remaining() > 0:
                     LOGGER.info('开始下一段 %g 秒战斗连点', tap_seconds)

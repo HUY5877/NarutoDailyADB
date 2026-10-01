@@ -741,10 +741,10 @@ def test_daily_configuration_defaults_and_relative_path(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("configured,expected", [
-    (1, 1), (1500, 1500), (2100, 2100), (2101, 2101),
+    (1, 1), (1500, 1500), (2100, 2100), (2101, 2101), (2999, 2999),
     (3000, 3000), (3001, 3000), (7200, 3000), (86400, 3000),
 ])
-def test_old_daily_timeout_settings_cannot_extend_50_minute_ceiling(configured, expected):
+def test_daily_timeout_settings_cannot_extend_50_minute_ceiling(configured, expected):
     assert load_config({"DAILY_TIMEOUT_SECONDS": str(configured)}).daily_timeout_seconds == expected
     assert ServiceConfig(daily_timeout_seconds=configured).daily_timeout_seconds == expected
 
@@ -785,6 +785,12 @@ def test_legacy_protocol_and_delayed_deadline_do_not_extend_execution_budget():
     assert runtime._execution_deadline({}, 1000) == 4000
     assert runtime._execution_deadline({"executionDeadline": 4000}, 1000) == 4000
     assert runtime._execution_deadline({"executionDeadline": 999}, 1000) == 999
+
+
+@pytest.mark.parametrize("deadline", [3101, 3999, 4000])
+def test_child_deadline_beyond_35_minutes_is_accepted_without_extending_it(deadline):
+    runtime = LoginRuntime(ServiceConfig(daily_timeout_seconds=7200), MemoryStorage())
+    assert runtime._execution_deadline({"executionDeadline": deadline}, 1000) == deadline
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "never"])

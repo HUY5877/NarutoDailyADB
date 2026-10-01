@@ -6,7 +6,8 @@ import pytest
 
 from naruto_daily.common.adb_client import AdbClient, CommandResult
 from naruto_daily.common.execution import (
-    DailyDeadlineExceeded, action_with_execution_budget, current_execution,
+    DAILY_TIMEOUT_SECONDS, DailyDeadlineExceeded, action_with_execution_budget,
+    current_execution,
     execution_scope, retry_observation, stage_timeout,
 )
 from naruto_daily.multimodal.transport import MultimodalRequestError
@@ -32,6 +33,21 @@ def test_phases_share_deadline_and_nested_scope_cannot_restart_it():
         assert budget.remaining() == 1100
     with execution_scope(1500, clock=clock):
         assert stage_timeout(30) == 1100
+    assert current_execution() is None
+
+
+def test_default_budget_continues_past_35_minutes_and_stops_at_50_minutes():
+    clock = Clock()
+    with execution_scope(DAILY_TIMEOUT_SECONDS, clock=clock) as budget:
+        clock.now = 2101
+        assert stage_timeout(20) == 899
+        with execution_scope(9999, clock=clock):
+            assert current_execution() is budget
+            clock.now = 2999
+            assert stage_timeout(30) == 1
+    clock.now = 3000
+    with pytest.raises(DailyDeadlineExceeded):
+        budget.remaining()
     assert current_execution() is None
 
 
