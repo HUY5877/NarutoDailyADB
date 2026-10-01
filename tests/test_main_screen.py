@@ -262,7 +262,9 @@ def test_default_configuration_migrates_every_main_entry_and_keeps_fixed_targets
     assert sorted(targets) == ['activities', 'equipment', 'equipment_submenu'] + ['rewards'] * 6
     assert len(markers) == 14 and all(m['main_menu'] == 'home' and 'template' not in m for m in markers)
     assert settings.tasks['abundance'][2]['template'] == 'assets/abundance_label.png'
-    assert settings.tasks['ichiraku_takeout'][4]['template'] == 'assets/ichiraku_tab.png'
+    assert any(action.get('type') == 'required_template_tap'
+               and action.get('template') == 'assets/ichiraku_tab.png'
+               for action in settings.tasks['ichiraku_takeout'])
 
 
 @pytest.mark.parametrize('change', [

@@ -144,11 +144,17 @@ def test_abundance_retry_observes_new_page_without_replaying_click():
             raise temporary_failure()
         return {'page': 'service_popup'}
 
+    def matcher(frame, template, *args):
+        if frame == b'7' and template.name == 'abundance_completed.png':
+            return (950, 800), .99
+        return None, .1
+
     action = dict(timeout_seconds=.1, result_return=target('result'), post_click_wait_seconds=1)
     with execution_scope(120, clock=clock, sleep=clock.advance):
-        finish_abundance_result(device, action, template_matcher=lambda *a: (None, .1),
+        finish_abundance_result(device, action, template_matcher=matcher,
                                  model=SimpleNamespace(complete_json=complete), clock=clock)
-    assert requests == device.frames and len(requests) == 5
+    assert requests == [b'2', b'3', b'4', b'5', b'6']
+    assert device.frames == [b'1', *requests, b'7']
     assert device.taps == [(400, 540)]
 
 
