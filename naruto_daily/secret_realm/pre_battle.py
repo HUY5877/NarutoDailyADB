@@ -1,4 +1,4 @@
-"""秘境战前准备：阴阳退出，毒风解封后战斗，其他秘境直接战斗。"""
+"""秘境战前准备：暂时跳过指定秘境，保留毒风导航供后续恢复。"""
 from __future__ import annotations
 
 import logging
@@ -13,6 +13,8 @@ from .navigation import navigate_to_poison_seal
 
 
 LOGGER = logging.getLogger('naruto_daily')
+# 从名单移除毒风秘境后，仍可使用下方保留的 agent 导航流程。
+SKIPPED_REALMS = frozenset({'阴阳秘境', '毒风秘境', '落岩秘境'})
 PAUSE = dict(name='秘境战斗暂停按钮', template='assets/secret_battle_pause.png',
              left=1760, top=0, right=1920, bottom=150, threshold=.85)
 EXIT = dict(name='退出战斗', template='assets/secret_exit_battle.png',
@@ -104,8 +106,8 @@ def exit_secret_battle(images, action):
 def prepare_secret_battle(images, model, action, *, clock=time.monotonic) -> BattlePreparation:
     """区分可开始战斗、已主动退出和导航期间已出现结算。"""
     name = identify_battle_realm(images, model, action, clock=clock)
-    if name == '阴阳秘境':
-        LOGGER.info('确认阴阳秘境，执行暂停→退出战斗→确定')
+    if name in SKIPPED_REALMS:
+        LOGGER.info('确认%s，暂时跳过，执行暂停→退出战斗→确定', name)
         exit_secret_battle(images, action)
         return BattlePreparation.EXITED
     if name == '毒风秘境':

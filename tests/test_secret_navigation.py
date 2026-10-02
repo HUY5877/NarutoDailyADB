@@ -7,13 +7,15 @@ import pytest
 from agent_fakes import tool_call
 from naruto_daily.common.visual import VisualError
 from naruto_daily.config import load_settings
-from naruto_daily.secret_realm import handler, navigation
+from naruto_daily.secret_realm import handler, navigation, pre_battle
 
 ROOT = Path(__file__).parents[1]
 
 
 @pytest.fixture(autouse=True)
 def model_connection(monkeypatch, agent_server):
+    # 显式恢复毒风导航，继续验证暂时跳过名单后保留的 agent 路径。
+    monkeypatch.setattr(pre_battle, 'SKIPPED_REALMS', pre_battle.SKIPPED_REALMS - {'毒风秘境'})
     monkeypatch.setattr(Scenario, 'agent_connection',
                         lambda self: agent_server.connection(self.agent_reply), raising=False)
 
