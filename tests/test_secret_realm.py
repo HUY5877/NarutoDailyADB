@@ -68,17 +68,23 @@ def fake_model(monkeypatch, counts):
     return calls
 
 
-def test_secret_realm_runs_two_battles_then_zero_returns_to_main(monkeypatch):
+def test_secret_realm_runs_two_battles_then_zero_completes_without_returning_to_main(monkeypatch, caplog):
+    import logging
     from naruto_daily import runner
     from naruto_daily.secret_realm import handler
     client, sleeps, battles, returned = SecretClient(), [], [], []
     calls = fake_model(monkeypatch, [2, 2, 1, 1, 0])
     monkeypatch.setattr(handler, "run_battle", lambda *a, **kw: battles.append((a[1], kw)))
     monkeypatch.setattr(runner, "return_to_main", lambda *a, **kw: returned.append(True))
-    runner.ActionRunner(client, template_matcher=secret_matcher, sleep=sleeps.append).run([
-        secret_action(), {"type": "return_to_main"}])
+    caplog.set_level(logging.INFO, logger='naruto_daily')
+    summary = runner.ActionRunner(client, template_matcher=secret_matcher, sleep=sleeps.append).run([
+        secret_action(), {"type": "return_to_main"}, {"type": "tap", "x": 1, "y": 1}])
     assert client.taps == [(1443, 791), (1787, 920), (1787, 920)]
-    assert len(battles) == 2 and returned == [True] and len(calls) == 5
+    assert len(battles) == 2 and returned == [] and len(calls) == 5
+    assert summary.action_count == 1
+    final = caplog.records[-1]
+    assert final.getMessage() == '执行结束：1 个动作'
+    assert final.action_index == final.action_total == 1
     assert all(kwargs['check_interval_seconds'] == 18 for _, kwargs in battles)
     # 两次9秒加载现在分段等待，期间检查出战提示。
     assert sum(sleeps) == pytest.approx(42, abs=.1)
@@ -93,6 +99,29 @@ def test_zero_tickets_never_deploys_or_starts_battle(monkeypatch):
     monkeypatch.setattr(handler, "run_battle", fail)
     assert handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher, sleep=lambda _: None) == 0
     assert client.taps == [(1443, 791)]
+
+
+@pytest.mark.parametrize('counts', [[0], [1, 0]], ids=['initial-zero', 'pre-deploy-zero'])
+def test_confirmed_zero_finishes_run_without_closing_room(monkeypatch, counts):
+    from naruto_daily import runner
+    from naruto_daily.secret_realm import handler
+
+    client = SecretClient()
+    calls = fake_model(monkeypatch, counts)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError('确认零券后不能出战、调用回主界面或继续后续动作')
+
+    monkeypatch.setattr(handler, 'run_battle', unexpected)
+    monkeypatch.setattr(runner, 'return_to_main', unexpected)
+    summary = runner.ActionRunner(client, template_matcher=secret_matcher, sleep=lambda _: None).run([
+        {'type': 'wait', 'seconds': 0}, secret_action(), {'type': 'return_to_main'},
+        {'type': 'tap', 'x': 1, 'y': 1},
+    ])
+
+    assert summary.action_count == 2
+    assert client.taps == [(1443, 791)]
+    assert len(calls) == len(counts)
 
 
 def test_failed_battle_does_not_repeat_deploy(monkeypatch):
@@ -126,11 +155,13 @@ def test_positive_tickets_continue_without_requiring_a_decrease(monkeypatch, cou
 
 
 def test_unreadable_count_never_becomes_zero_or_deploys(monkeypatch):
-    from naruto_daily.secret_realm import handler
+    from naruto_daily import runner
     client = SecretClient()
     fake_model(monkeypatch, [None] * 6)
     with pytest.raises(MultimodalError, match="调用上限"):
-        handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher, sleep=lambda _: None)
+        runner.ActionRunner(client, template_matcher=secret_matcher, sleep=lambda _: None).run([
+            secret_action(), {'type': 'tap', 'x': 1, 'y': 1},
+        ])
     assert client.taps == [(1443, 791)]
 
 

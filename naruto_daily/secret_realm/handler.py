@@ -132,20 +132,21 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
 
 def handle_secret_realm(client, action, *, template_matcher=find_template_in_png,
                         asset_root=Path('.'), sleep=time.sleep):
+    """循环挑战；仅在房间确认剩余挑战券为0时正常返回，结束本次任务。"""
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     _enter_room(client, images, action)
     model = MultimodalClient(action['multimodal'], asset_root=asset_root)
     completed = 0
     while True:
-        LOGGER.info('[秘境探险 第%d轮] 读取剩余挑战券；大于0则复查后出战，等战斗结束回房间；为0则结束并执行后续回主界面', completed+1)
+        LOGGER.info('[秘境探险 第%d轮] 读取剩余挑战券；大于0则复查后出战，等战斗结束回房间；为0则直接结束本次任务', completed+1)
         state = wait_for_tickets(images, model, action)
         if state.tickets == 0:
-            LOGGER.info('秘境挑战券已用完，共结束 %d 场战斗，进入回主界面步骤', completed)
+            LOGGER.info('秘境挑战券已用完，共结束 %d 场战斗，直接结束本次任务', completed)
             return completed
         images.sleep(action['pre_click_wait_seconds'])
         confirmed = wait_for_tickets(images, model, action)
         if confirmed.tickets == 0:
-            LOGGER.info('出战前复查挑战券已为0，进入回主界面步骤')
+            LOGGER.info('出战前复查挑战券已为0，直接结束本次任务')
             return completed
         LOGGER.info('复查剩余挑战券 %d 张，点击出战 (%d, %d)', confirmed.tickets, *confirmed.deploy_center)
         client.tap(*confirmed.deploy_center)

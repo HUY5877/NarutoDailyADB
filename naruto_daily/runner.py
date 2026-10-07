@@ -77,6 +77,7 @@ class ActionRunner:
             extra={"action_index": 0, "action_total": len(actions)},
         )
         images = ImageRecognition(self.client, self.template_matcher, self.asset_root, self.sleep)
+        action_count = len(actions)
         skip_action_type: str | None = None
         completed_card_name = ""
         for index, action in enumerate(actions, start=1):
@@ -184,6 +185,10 @@ class ActionRunner:
             elif action_type == "handle_secret_realm":
                 handle_secret_realm(self.client, action, template_matcher=self.template_matcher,
                                     asset_root=self.asset_root, sleep=self.sleep)
+                # 秘境处理器仅在确认挑战券为0时正常返回；此时整次任务已完成。
+                action_count = index
+                LOGGER.info('秘境已确认挑战券为0，结束本次任务，跳过后续 %d 个动作', len(actions) - index)
+                break
             elif action_type == "handle_abundance":
                 handle_abundance(
                     self.client, action, template_matcher=self.template_matcher,
@@ -213,7 +218,7 @@ class ActionRunner:
                 raise ValueError(f"不支持的动作类型：{action_type!r}")
         check_execution()
         LOGGER.info(
-            "执行结束：%d 个动作", len(actions),
-            extra={"action_index": len(actions), "action_total": len(actions)},
+            "执行结束：%d 个动作", action_count,
+            extra={"action_index": action_count, "action_total": action_count},
         )
-        return RunSummary(len(actions))
+        return RunSummary(action_count)

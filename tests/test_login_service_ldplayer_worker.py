@@ -302,6 +302,74 @@ def daily_dependencies(calls):
     return Manager, DriverError, Device, fetch
 
 
+@pytest.mark.parametrize('completed_battles,error,expected_error', [
+    (0, None, None),
+    (4, None, None),
+    (None, RuntimeError('private secret failure'), 'daily_failed'),
+    (None, DailyDeadlineExceeded('private secret deadline'), 'daily_timeout'),
+])
+def test_secret_completion_stops_real_runner_and_preserves_worker_success_protocol(
+    monkeypatch, tmp_path, completed_battles, error, expected_error,
+):
+    from naruto_daily import runner
+    from naruto_daily.common.execution import execution_scope
+
+    now = 1_800_000_000.0
+    calls = []
+    client = object()
+    actions = [
+        {'type': 'wait', 'seconds': 0},
+        {'type': 'handle_secret_realm'},
+        {'type': 'return_to_main'},
+    ]
+
+    def secret(device, action, **kwargs):
+        assert device is client and action['type'] == 'handle_secret_realm'
+        calls.append('secret')
+        if error is not None:
+            raise error
+        # The handler returns the completed battle count after confirming zero tickets.
+        return completed_battles
+
+    def forbidden_return(*args, **kwargs):
+        raise AssertionError('确认秘境券数为零后不能再执行回主界面')
+
+    class DailySession:
+        def __init__(self, **kwargs):
+            pass
+
+        def wait_for_authorization(self, deadline):
+            pass
+
+        def finish_login(self, deadline):
+            pass
+
+        def run_daily(self, deadline):
+            calls.append('daily')
+            with execution_scope(deadline, clock=lambda: now, sleep=lambda _: None):
+                return runner.ActionRunner(client, sleep=lambda _: None).run(actions).action_count
+
+    monkeypatch.setattr(runner, 'handle_secret_realm', secret)
+    monkeypatch.setattr(runner, 'return_to_main', forbidden_return)
+    monkeypatch.setattr(ldplayer_worker, '_load_daily_session', lambda: DailySession)
+    code, events = invoke(
+        monkeypatch,
+        request(now, dailyConfigPath=str(tmp_path / 'daily.json'), dailyTimeoutSeconds=600),
+        daily_dependencies(calls), now=now,
+    )
+
+    assert calls == ['allocate', 'start', 'launch', 'qr', 'daily', 'secret']
+    if expected_error is None:
+        assert code == 0
+        assert events[-1] == {'type': 'daily_completed', 'actionCount': 2}
+        assert sum(event['type'] == 'daily_completed' for event in events) == 1
+        assert not any(event['type'] == 'error' for event in events)
+    else:
+        assert code == 1
+        assert events[-1] == {'type': 'error', 'code': expected_error}
+        assert not any(event['type'] == 'daily_completed' for event in events)
+
+
 @pytest.mark.parametrize("options,enabled", [
     (None, True), ({}, True), ({"equipmentStamina": True}, True), ({"equipmentStamina": False}, False),
 ])
