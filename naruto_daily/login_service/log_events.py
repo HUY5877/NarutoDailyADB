@@ -127,6 +127,8 @@ class ProtocolLogHandler(logging.Handler):
         self._secrets = tuple(secrets) + model_log_secrets()
 
     def emit(self, record: logging.LogRecord) -> None:
+        if getattr(record, 'backend_only', False):
+            return
         try:
             # DailySession may load its .env after this handler was installed.
             # Keep earlier keys protected too if configuration changes in-process.

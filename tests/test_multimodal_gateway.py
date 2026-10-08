@@ -3,6 +3,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 import io
 import json
+import logging
 from urllib.error import HTTPError
 from urllib.request import Request
 
@@ -63,6 +64,25 @@ def test_incr_then_modulo_is_shared_between_instances_and_async_calls(configured
     assert asyncio.run(first.select_async()).name == 'deepseek'
     assert asyncio.run(second.select_async()).name == 'yuwan'
     assert configured_environment.keys == [gateway.ROUTING_COUNTER_KEY] * 4
+
+
+def test_routing_urls_stay_in_backend_while_business_logs_reach_client():
+    from naruto_daily.login_service.log_events import forward_task_logs
+
+    router = gateway.MultimodalGateway(settings())
+    events, terminal = [], io.StringIO()
+    with forward_task_logs(events.append, diagnostic_stream=terminal):
+        router.route_request(Request('https://initial.test', data=b'{"model":"initial"}'))
+        asyncio.run(router.route_async_request(httpx.Request('POST', 'https://initial.test', json={'model': 'initial'})))
+        router.route_request(Request('https://initial.test', data=b'{"model":"initial"}'))
+        logging.getLogger('naruto_daily').info('日常任务执行中')
+
+    assert [event['message'] for event in events] == ['日常任务执行中']
+    output = terminal.getvalue()
+    assert output.count('[多模态路由]') == 3
+    assert output.count('url=' + CHANNELS[1].base_url + '/chat/completions') == 2
+    assert output.count('url=' + CHANNELS[0].base_url + '/chat/completions') == 1
+    assert all(secret not in output for secret in ('yuwan-private', 'deepseek-private', 'redis-private'))
 
 
 def test_single_channel_still_uses_shared_counter(configured_environment):

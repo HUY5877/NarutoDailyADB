@@ -84,7 +84,7 @@ class MultimodalGateway:
         channel = self.channels[sequence % len(self.channels)]
         LOGGER.info('[多模态路由] channel=%s url=%s model=%s sequence=%d active_channels=%d',
                     channel.name, channel.base_url + '/chat/completions', channel.model,
-                    sequence, len(self.channels))
+                    sequence, len(self.channels), extra={'backend_only': True})
         return channel
 
     def select(self):
