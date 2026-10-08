@@ -82,8 +82,9 @@ class MultimodalGateway:
         if type(sequence) is not int or sequence <= 0:
             raise GatewayRoutingError('多模态路由 Redis 计数无效')
         channel = self.channels[sequence % len(self.channels)]
-        LOGGER.info('[多模态路由] channel=%s model=%s sequence=%d active_channels=%d',
-                    channel.name, channel.model, sequence, len(self.channels))
+        LOGGER.info('[多模态路由] channel=%s url=%s model=%s sequence=%d active_channels=%d',
+                    channel.name, channel.base_url + '/chat/completions', channel.model,
+                    sequence, len(self.channels))
         return channel
 
     def select(self):
