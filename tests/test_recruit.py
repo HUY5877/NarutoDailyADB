@@ -31,8 +31,7 @@ class RecordingClient:
 def recruit_action():
     return {
         "type": "handle_free_recruit",
-        "multimodal": {"base_url": "${MULTIMODAL_BASE_URL}", "model": "${MULTIMODAL_MODEL}",
-                       "timeout_seconds": 20, "max_calls": 6},
+        "multimodal": {"timeout_seconds": 20, "max_calls": 6},
         "timeout_seconds": 40,
         "poll_seconds": 1,
         "advanced_tab": {

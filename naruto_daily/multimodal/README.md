@@ -27,7 +27,7 @@ DeepSeek 官方不支持在思考模式下强制或指定工具，详见[请求�
 
 各渠道 key、model 只读取项目根目录 `.env`，进程环境和 `--env-file` 不覆盖它们；有效渠道列表和模型配置在每个进程首次初始化时固定，修改后重启服务及运行中的任务。Redis 沿用服务配置的环境优先级；常驻 worker 通过子进程环境传递其已解析的 `REDIS_URL`，确保父子进程使用同一数据库。普通脚本访问模型也需要 Redis。
 
-兼容旧配置：新鱼玩变量不存在时，分别回退到 `MULTIMODAL_API_KEY`、`MULTIMODAL_MODEL`。显式留空 `YUWAN_API_KEY` 会禁用鱼玩。旧 `MULTIMODAL_BASE_URL` 和任务 JSON 的 `base_url`、`model` 不再决定实际路由；旧 JSON 占位符仍可加载。新 JSON 的 `multimodal` 只需保留 `timeout_seconds` 和 `max_calls`。
+配置只使用上表中的渠道变量，key 留空即禁用对应渠道。任务 JSON 的 `multimodal` 只需保留 `timeout_seconds` 和 `max_calls`，请删除旧的 URL、模型占位符；它们不再决定实际路由，也不再通过旧配置自动补齐。
 
 ## 请求流程
 

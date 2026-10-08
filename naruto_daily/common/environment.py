@@ -10,8 +10,7 @@ from dotenv import dotenv_values
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MULTIMODAL_ENV_NAMES = (
-    'MULTIMODAL_API_KEY', 'MULTIMODAL_BASE_URL', 'MULTIMODAL_MODEL',
+CHANNEL_ENV_NAMES = (
     'YUWAN_API_KEY', 'YUWAN_MODEL',
     'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL',
 )
@@ -31,16 +30,13 @@ def _read_root_dotenv() -> dict[str, str | None]:
 def read_multimodal_environment() -> dict[str, str | None]:
     """每次读取根目录文件；缺失值也不得回退到服务或进程中的旧配置。"""
     values = _read_root_dotenv()
-    return {name: values.get(name) for name in MULTIMODAL_ENV_NAMES}
+    return {name: values.get(name) for name in CHANNEL_ENV_NAMES}
 
 
 def read_environment() -> dict[str, str | None]:
-    from naruto_daily.multimodal.channels import legacy_placeholders
     values = _read_root_dotenv()
-    # 保留“未配置”与“显式留空”的差别，旧鱼玩 key 才能按需兼容。
-    values = legacy_placeholders(values)
     merged = {**values, **os.environ}
-    for name in MULTIMODAL_ENV_NAMES:
+    for name in CHANNEL_ENV_NAMES:
         merged.pop(name, None)
         if name in values:
             merged[name] = values[name]
@@ -50,7 +46,7 @@ def read_environment() -> dict[str, str | None]:
 def require_environment(values: Mapping[str, str | None], name: str) -> str:
     value = values.get(name)
     if value is None or not value.strip():
-        source = '项目根目录的 .env' if name in MULTIMODAL_ENV_NAMES else '项目根目录的 .env 或进程环境'
+        source = '项目根目录的 .env' if name in CHANNEL_ENV_NAMES else '项目根目录的 .env 或进程环境'
         raise EnvironmentConfigError(f'请在{source}中配置非空的 {name}')
     return value.strip()
 

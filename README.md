@@ -118,9 +118,9 @@ LOGIN_ACCOUNT_NAME="你要登录的完整昵称"
 
 通用导航位于 `naruto_daily/multimodal/agent/`，使用 Pydantic AI 的 `Agent` 管理会话和工具循环，移动工具负责截图和 ADB。当前 `secret_realm/pre_battle.py` 在通用 `battle.run_battle()` 之前读取顶部副本名称，按集中维护的 `SKIPPED_REALMS` 名单默认退出“阴阳秘境”“毒风秘境”“落岩秘境”，然后回房间重新读券；其余已识别秘境直接进入通用战斗。毒风的 `secret_realm/navigation.py` 和 agent 实现保留，默认绕过；以后从 `SKIPPED_REALMS` 移除“毒风秘境”即可恢复原导航分支，无需新增命令行参数。恢复导航后，agent 在每次工具调用中读取页面、提示和 BOSS/交战证据，确认解封后进入战斗；最多移动50步，耗尽则退出，出现结算则交给收尾。详见 [agent 使用说明](naruto_daily/multimodal/agent/README.md)。
 
-`naruto_daily/multimodal/channels.py` 固定鱼玩和 DeepSeek 官方地址；`gateway.py` 共用 Redis key `naruto:multimodal:route:sequence` 做原子轮询。只配置一个渠道时同样计数；Redis 失败按原有预算重试，不退回本地计数。各 worker 应使用一致的有效渠道配置。旧 `MULTIMODAL_API_KEY`、`MULTIMODAL_MODEL` 仅在对应新鱼玩变量不存在时作为兼容值；新鱼玩 key 显式留空会禁用该渠道。旧 `MULTIMODAL_BASE_URL` 不再控制请求地址。
+`naruto_daily/multimodal/channels.py` 固定鱼玩和 DeepSeek 官方地址；`gateway.py` 共用 Redis key `naruto:multimodal:route:sequence` 做原子轮询。只配置一个渠道时同样计数；Redis 失败按原有预算重试，不退回本地计数。各 worker 应使用一致的有效渠道配置，只读取各渠道独立的 key 和模型名；渠道 key 留空即禁用。
 
-JSON 中的 `account_name` 使用 `${LOGIN_ACCOUNT_NAME}`；`multimodal` 只需保留 `timeout_seconds`、`max_calls`。旧 JSON 的 URL 和模型占位符仍可加载，但实际发送时使用所选渠道的 URL、key 和独立模型名。密钥不会放进任务动作列表，旧的 `api_key_file` 配置已移除。授权截图会发送至所选渠道的模型服务。单次请求上限为 30 秒，接口超时重试使用新截图；每次授权最多 6 次业务识别，网络耗时计入整套任务的总时限。昵称未能读取时仍使用统一的等待 1 秒重新截图补查逻辑。
+JSON 中的 `account_name` 使用 `${LOGIN_ACCOUNT_NAME}`；`multimodal` 只需保留 `timeout_seconds`、`max_calls`，请移除旧的 URL 和模型占位符。实际发送时使用所选渠道的 URL、key 和独立模型名。密钥不会放进任务动作列表，旧的 `api_key_file` 配置已移除。授权截图会发送至所选渠道的模型服务。单次请求上限为 30 秒，接口超时重试使用新截图；每次授权最多 6 次业务识别，网络耗时计入整套任务的总时限。昵称未能读取时仍使用统一的等待 1 秒重新截图补查逻辑。
 
 第一次授权完成后，脚本会同时等待“第二次授权页面”或“开始游戏按钮”。如果直接出现开始游戏，说明本次只需一次授权；如果出现第二次授权页面，则点击第二次同意后继续等待开始游戏。该分支使用整套任务的剩余时间，不再单独设置 40 秒阶段预算。
 

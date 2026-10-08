@@ -75,8 +75,8 @@ async def eventually(predicate):
 
 def test_large_stderr_is_drained_with_full_chinese_text_and_never_sent_to_redis(monkeypatch, tmp_path, caplog):
     caplog.set_level(logging.INFO, logger=LOGGER)
-    monkeypatch.setenv("MULTIMODAL_API_KEY", "private-model-key")
-    (tmp_path / '.env').write_text('MULTIMODAL_API_KEY=private-root-key', encoding='utf-8')
+    monkeypatch.setenv("YUWAN_API_KEY", "private-model-key")
+    (tmp_path / '.env').write_text('YUWAN_API_KEY=private-root-key', encoding='utf-8')
     program = r'''
 import json,os,sys
 message=json.loads(sys.stdin.readline())
@@ -86,7 +86,7 @@ for index in range(400):
 print(message['ordinary'], file=sys.stderr)
 print('WARNING '+message['warning'], file=sys.stderr)
 print('ERROR '+message['error'], file=sys.stderr)
-assert 'MULTIMODAL_API_KEY' not in os.environ
+assert 'YUWAN_API_KEY' not in os.environ
 print('INFO known-secret=private-model-key private-root-key private-oss-key private-sts-key', file=sys.stderr)
 print('INFO '+message['public'], file=sys.stderr)
 sys.stderr.buffer.write(b'invalid-utf8: \xff\xfe\n')

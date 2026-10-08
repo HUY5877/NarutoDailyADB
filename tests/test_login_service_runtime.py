@@ -513,7 +513,7 @@ def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_relea
 
     monkeypatch.setenv("REDIS_URL", "redis://user:private@host/0")
     monkeypatch.setenv("OSS_ACCESS_KEY_SECRET", "private-oss-secret")
-    for name in ("MULTIMODAL_API_KEY", "MULTIMODAL_BASE_URL", "MULTIMODAL_MODEL"):
+    for name in ("YUWAN_API_KEY", "YUWAN_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL"):
         monkeypatch.setenv(name, "stale-service-value")
     windows_paths = {
         "SYSTEMDRIVE": "C:", "COMSPEC": r"C:\Windows\System32\cmd.exe",
@@ -558,7 +558,7 @@ def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_relea
             assert "REDIS_URL" not in spawned["kwargs"]["env"]
             assert "OSS_ACCESS_KEY_SECRET" not in spawned["kwargs"]["env"]
             assert "LOGIN_SERVICE_PRIVATE_SECRET" not in spawned["kwargs"]["env"]
-            for name in ("MULTIMODAL_API_KEY", "MULTIMODAL_BASE_URL", "MULTIMODAL_MODEL"):
+            for name in ("YUWAN_API_KEY", "YUWAN_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL"):
                 assert name not in spawned["kwargs"]["env"]
             assert {name: spawned["kwargs"]["env"][name] for name in windows_paths} == windows_paths
         finally:

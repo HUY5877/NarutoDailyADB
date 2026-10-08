@@ -52,10 +52,9 @@ def configured_environment(monkeypatch, tmp_path):
 
     monkeypatch.setattr(environment, 'PROJECT_ROOT', tmp_path)
     (tmp_path / '.env').write_text(
-        'MULTIMODAL_BASE_URL=https://api.stepfun.com/step_plan/v1\n'
-        'MULTIMODAL_MODEL=step-3.7-flash\nMULTIMODAL_API_KEY=test-secret\n'
+        'YUWAN_MODEL=step-3.7-flash\nYUWAN_API_KEY=test-secret\n'
         'REDIS_URL=redis://test.invalid/0\n', encoding='utf-8')
-    for name in (*environment.MULTIMODAL_ENV_NAMES, 'REDIS_URL'):
+    for name in (*environment.CHANNEL_ENV_NAMES, 'REDIS_URL'):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv('LOGIN_ACCOUNT_NAME', '离落花开花败')
     return counter

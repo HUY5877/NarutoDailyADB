@@ -17,7 +17,7 @@ CHANNELS = (
     ChannelDefinition('deepseek', 'https://api.deepseek.com',
                       'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL'),
 )
-API_KEY_ENV_NAMES = ('MULTIMODAL_API_KEY', *(channel.key_variable for channel in CHANNELS))
+API_KEY_ENV_NAMES = tuple(channel.key_variable for channel in CHANNELS)
 
 
 @dataclass(frozen=True)
@@ -29,22 +29,5 @@ class Channel:
 
 
 def channel_values(values: Mapping[str, str | None], definition: ChannelDefinition) -> tuple[str, str]:
-    # 旧配置只作为鱼玩渠道的迁移兼容；显式留空新 key 会禁用鱼玩。
-    legacy_key = values.get('MULTIMODAL_API_KEY') if definition.name == 'yuwan' else None
-    legacy_model = values.get('MULTIMODAL_MODEL') if definition.name == 'yuwan' else None
-    return ((values.get(definition.key_variable, legacy_key) or '').strip(),
-            (values.get(definition.model_variable, legacy_model) or '').strip())
-
-
-def legacy_placeholders(values: Mapping[str, str | None]) -> dict[str, str | None]:
-    """让旧任务 JSON 的两个占位符继续解析；实际发送只使用选中的渠道。"""
-    resolved = dict(values)
-    for definition in CHANNELS:
-        key, model = channel_values(values, definition)
-        if key:
-            if not (resolved.get('MULTIMODAL_BASE_URL') or '').strip():
-                resolved['MULTIMODAL_BASE_URL'] = definition.base_url
-            if not (resolved.get('MULTIMODAL_MODEL') or '').strip():
-                resolved['MULTIMODAL_MODEL'] = model
-            break
-    return resolved
+    return ((values.get(definition.key_variable) or '').strip(),
+            (values.get(definition.model_variable) or '').strip())

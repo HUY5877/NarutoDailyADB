@@ -16,9 +16,9 @@ def config(tmp_path):
                 timeout_seconds=20)
 
 
-def write_model_env(directory, *, key='root-key', base_url='https://root.test/v1', model='root-model'):
+def write_model_env(directory, *, key='root-key', model='root-model'):
     (directory / '.env').write_text(
-        f'YUWAN_API_KEY="{key}"\nMULTIMODAL_BASE_URL={base_url}\nYUWAN_MODEL={model}\n'
+        f'YUWAN_API_KEY="{key}"\nYUWAN_MODEL={model}\n'
         'REDIS_URL=redis://test.invalid/0\n',
         encoding='utf-8')
 
@@ -67,7 +67,7 @@ def test_missing_root_env_does_not_fall_back_to_service_or_process_key(tmp_path,
     service = tmp_path / 'service'
     service.mkdir()
     write_model_env(service, key='service-key')
-    monkeypatch.setenv('MULTIMODAL_API_KEY', 'process-key')
+    monkeypatch.setenv('YUWAN_API_KEY', 'process-key')
     with pytest.raises(mm.MultimodalError, match='密钥'):
         mm.MultimodalClient(settings, asset_root=service,
                             open_request=lambda *args, **kwargs: pytest.fail('缺少根配置时不得请求'))
@@ -102,11 +102,10 @@ def test_client_sends_root_model_url_and_key_despite_service_process_and_cwd(tmp
         directory.mkdir()
     monkeypatch.setattr(environment, 'PROJECT_ROOT', root)
     write_model_env(root)
-    write_model_env(service, key='service-key', base_url='https://service.test/v1', model='service-model')
-    write_model_env(elsewhere, key='cwd-key', base_url='https://cwd.test/v1', model='cwd-model')
-    monkeypatch.setenv('MULTIMODAL_API_KEY', 'environment-key')
-    monkeypatch.setenv('MULTIMODAL_BASE_URL', 'https://environment.test/v1')
-    monkeypatch.setenv('MULTIMODAL_MODEL', 'environment-model')
+    write_model_env(service, key='service-key', model='service-model')
+    write_model_env(elsewhere, key='cwd-key', model='cwd-model')
+    monkeypatch.setenv('YUWAN_API_KEY', 'environment-key')
+    monkeypatch.setenv('YUWAN_MODEL', 'environment-model')
     monkeypatch.chdir(elsewhere)
 
     def open_request(request, timeout):
@@ -116,7 +115,7 @@ def test_client_sends_root_model_url_and_key_despite_service_process_and_cwd(tmp
         return response('{}')
 
     client = mm.MultimodalClient(
-        dict(base_url='${MULTIMODAL_BASE_URL}', model='${MULTIMODAL_MODEL}', timeout_seconds=20),
+        dict(base_url='https://ignored.test/v1', model='ignored-model', timeout_seconds=20),
         asset_root=service, open_request=open_request,
     )
     assert client.complete_json(b'png', 'prompt') == {}
@@ -130,7 +129,7 @@ def test_client_sends_root_model_url_and_key_despite_service_process_and_cwd(tmp
 def test_empty_root_key_does_not_fall_back_to_process(tmp_path, monkeypatch, key):
     settings = config(tmp_path)
     write_model_env(tmp_path, key=key)
-    monkeypatch.setenv('MULTIMODAL_API_KEY', 'valid-process-key')
+    monkeypatch.setenv('YUWAN_API_KEY', 'valid-process-key')
     with pytest.raises(mm.MultimodalError, match='密钥'):
         mm.MultimodalClient(settings, asset_root=tmp_path)
 
@@ -145,33 +144,33 @@ def test_missing_root_variable_never_uses_service_or_process_fallback(tmp_path, 
     values = dict(YUWAN_API_KEY='root-key', YUWAN_MODEL='root-model',
                   REDIS_URL='redis://test.invalid/0')
     for variable in values:
-        monkeypatch.setenv(variable, 'https://process.test/v1' if variable == 'MULTIMODAL_BASE_URL' else 'process-value')
+        monkeypatch.setenv(variable, 'process-value')
     if value is None:
         values.pop(name)
     else:
         values[name] = value
     (root / '.env').write_text('\n'.join(f'{variable}={setting}' for variable, setting in values.items()), encoding='utf-8')
-    write_model_env(service, key='service-key', base_url='https://service.test/v1', model='service-model')
+    write_model_env(service, key='service-key', model='service-model')
 
     with pytest.raises(mm.MultimodalError, match=name):
         mm.MultimodalClient(
-            dict(base_url='${MULTIMODAL_BASE_URL}', model='${MULTIMODAL_MODEL}', timeout_seconds=20),
+            dict(timeout_seconds=20),
             asset_root=service, open_request=lambda *a, **k: pytest.fail('缺少根配置时不得请求'))
 
 
 def test_new_client_reuses_startup_channel_configuration(tmp_path):
     service = tmp_path / 'service'
     service.mkdir()
-    write_model_env(service, key='service-key', base_url='https://service.test/v1', model='service-model')
+    write_model_env(service, key='service-key', model='service-model')
     sent = []
 
     def open_request(request, timeout):
         sent.append((request.full_url, json.loads(request.data)['model'], request.get_header('Authorization')))
         return response('{}')
 
-    settings = dict(base_url='${MULTIMODAL_BASE_URL}', model='${MULTIMODAL_MODEL}', timeout_seconds=20)
+    settings = dict(timeout_seconds=20)
     for version in ('first', 'second'):
-        write_model_env(tmp_path, key=f'{version}-key', base_url=f'https://{version}.test/v1', model=f'{version}-model')
+        write_model_env(tmp_path, key=f'{version}-key', model=f'{version}-model')
         client = mm.MultimodalClient(settings, asset_root=service, open_request=open_request)
         assert client.complete_json(b'png', 'prompt') == {}
 

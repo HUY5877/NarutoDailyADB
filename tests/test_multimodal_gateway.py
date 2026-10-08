@@ -108,16 +108,6 @@ def test_startup_snapshot_ignores_process_overrides_and_later_file_changes(tmp_p
     assert configured_environment.value == 0
 
 
-def test_legacy_yuwan_config_does_not_allow_custom_url_and_explicit_empty_key_disables_it():
-    config = gateway.load_gateway_settings({'MULTIMODAL_API_KEY': 'legacy-key',
-        'MULTIMODAL_BASE_URL': 'https://other.test', 'MULTIMODAL_MODEL': 'legacy-model',
-        'REDIS_URL': 'redis://test.invalid/0'})
-    assert config.channels[0].base_url == CHANNELS[0].base_url
-    with pytest.raises(environment.EnvironmentConfigError):
-        gateway.load_gateway_settings({'MULTIMODAL_API_KEY': 'legacy-key',
-            'YUWAN_API_KEY': '', 'REDIS_URL': 'redis://test.invalid/0'})
-
-
 def test_sync_retry_switches_url_key_and_model_and_recaptures_image(monkeypatch, configured_environment):
     router = gateway.MultimodalGateway(settings())
     monkeypatch.setattr(gateway, '_gateway', router)

@@ -436,8 +436,7 @@ def test_free_recruit_accepts_red_dot_and_safe_button_targets(tmp_path):
     payload["screen"] = {"width": 1920, "height": 1080}
     payload["tasks"]["recruit"] = [{
         "type": "handle_free_recruit",
-        "multimodal": {"base_url": "${MULTIMODAL_BASE_URL}", "model": "${MULTIMODAL_MODEL}",
-                       "timeout_seconds": 20, "max_calls": 6},
+        "multimodal": {"timeout_seconds": 20, "max_calls": 6},
         "timeout_seconds": 40,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 0.5,
@@ -517,8 +516,7 @@ def test_free_recruit_rejects_paid_button_and_unrelated_red_dot_risk(
     payload["screen"] = {"width": 1920, "height": 1080}
     action = {
         "type": "handle_free_recruit",
-        "multimodal": {"base_url": "${MULTIMODAL_BASE_URL}", "model": "${MULTIMODAL_MODEL}",
-                       "timeout_seconds": 20, "max_calls": 6},
+        "multimodal": {"timeout_seconds": 20, "max_calls": 6},
         "timeout_seconds": 40,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 3,

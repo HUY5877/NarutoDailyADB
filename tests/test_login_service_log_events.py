@@ -27,7 +27,7 @@ from naruto_daily.login_service.log_events import (
     ("Cookie: session=private-value; refresh=other-value", ["private-value", "other-value"]),
     ("password=private-value, token=other-value", ["private-value", "other-value"]),
     ("accessKeyId=public-account-id accessKeySecret=private-value", ["public-account-id", "private-value"]),
-    ("MULTIMODAL_API_KEY=private-model-value REDIS_PASSWORD=private-redis-value", ["private-model-value", "private-redis-value"]),
+    ("YUWAN_API_KEY=private-model-value REDIS_PASSWORD=private-redis-value", ["private-model-value", "private-redis-value"]),
     ("API key: private-value", ["private-value"]),
     ("密码=private-value", ["private-value"]),
 ])
@@ -40,7 +40,7 @@ def test_credentials_are_redacted_from_user_logs(message, secrets):
 
 def test_known_environment_secret_is_redacted_without_label_before_truncation(monkeypatch):
     secret = "private-model-key-value"
-    monkeypatch.setenv("MULTIMODAL_API_KEY", secret)
+    monkeypatch.setenv("YUWAN_API_KEY", secret)
     events = []
     handler = ProtocolLogHandler(events.append)
     record = logging.LogRecord("naruto_daily", logging.INFO, __file__, 1, "x" * 990 + secret + "tail", (), None)
@@ -52,10 +52,10 @@ def test_known_environment_secret_is_redacted_without_label_before_truncation(mo
 
 
 def test_model_secret_loaded_after_handler_creation_is_still_redacted(monkeypatch):
-    monkeypatch.delenv("MULTIMODAL_API_KEY", raising=False)
+    monkeypatch.delenv("YUWAN_API_KEY", raising=False)
     events = []
     handler = ProtocolLogHandler(events.append)
-    monkeypatch.setenv("MULTIMODAL_API_KEY", "private-key-from-daily-dotenv")
+    monkeypatch.setenv("YUWAN_API_KEY", "private-key-from-daily-dotenv")
     handler.handle(logging.LogRecord(
         "naruto_daily", logging.INFO, __file__, 1,
         "model response repeated %s", ("private-key-from-daily-dotenv",), None,
@@ -64,7 +64,7 @@ def test_model_secret_loaded_after_handler_creation_is_still_redacted(monkeypatc
 
 
 @pytest.mark.parametrize('variable', [
-    'MULTIMODAL_API_KEY', 'YUWAN_API_KEY', 'DEEPSEEK_API_KEY',
+    'YUWAN_API_KEY', 'DEEPSEEK_API_KEY',
 ])
 def test_root_model_key_is_redacted_from_protocol_and_diagnostic_logs(tmp_path, monkeypatch, variable):
     (tmp_path / '.env').write_text(f'{variable}=private-root-key', encoding='utf-8')
