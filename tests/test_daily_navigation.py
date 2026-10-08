@@ -5,7 +5,6 @@ import pytest
 
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.multimodal.agent import Joystick, run_agent
-from naruto_daily.multimodal.transport import MultimodalRequestError
 
 
 class Device:
@@ -29,11 +28,12 @@ def image_of(payload):
     return base64.b64decode(urls[0].split(',')[1])
 
 
-def test_sdk_retries_five_times_with_new_frames_and_without_replaying_movement(agent_server, monkeypatch):
+@pytest.mark.parametrize('status', [400, 401, 503])
+def test_sdk_retries_five_times_with_new_frames_and_without_replaying_movement(agent_server, monkeypatch, status):
     from naruto_daily.multimodal import transport
     monkeypatch.setattr(transport, 'REQUEST_RETRY_SECONDS', 0)
     answers = iter([dict(reached=False, action='d', observation='outside')]
-                   + [{'http_status': 503}] * 5
+                   + [{'http_status': status}] * 5
                    + [dict(reached=True, action=None, observation='arrived')])
 
     class Model:
@@ -50,16 +50,22 @@ def test_sdk_retries_five_times_with_new_frames_and_without_replaying_movement(a
     assert all(sum(m['role'] == 'tool' for m in p['messages']) == 1 for p in agent_server.payloads[1:])
 
 
-def test_sdk_permanent_auth_error_is_not_retried(agent_server):
+@pytest.mark.parametrize('status', [201, 307, 400, 401, 403])
+def test_sdk_recovers_from_non_200_with_fresh_frames_without_movement(agent_server, monkeypatch, status):
+    from naruto_daily.multimodal import transport
+    monkeypatch.setattr(transport, 'REQUEST_RETRY_SECONDS', 0)
+    answers = iter([{'http_status': status}] * 2
+                   + [dict(reached=True, action=None, observation='arrived')])
+
     class Model:
         def agent_connection(self):
-            return agent_server.connection(lambda *_: {'http_status': 401})
+            return agent_server.connection(lambda *_: next(answers))
 
     device = Device()
-    with pytest.raises(MultimodalRequestError) as error, execution_scope(time.monotonic() + 1500):
-        run_agent(device, Model(), 'goal', joystick=Joystick(200, 800, 80))
-    assert error.value.status_code == 401
-    assert len(agent_server.payloads) == 1
+    with execution_scope(time.monotonic() + 1500):
+        result = run_agent(device, Model(), 'goal', joystick=Joystick(200, 800, 80))
+    assert result.reached and result.steps == 0
+    assert [image_of(payload) for payload in agent_server.payloads] == [b'frame-1', b'frame-2', b'frame-3']
     assert device.moves == []
 
 

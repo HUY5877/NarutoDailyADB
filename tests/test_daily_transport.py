@@ -40,7 +40,7 @@ def http_failure(status):
     return HTTPError(URL, status, 'private-error', {}, io.BytesIO(b'private-body'))
 
 
-@pytest.mark.parametrize('error', ['timeout', 429, 503])
+@pytest.mark.parametrize('error', ['timeout', 201, 204, 307, 400, 401, 403, 418, 429, 503, 529])
 def test_daily_sync_retries_more_than_three_times_with_fresh_frames(error, caplog):
     clock, requests, timeouts = Clock(), [], []
     caplog.set_level('INFO', logger='naruto_daily')
@@ -71,6 +71,8 @@ def test_daily_sync_retries_more_than_three_times_with_fresh_frames(error, caplo
     (TimeoutError, 'timeout', None),
     (lambda: URLError(TimeoutError()), 'timeout', None),
     (lambda: http_failure(503), 'http_status', 503),
+    (lambda: http_failure(400), 'http_status', 400),
+    (lambda: http_failure(401), 'http_status', 401),
 ])
 def test_daily_sync_without_refresh_yields_retryable_error_to_observation(error, kind, status):
     clock, requests = Clock(), []
@@ -88,23 +90,22 @@ def test_daily_sync_without_refresh_yields_retryable_error_to_observation(error,
     assert caught.value.error_kind == kind and caught.value.status_code == status
 
 
-@pytest.mark.parametrize('status', [401, 403])
-def test_daily_sync_authentication_failure_stops_without_retry(status):
+@pytest.mark.parametrize('status', [400, 401, 403])
+def test_daily_sync_http_failure_retries_until_shared_deadline(status):
     clock, requests = Clock(), []
 
     def send(request, timeout):
-        requests.append(request)
+        requests.append(request.data)
         raise http_failure(status)
 
-    with execution_scope(200, clock=clock, sleep=clock.sleep):
-        with pytest.raises(transport.MultimodalRequestError) as caught:
+    with pytest.raises(DailyDeadlineExceeded):
+        with execution_scope(15, clock=clock, sleep=clock.sleep):
             transport.request_with_retry(
-                Request(URL), request_timeout=30, open_request=send,
-                refresh_request=lambda: pytest.fail('Non-retryable failures must not capture again'))
+                Request(URL, data=b'initial'), request_timeout=30, open_request=send,
+                refresh_request=lambda: Request(URL, data=b'fresh'))
 
-    assert len(requests) == 1 and not clock.waits
-    assert caught.value.retryable is False and caught.value.status_code == status
-    assert caught.value.error_kind == 'http_status'
+    assert requests == [b'initial', b'fresh']
+    assert clock.waits == [10, 5]
 
 
 @pytest.mark.parametrize('phase', ['wait', 'refresh', 'response_headers', 'response_body', 'timeout'])
@@ -190,7 +191,7 @@ def test_daily_client_caps_connection_and_ignores_old_stage_timeout():
 
 
 @pytest.mark.parametrize('refresh_async', [False, True])
-@pytest.mark.parametrize('failure', ['timeout', 503])
+@pytest.mark.parametrize('failure', ['timeout', 201, 204, 307, 400, 401, 403, 418, 503, 529])
 def test_daily_async_retries_more_than_three_times_preserving_history(monkeypatch, refresh_async, failure, caplog):
     clock, requests, refreshes = Clock(), [], []
     caplog.set_level('INFO', logger='naruto_daily')
@@ -259,7 +260,7 @@ def test_daily_async_request_timeout_obeys_cap_and_remaining_budget(monkeypatch,
     assert timeouts == [expected]
 
 
-@pytest.mark.parametrize('status', ['timeout', 503, 401, 403])
+@pytest.mark.parametrize('status', ['timeout', 201, 204, 307, 400, 401, 403, 418, 503, 529])
 def test_daily_async_no_refresh_sends_once_and_reports_structured_error(monkeypatch, status):
     clock, requests = Clock(), []
     monkeypatch.setattr(transport.asyncio, 'sleep', clock.asleep)
@@ -280,13 +281,14 @@ def test_daily_async_no_refresh_sends_once_and_reports_structured_error(monkeypa
         error = asyncio.run(run())
 
     assert len(requests) == 1 and not clock.waits
-    assert error.retryable is (status in ('timeout', 503))
+    assert error.retryable is True
     assert error.status_code == (None if status == 'timeout' else status)
     assert error.error_kind == ('read_timeout' if status == 'timeout' else 'http_status')
 
 
 @pytest.mark.parametrize('phase', ['wait', 'refresh', 'response', 'timeout'])
-def test_daily_async_expiry_propagates_special_deadline_exception(monkeypatch, phase):
+@pytest.mark.parametrize('failure', ['timeout', 400, 401])
+def test_daily_async_expiry_propagates_special_deadline_exception(monkeypatch, phase, failure):
     clock, requests, refreshes = Clock(), [], []
     deadline = 4 if phase == 'wait' else 15
     monkeypatch.setattr(transport.asyncio, 'sleep', clock.asleep)
@@ -297,6 +299,8 @@ def test_daily_async_expiry_propagates_special_deadline_exception(monkeypatch, p
             clock.now = deadline
         if phase == 'response':
             return httpx.Response(200, json={'late': True})
+        if failure != 'timeout':
+            return httpx.Response(failure)
         raise httpx.ReadTimeout('private-error', request=request)
 
     async def refresh(request):
@@ -445,8 +449,8 @@ def test_production_sync_request_wall_timeout_closes_real_slow_connection(model_
     assert 'phase=read_body' in caplog.text and 'status=200' in caplog.text
 
 
-@pytest.mark.parametrize('status,retryable', [(401, False), (403, False), (503, True), (307, False)])
-def test_production_sync_request_preserves_status_and_never_redirects(model_http_server, status, retryable):
+@pytest.mark.parametrize('status', [201, 204, 307, 400, 401, 403, 418, 503, 529])
+def test_production_sync_request_preserves_status_and_never_redirects(model_http_server, status):
     paths = []
 
     class Handler(QuietHandler):
@@ -464,7 +468,7 @@ def test_production_sync_request_preserves_status_and_never_redirects(model_http
             transport.request_with_retry(Request(url, data=b'{}'), request_timeout=1)
 
     assert paths == ['/chat/completions']
-    assert caught.value.status_code == status and caught.value.retryable is retryable
+    assert caught.value.status_code == status and caught.value.retryable is True
     assert caught.value.error_kind == 'http_status'
     assert '/private-redirect' not in str(caught.value)
 

@@ -21,7 +21,6 @@ from .diagnostics import RequestDiagnostics, exception_kind
 LOGGER = logging.getLogger('naruto_daily')
 MAX_REQUEST_RETRIES = 3
 REQUEST_RETRY_SECONDS = 10
-RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 
 class MultimodalError(VisualError):
@@ -64,8 +63,8 @@ async def _request_once(request, *, timeout, max_response_bytes, diagnostic):
                                      headers=dict(request.header_items()), content=request.data) as response:
                 diagnostic.phase = 'read_body'
                 diagnostic.status = response.status_code
-                if not 200 <= response.status_code < 300:
-                    # 保留现有 HTTP 状态分类；响应正文和请求 URL 都不进入失败日志。
+                if response.status_code != 200:
+                    # 只有 200 才算成功；响应正文和请求 URL 都不进入失败日志。
                     raise HTTPError(request.full_url, response.status_code, response.reason_phrase,
                                     response.headers, None)
                 chunks, received = [], 0
@@ -162,6 +161,9 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
                     diagnostic.phase = 'read_body'
                     diagnostic.status = getattr(response, 'status', 200)
                     check_response_deadline()
+                    if diagnostic.status != 200:
+                        raise HTTPError(request.full_url, diagnostic.status, 'Unexpected HTTP status',
+                                        getattr(response, 'headers', None), None)
                     body = response.read(max_response_bytes + 1)
                     headers = getattr(response, 'headers', None)
                     result = ModelResponse(getattr(response, 'status', 200),
@@ -177,24 +179,18 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
             raise
         except HTTPError as exc:
             status_code = exc.code
-            retryable = status_code in RETRYABLE_HTTP_STATUS
             message = (f'多模态 API 请求受限（HTTP {status_code}）' if status_code == 429 else
                        f'多模态 API 请求失败（HTTP {status_code}），请检查模型、密钥或接口额度')
             diagnostic.failure(exc, status=status_code)
             error_kind = 'http_status'
             exc.close()
         except (URLError, TimeoutError, OSError, HTTPException, httpx.TransportError) as exc:
-            retryable = True
             message = '多模态 API 网络异常或请求超时'
             diagnostic.failure(exc, status=diagnostic.status)
             error_kind = exception_kind(exc)
         check_cancelled()
         if execution is not None:
             remaining_time()
-        if not retryable:
-            diagnostic.stop('non_retryable')
-            raise MultimodalRequestError(f'{message}；{diagnostic.summary()}', status_code=status_code,
-                                         error_kind=error_kind) from None
         if execution is not None and refresh_request is None:
             # 场景层重新截图并运行识别前守卫；此处不能重复发送旧截图。
             diagnostic.stop('refresh_required')
@@ -295,20 +291,16 @@ class ModelAsyncClient(httpx.AsyncClient):
                 if remaining_time() <= 0:
                     diagnostic.stop('late_response')
                     raise httpx.ReadTimeout('多模态响应已超过重试预算', request=request)
-                if 200 <= response.status_code < 300:
+                if response.status_code == 200:
                     diagnostic.log(logging.INFO, '成功', f'response_bytes={len(response.content)}')
                     return response
                 diagnostic.failure(status=response.status_code)
-                if response.status_code not in RETRYABLE_HTTP_STATUS:
-                    diagnostic.stop('non_retryable')
-                    if execution is not None:
-                        raise MultimodalRequestError(
-                            f'多模态 API 请求失败（HTTP {response.status_code}）；{diagnostic.summary()}',
-                            status_code=response.status_code, error_kind='http_status')
-                    return response
                 if execution is None and attempt == MAX_REQUEST_RETRIES:
                     diagnostic.stop('retries_exhausted')
-                    return response
+                    raise MultimodalRequestError(
+                        f'多模态 API 请求失败（HTTP {response.status_code}）；'
+                        f'已重试{MAX_REQUEST_RETRIES}次，停止请求；{diagnostic.summary()}',
+                        status_code=response.status_code, error_kind='http_status')
                 message = f'多模态 API 请求失败（HTTP {response.status_code}）'
                 status_code = response.status_code
                 error_kind = 'http_status'

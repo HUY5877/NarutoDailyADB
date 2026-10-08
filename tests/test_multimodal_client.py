@@ -175,7 +175,8 @@ def test_new_client_reloads_changed_root_url_model_and_key(tmp_path):
                     ('https://second.test/v1/chat/completions', 'second-model', 'Bearer second-key')]
 
 
-def test_client_rebuilds_image_on_each_retry_preserving_prompt_model_and_authorization(tmp_path):
+@pytest.mark.parametrize('failure_status', [None, 400, 401, 418, 529])
+def test_client_rebuilds_image_on_each_retry_preserving_prompt_model_and_authorization(tmp_path, failure_status):
     now = [0]
     events = []
     requests = []
@@ -197,6 +198,8 @@ def test_client_rebuilds_image_on_each_retry_preserving_prompt_model_and_authori
         requests.append((request, payload, frame))
         events.append(('send', now[0], frame))
         if len(requests) < 4:
+            if failure_status is not None:
+                raise HTTPError(request.full_url, failure_status, 'test-secret', {}, None)
             raise TimeoutError()
         return response('{"finished":true}')
 

@@ -12,7 +12,7 @@ from naruto_daily.multimodal.agent import compat_runner, Joystick, run_agent
 URL = 'https://llm-proxy.yuwan-game.com/v1/chat/completions'
 
 
-@pytest.mark.parametrize('failure', [408, 429, 500, 502, 503, 504, 'network'])
+@pytest.mark.parametrize('failure', [201, 204, 307, 400, 401, 403, 404, 408, 418, 422, 429, 500, 502, 503, 504, 529, 599, 'network'])
 def test_direct_client_retries_same_request_three_times(monkeypatch, failure):
     calls, waits = [], []
 
@@ -40,7 +40,7 @@ def test_direct_client_retries_same_request_three_times(monkeypatch, failure):
     assert waits == [10, 10, 10]
 
 
-@pytest.mark.parametrize('status', [307, 400, 401, 403, 404, 429])
+@pytest.mark.parametrize('status', [201, 204, 307, 400, 401, 403, 404, 418, 429, 529])
 def test_direct_client_stops_at_retry_limit_and_does_not_redirect(monkeypatch, status):
     calls, waits = [], []
 
@@ -53,13 +53,14 @@ def test_direct_client_stops_at_retry_limit_and_does_not_redirect(monkeypatch, s
 
     async def run():
         async with transport.ModelAsyncClient(request_timeout=30, transport=httpx.MockTransport(handle)) as client:
-            response = await client.post(URL, json={})
-            assert response.status_code == status
+            with pytest.raises(transport.MultimodalRequestError, match='已重试3次') as caught:
+                await client.post(URL, json={})
+            assert caught.value.status_code == status
 
     monkeypatch.setattr(transport.asyncio, 'sleep', wait)
     asyncio.run(run())
-    assert calls == [URL] * (4 if status == 429 else 1)
-    assert waits == ([10, 10, 10] if status == 429 else [])
+    assert calls == [URL] * 4
+    assert waits == [10, 10, 10]
 
 
 def test_direct_client_enforces_request_timeout_and_budget(monkeypatch):

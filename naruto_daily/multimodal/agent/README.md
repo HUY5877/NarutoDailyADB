@@ -12,7 +12,7 @@ SDK 管理会话、工具调用、权限和请求轮次；移动工具在执行 
 
 模型、接口地址、超时和密钥复用已有 `MultimodalClient` 配置。OpenAI 兼容接口由 `compat_runner.py` 中的 Python SDK 调用；Claude Messages 接口由 `claude_runner.py` 中的 Claude Agent SDK 调用，入口在 `runner.py` 统一选择。
 
-两种 SDK 都直接使用配置的 API 地址和密钥，不启动本地 HTTP 转发端口。默认鱼玩网关的请求日志显示 `https://llm-proxy.yuwan-game.com/v1/chat/completions`。OpenAI 兼容导航使用 `multimodal/transport.py` 中的异步 HTTP 客户端，在当前请求内部处理重试，SDK 自带重试关闭：网络异常、HTTP 408/429/500/502/503/504 在共享任务执行范围内持续重试至任务截止时间；脱离共享任务单独调用时最多重试3次。重试间隔10秒，受剩余时间约束；不可重试错误立即停止，重试不会重新执行游戏移动。请求及等待受总预算约束，取消导航会中断当前网络请求或重试等待。普通 JSON 图片识别沿用相同的重试规则。Claude Messages 导航直接向 SDK 配置地址、密钥和单次请求超时，由 Claude SDK 处理最多3次请求重试及退避间隔；完成检测仍会停止当前会话和其自有子进程。
+两种 SDK 都直接使用配置的 API 地址和密钥，不启动本地 HTTP 转发端口。默认鱼玩网关的请求日志显示 `https://llm-proxy.yuwan-game.com/v1/chat/completions`。OpenAI 兼容导航使用 `multimodal/transport.py` 中的异步 HTTP 客户端，在当前请求内部处理重试，SDK 自带重试关闭：只有 HTTP 200 算成功，其他状态（包括 400、401、403）和网络异常在共享任务执行范围内持续重试至任务截止时间；脱离共享任务单独调用时最多重试3次。重试间隔10秒，受剩余时间约束，重试不会重新执行游戏移动。请求及等待受总预算约束，取消导航会中断当前网络请求或重试等待。普通 JSON 图片识别沿用相同的重试规则。Claude Messages 导航直接向 SDK 配置地址、密钥和单次请求超时，由 Claude SDK 处理最多3次请求重试及退避间隔；完成检测仍会停止当前会话和其自有子进程。
 
 ## 秘境内部调用
 

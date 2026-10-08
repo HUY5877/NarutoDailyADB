@@ -30,8 +30,8 @@ def failure(status=429):
     return HTTPError('https://private.invalid/v1', status, 'private-key', {}, io.BytesIO(b'private-key'))
 
 
-@pytest.mark.parametrize('status', [408, 429, 500, 502, 503, 504])
-def test_transient_http_errors_retry_every_ten_seconds(status, caplog):
+@pytest.mark.parametrize('status', [201, 204, 307, 400, 401, 403, 404, 408, 418, 422, 429, 500, 502, 503, 504, 529, 599])
+def test_non_200_http_errors_retry_every_ten_seconds(status, caplog):
     delay = 10
     clock = Clock()
     calls = []
@@ -108,19 +108,32 @@ def test_last_retry_can_succeed_without_another_wait():
     assert calls == [0, 10, 20, 30] and clock.sleeps == [10, 10, 10]
 
 
-@pytest.mark.parametrize('status', [400, 401, 403, 404])
-def test_permanent_http_errors_do_not_retry(status):
+@pytest.mark.parametrize('status', [201, 204, 307, 400, 418, 529])
+def test_injected_non_200_responses_retry_until_200_without_reading_error_body(status):
     clock = Clock()
     calls = []
+    responses = []
+
+    class Response(io.BytesIO):
+        def __init__(self, status):
+            super().__init__(b'success')
+            self.status = status
+
+        def read(self, size):
+            assert self.status == 200, 'Only successful response bodies may be read'
+            return super().read(size)
 
     def request(*args, **kwargs):
-        calls.append(1)
-        raise failure(status)
+        calls.append(clock.now)
+        response = Response(status if len(calls) < 4 else 200)
+        responses.append(response)
+        return response
 
-    with pytest.raises(transport.MultimodalRequestError):
-        transport.request_with_retry(Request('https://example.test'), request_timeout=30,
-                                     open_request=request, sleep=clock.sleep, clock=clock)
-    assert calls == [1] and not clock.sleeps
+    result = transport.request_with_retry(Request('https://example.test'), request_timeout=30,
+                                          open_request=request, sleep=clock.sleep, clock=clock)
+    assert result.status == 200 and result.body == b'success'
+    assert calls == [0, 10, 20, 30] and clock.sleeps == [10, 10, 10]
+    assert all(response.closed for response in responses)
 
 
 def test_attempts_and_waits_share_the_phase_deadline():
@@ -296,7 +309,7 @@ def test_timeout_exhausting_phase_budget_logs_first_attempt_and_real_cause(caplo
 
 
 @pytest.mark.parametrize('status,expected_attempts,stop_reason', [
-    (401, 1, 'non_retryable'), (429, 4, 'retries_exhausted'),
+    (400, 4, 'retries_exhausted'), (401, 4, 'retries_exhausted'), (429, 4, 'retries_exhausted'),
 ])
 def test_http_failure_logs_status_reason_and_one_id_per_logical_request(
         caplog, status, expected_attempts, stop_reason):
@@ -379,14 +392,15 @@ def test_retry_refreshes_request_after_wait_without_refreshing_first_attempt():
     assert clock.sleeps == [10, 10, 10]
 
 
-@pytest.mark.parametrize('stop', ['permanent_http', 'insufficient_budget', 'wait_exhausted_budget'])
-def test_retry_never_refreshes_after_permanent_error_or_expired_budget(stop):
+@pytest.mark.parametrize('stop', ['insufficient_budget', 'wait_exhausted_budget'])
+@pytest.mark.parametrize('status', [400, 401, 503])
+def test_retry_never_refreshes_after_expired_budget(stop, status):
     clock = Clock()
     calls = []
 
     def request(*args, **kwargs):
         calls.append(1)
-        raise failure(401 if stop == 'permanent_http' else 503)
+        raise failure(status)
 
     def sleep(seconds):
         clock.sleep(seconds + 10 if stop == 'wait_exhausted_budget' else seconds)

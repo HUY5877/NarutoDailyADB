@@ -20,7 +20,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
 
 from naruto_daily.common.visual import VisualError
-from naruto_daily.common.execution import check_execution, execution_sleep, DailyDeadlineExceeded
+from naruto_daily.common.execution import check_execution, current_execution, execution_sleep, DailyDeadlineExceeded
 from naruto_daily.multimodal.diagnostics import model_request_context, safe_exception_details
 from naruto_daily.multimodal.transport import ModelAsyncClient, MultimodalRequestError, httpx
 from .completion_watch import CompletionDetected, CompletionWatch
@@ -302,7 +302,9 @@ def run_agent(
         return result(True, exc.reason)
     except _NavigationDone as exc:
         return exc.result
-    except (AgentRunError, OpenAIError) as exc:
+    except (AgentRunError, OpenAIError, MultimodalRequestError) as exc:
+        if isinstance(exc, MultimodalRequestError) and current_execution() is not None:
+            raise
         # OpenAI wraps exceptions from custom HTTP transports. Keep our stop
         # signals (and HTTP status diagnostics) instead of losing their type.
         cause = exc.__cause__
