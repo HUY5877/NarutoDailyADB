@@ -52,9 +52,46 @@ def sanitize_log_message(message: str, *, secrets: Iterable[str] = (),
     message = _SECRET_FIELD.sub(r"\1" + _REDACTED, message)
     message = _CONTROL_CHARACTERS.sub("", message)
     message = " ".join(message.split())
+    return _truncate_message(message, max_length)
+
+
+def _truncate_message(message: str, max_length: int | None) -> str:
     if max_length is not None and len(message) > max_length:
         message = message[:max_length - 1] + "…"
     return message
+
+
+def _exception_summary(error: BaseException, *, secrets: Iterable[str], max_length: int) -> str:
+    """Keep the outer failure and underlying cause, without traceback frames."""
+    root = error
+    seen = {id(error)}
+    for _ in range(8):
+        cause = root.__cause__
+        if cause is None and not root.__suppress_context__:
+            cause = root.__context__
+        if cause is None or id(cause) in seen:
+            break
+        seen.add(id(cause))
+        root = cause
+
+    def describe(value: BaseException) -> str:
+        try:
+            detail = str(value)
+        except Exception:
+            detail = "异常信息无法读取"
+        message = type(value).__name__ + (f": {detail}" if detail else "")
+        return sanitize_log_message(message, secrets=secrets, max_length=None)
+
+    outer = describe(error)
+    if root is error:
+        return _truncate_message(outer, max_length)
+    cause = describe(root)
+    separator = "；原因："
+    # Reserve room for the cause even when the wrapping error is very long.
+    cause_budget = min(len(cause), (max_length - len(separator)) // 2)
+    outer_budget = max_length - len(separator) - cause_budget
+    return (_truncate_message(outer, outer_budget) + separator
+            + _truncate_message(cause, cause_budget))
 
 
 class DiagnosticLogHandler(logging.StreamHandler):
@@ -91,14 +128,24 @@ class ProtocolLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            # getMessage deliberately excludes exc_info and stack_info. Tracebacks
-            # may contain credentials and are not suitable for the user's log pane.
             # DailySession may load its .env after this handler was installed.
             # Keep earlier keys protected too if configuration changes in-process.
+            secrets = (*self._secrets, *model_log_secrets())
+            error = record.exc_info[1] if record.exc_info else None
             message = sanitize_log_message(
                 record.getMessage(),
-                secrets=(*self._secrets, *model_log_secrets()),
+                secrets=secrets,
+                max_length=200 if error is not None else MAX_LOG_MESSAGE_LENGTH,
             )
+            if error is not None:
+                # Share only sanitized exception summaries. Tracebacks, source
+                # frames and stack_info remain in the local diagnostic stream.
+                prefix = "具体错误："
+                suffix = f"；{message}" if message else ""
+                message = prefix + _exception_summary(
+                    error, secrets=secrets,
+                    max_length=MAX_LOG_MESSAGE_LENGTH - len(prefix) - len(suffix),
+                ) + suffix
             if not message:
                 return
             event: dict[str, object] = {

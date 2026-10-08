@@ -253,7 +253,7 @@ def main(
         return 0
     except Exception as error:
         # Full traceback stays in the task's local stderr stream. The browser
-        # never receives traceback frames or the raw exception text.
+        # receives only sanitized exception summaries, never traceback frames.
         logging.getLogger("naruto_daily").exception("执行阶段 %s 失败", phase)
         if phase == "configuration":
             code = "configuration_error"

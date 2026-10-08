@@ -167,7 +167,7 @@ def test_invalid_start_request_only_emits_configuration_error(monkeypatch, chang
     assert events == [{"type": "error", "code": "configuration_error"}]
 
 
-def test_worker_maps_each_operation_failure_without_exposing_exception(monkeypatch):
+def test_worker_maps_each_operation_failure_without_exposing_credentials(monkeypatch):
     class DriverError(RuntimeError):
         pass
 
@@ -264,7 +264,8 @@ def test_game_launch_driver_error_has_specific_safe_code(monkeypatch):
 
     assert code == 1
     assert events[-1] == {"type": "error", "code": "game_launch_failed"}
-    assert "private" not in json.dumps(events)
+    assert any(event.get("message", "").startswith("具体错误：DriverError: private game output；")
+               for event in events)
 
 
 def daily_dependencies(calls):
@@ -475,7 +476,7 @@ def test_invalid_user_options_fail_before_driver_initialization(monkeypatch, opt
     ("login", RuntimeError("HTTP 401 request_timeout=15.00s"), "login_failed"),
     ("login_finish", RuntimeError("HTTP 401 request_timeout=15.00s"), "login_finish_failed"),
 ])
-def test_daily_worker_maps_failures_without_leaking_details(monkeypatch, tmp_path, capsys, phase, error, expected):
+def test_daily_worker_maps_failures_and_publishes_sanitized_error_details(monkeypatch, tmp_path, capsys, phase, error, expected):
     calls = []
 
     class DailySession:
@@ -503,7 +504,12 @@ def test_daily_worker_maps_failures_without_leaking_details(monkeypatch, tmp_pat
     )
     assert code == 1
     assert events[-1] == {"type": "error", "code": expected}
-    assert "private" not in json.dumps(events)
+    assert any(
+        event["type"] == "log" and event.get("level") == "ERROR"
+        and event["message"].startswith(f"具体错误：{type(error).__name__}: {error}；")
+        for event in events
+    )
+    assert "Traceback" not in json.dumps(events)
     terminal = capsys.readouterr().err
     assert "Traceback (most recent call last)" in terminal
     assert f"{type(error).__name__}: {error}" in terminal

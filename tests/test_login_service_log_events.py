@@ -94,11 +94,12 @@ def test_log_event_keeps_only_safe_fields_and_normalizes_level_and_time():
     handler.handle(record)
     assert events == [{
         "type": "log", "time": "2027-01-15T08:00:00.000Z", "level": "ERROR",
-        "message": "执行失败 第二行", "actionIndex": 2, "actionTotal": 10,
+        "message": "具体错误：RuntimeError: private exception detail；执行失败 第二行",
+        "actionIndex": 2, "actionTotal": 10,
     }]
 
 
-def test_local_diagnostics_keep_long_messages_and_exception_chain_out_of_web_logs():
+def test_local_diagnostics_keep_tracebacks_and_web_logs_receive_sanitized_causes():
     events, terminal = [], StringIO()
     secret = "local-diagnostic-test-secret"
     long_message = "识别进度" * 400
@@ -119,9 +120,13 @@ def test_local_diagnostics_keep_long_messages_and_exception_chain_out_of_web_log
     assert "RuntimeError: 一乐外卖多次识别失败" in output
     assert secret not in output
     assert len(events[0]["message"]) == 1000
-    assert events[-1]["message"] == "执行阶段 daily 失败"
+    assert events[-1]["message"] == (
+        "具体错误：RuntimeError: 一乐外卖多次识别失败；原因：ValueError: 模型网络异常 [REDACTED]"
+        "；执行阶段 daily 失败"
+    )
     assert "Traceback" not in json.dumps(events)
-    assert "模型网络异常" not in json.dumps(events, ensure_ascii=False)
+    assert secret not in json.dumps(events, ensure_ascii=False)
+    assert __file__ not in json.dumps(events, ensure_ascii=False)
 
 
 @pytest.mark.parametrize("index,total", [(True, 5), (1, True), (-1, 5), (6, 5), ("1", 5), (1, None)])
@@ -323,3 +328,72 @@ def test_log_and_stage_events_share_an_atomic_output_writer():
     events = [json.loads(line) for line in "".join(stream.fragments).splitlines()]
     assert len(events) == 40
     assert sum(event["type"] == "log" for event in events) == 20
+
+
+def test_exception_summary_redacts_credentials_before_bounding_long_context_and_cause(monkeypatch):
+    secret = "private-exception-api-key"
+    monkeypatch.setenv("YUWAN_API_KEY", secret)
+    events = []
+    try:
+        try:
+            raise ValueError("模型请求被拒绝：" + secret + " token=other-private-token " + "响应" * 1000)
+        except ValueError as error:
+            raise RuntimeError("装备材料识别失败 " + "上下文" * 1000) from error
+    except RuntimeError:
+        record = logging.LogRecord(
+            "naruto_daily", logging.ERROR, "/private/source.py", 1,
+            "任务诊断" * 1000 + secret, (), sys.exc_info(), sinfo="private stack trace",
+        )
+    ProtocolLogHandler(events.append).handle(record)
+    message = events[0]["message"]
+    assert len(message) <= 1000
+    assert message.startswith("具体错误：RuntimeError: 装备材料识别失败")
+    assert "原因：ValueError: 模型请求被拒绝：[REDACTED] token=[REDACTED]" in message
+    assert secret not in message and "private-exception" not in message
+    assert "other-private-token" not in message
+    assert "source.py" not in message and "private stack trace" not in message
+
+
+@pytest.mark.parametrize("error,expected", [
+    (TimeoutError(), "TimeoutError"),
+    (RuntimeError("token=private-token"), "RuntimeError: token=[REDACTED]"),
+])
+def test_empty_or_credential_bearing_exception_still_provides_a_safe_summary(error, expected):
+    events = []
+    ProtocolLogHandler(events.append).handle(logging.LogRecord(
+        "naruto_daily", logging.ERROR, __file__, 1, "执行阶段 daily 失败", (),
+        (type(error), error, None),
+    ))
+    assert events[0]["message"] == f"具体错误：{expected}；执行阶段 daily 失败"
+
+
+def test_unprintable_exception_and_cyclic_causes_do_not_break_logging():
+    class UnprintableError(RuntimeError):
+        def __str__(self):
+            raise ValueError("private formatting failure")
+
+    error = UnprintableError()
+    cause = TimeoutError("模型请求超时")
+    error.__cause__ = cause
+    cause.__cause__ = error
+    events = []
+    ProtocolLogHandler(events.append).handle(logging.LogRecord(
+        "naruto_daily", logging.ERROR, __file__, 1, "执行阶段 daily 失败", (),
+        (type(error), error, None),
+    ))
+    assert events[0]["message"] == (
+        "具体错误：UnprintableError: 异常信息无法读取；原因：TimeoutError: 模型请求超时；执行阶段 daily 失败"
+    )
+
+
+def test_suppressed_exception_context_is_not_exposed():
+    events = []
+    try:
+        try:
+            raise ValueError("suppressed internal context")
+        except ValueError:
+            raise RuntimeError("截图失败") from None
+    except RuntimeError:
+        record = logging.LogRecord("naruto_daily", logging.ERROR, __file__, 1, "任务失败", (), sys.exc_info())
+    ProtocolLogHandler(events.append).handle(record)
+    assert events[0]["message"] == "具体错误：RuntimeError: 截图失败；任务失败"
