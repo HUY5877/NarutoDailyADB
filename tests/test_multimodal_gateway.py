@@ -18,20 +18,20 @@ from naruto_daily.multimodal.client import MultimodalClient
 
 def settings(**overrides):
     return gateway.load_gateway_settings({
-        'MULTIMODAL_YUWAN_API_KEY': 'yuwan-private', 'MULTIMODAL_YUWAN_MODEL': 'yuwan-vision',
-        'MULTIMODAL_DEEPSEEK_API_KEY': 'deepseek-private', 'MULTIMODAL_DEEPSEEK_MODEL': 'deepseek-vision',
+        'YUWAN_API_KEY': 'yuwan-private', 'YUWAN_MODEL': 'yuwan-vision',
+        'DEEPSEEK_API_KEY': 'deepseek-private', 'DEEPSEEK_MODEL': 'deepseek-vision',
         'REDIS_URL': 'redis://account:redis-private@test.invalid/0', **overrides,
     })
 
 
 @pytest.mark.parametrize('key', [None, '', ' \t '])
 def test_only_nonempty_keys_enable_channels(key):
-    assert [channel.name for channel in settings(MULTIMODAL_YUWAN_API_KEY=key).channels] == ['deepseek']
-    assert [channel.name for channel in settings(MULTIMODAL_DEEPSEEK_API_KEY=key).channels] == ['yuwan']
+    assert [channel.name for channel in settings(YUWAN_API_KEY=key).channels] == ['deepseek']
+    assert [channel.name for channel in settings(DEEPSEEK_API_KEY=key).channels] == ['yuwan']
 
 
 def test_keys_are_not_probed_or_format_validated_and_models_are_independent(configured_environment):
-    config = settings(MULTIMODAL_YUWAN_API_KEY='not a verified key')
+    config = settings(YUWAN_API_KEY='not a verified key')
     assert config.channels[0].api_key == 'not a verified key'
     assert [channel.model for channel in config.channels] == ['yuwan-vision', 'deepseek-vision']
     assert configured_environment.value == 0
@@ -39,9 +39,9 @@ def test_keys_are_not_probed_or_format_validated_and_models_are_independent(conf
 
 
 @pytest.mark.parametrize('overrides,variable', [
-    ({'MULTIMODAL_YUWAN_API_KEY': '', 'MULTIMODAL_DEEPSEEK_API_KEY': ''}, 'API_KEY'),
-    ({'MULTIMODAL_YUWAN_MODEL': ''}, 'MULTIMODAL_YUWAN_MODEL'),
-    ({'MULTIMODAL_DEEPSEEK_MODEL': ''}, 'MULTIMODAL_DEEPSEEK_MODEL'),
+    ({'YUWAN_API_KEY': '', 'DEEPSEEK_API_KEY': ''}, 'API_KEY'),
+    ({'YUWAN_MODEL': ''}, 'YUWAN_MODEL'),
+    ({'DEEPSEEK_MODEL': ''}, 'DEEPSEEK_MODEL'),
     ({'REDIS_URL': ''}, 'REDIS_URL'),
     ({'REDIS_URL': 'https://account:redis-private@wrong.test'}, 'REDIS_URL'),
 ])
@@ -52,7 +52,7 @@ def test_invalid_startup_configuration_fails_without_exposing_values(overrides, 
 
 
 def test_disabled_channel_does_not_require_model():
-    config = settings(MULTIMODAL_DEEPSEEK_API_KEY='', MULTIMODAL_DEEPSEEK_MODEL='')
+    config = settings(DEEPSEEK_API_KEY='', DEEPSEEK_MODEL='')
     assert len(config.channels) == 1
 
 
@@ -66,7 +66,7 @@ def test_incr_then_modulo_is_shared_between_instances_and_async_calls(configured
 
 
 def test_single_channel_still_uses_shared_counter(configured_environment):
-    router = gateway.MultimodalGateway(settings(MULTIMODAL_YUWAN_API_KEY=''))
+    router = gateway.MultimodalGateway(settings(YUWAN_API_KEY=''))
     assert [router.select().name for _ in range(3)] == ['deepseek'] * 3
     assert configured_environment.value == 3
 
@@ -96,10 +96,10 @@ def test_concurrent_clients_do_not_read_then_write_counter(configured_environmen
 
 def test_startup_snapshot_ignores_process_overrides_and_later_file_changes(tmp_path, monkeypatch, configured_environment):
     path = tmp_path / '.env'
-    path.write_text('MULTIMODAL_DEEPSEEK_API_KEY=official-root\n'
-                    'MULTIMODAL_DEEPSEEK_MODEL=official-model\nREDIS_URL=redis://test.invalid/0\n', encoding='utf-8')
-    monkeypatch.setenv('MULTIMODAL_YUWAN_API_KEY', 'must-not-enable')
-    monkeypatch.setenv('MULTIMODAL_DEEPSEEK_API_KEY', 'must-not-use')
+    path.write_text('DEEPSEEK_API_KEY=official-root\n'
+                    'DEEPSEEK_MODEL=official-model\nREDIS_URL=redis://test.invalid/0\n', encoding='utf-8')
+    monkeypatch.setenv('YUWAN_API_KEY', 'must-not-enable')
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'must-not-use')
     router = gateway.initialize_gateway()
     assert [(channel.name, channel.model, channel.api_key) for channel in router.channels] == [
         ('deepseek', 'official-model', 'official-root')]
@@ -115,7 +115,7 @@ def test_legacy_yuwan_config_does_not_allow_custom_url_and_explicit_empty_key_di
     assert config.channels[0].base_url == CHANNELS[0].base_url
     with pytest.raises(environment.EnvironmentConfigError):
         gateway.load_gateway_settings({'MULTIMODAL_API_KEY': 'legacy-key',
-            'MULTIMODAL_YUWAN_API_KEY': '', 'REDIS_URL': 'redis://test.invalid/0'})
+            'YUWAN_API_KEY': '', 'REDIS_URL': 'redis://test.invalid/0'})
 
 
 def test_sync_retry_switches_url_key_and_model_and_recaptures_image(monkeypatch, configured_environment):
@@ -195,7 +195,7 @@ def test_async_sdk_routes_every_send_and_retry_preserving_tools_history_and_exte
 def test_official_channel_without_v1_uses_openai_navigation_sdk(monkeypatch, configured_environment):
     from naruto_daily.multimodal.agent import Joystick, run_agent
     from agent_fakes import tool_call
-    monkeypatch.setattr(gateway, '_gateway', gateway.MultimodalGateway(settings(MULTIMODAL_YUWAN_API_KEY='')))
+    monkeypatch.setattr(gateway, '_gateway', gateway.MultimodalGateway(settings(YUWAN_API_KEY='')))
     sent = []
 
     async def send(self, request, **kwargs):

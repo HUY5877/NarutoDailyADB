@@ -18,7 +18,7 @@ def config(tmp_path):
 
 def write_model_env(directory, *, key='root-key', base_url='https://root.test/v1', model='root-model'):
     (directory / '.env').write_text(
-        f'MULTIMODAL_YUWAN_API_KEY="{key}"\nMULTIMODAL_BASE_URL={base_url}\nMULTIMODAL_YUWAN_MODEL={model}\n'
+        f'YUWAN_API_KEY="{key}"\nMULTIMODAL_BASE_URL={base_url}\nYUWAN_MODEL={model}\n'
         'REDIS_URL=redis://test.invalid/0\n',
         encoding='utf-8')
 
@@ -135,14 +135,14 @@ def test_empty_root_key_does_not_fall_back_to_process(tmp_path, monkeypatch, key
         mm.MultimodalClient(settings, asset_root=tmp_path)
 
 
-@pytest.mark.parametrize('name', ['MULTIMODAL_YUWAN_API_KEY', 'MULTIMODAL_YUWAN_MODEL'])
+@pytest.mark.parametrize('name', ['YUWAN_API_KEY', 'YUWAN_MODEL'])
 @pytest.mark.parametrize('value', [None, ''])
 def test_missing_root_variable_never_uses_service_or_process_fallback(tmp_path, monkeypatch, name, value):
     root, service = tmp_path / 'project', tmp_path / 'service'
     root.mkdir()
     service.mkdir()
     monkeypatch.setattr(environment, 'PROJECT_ROOT', root)
-    values = dict(MULTIMODAL_YUWAN_API_KEY='root-key', MULTIMODAL_YUWAN_MODEL='root-model',
+    values = dict(YUWAN_API_KEY='root-key', YUWAN_MODEL='root-model',
                   REDIS_URL='redis://test.invalid/0')
     for variable in values:
         monkeypatch.setenv(variable, 'https://process.test/v1' if variable == 'MULTIMODAL_BASE_URL' else 'process-value')

@@ -110,8 +110,8 @@ def test_reload_reads_edited_dotenv_without_stale_values(tmp_path):
 def test_old_json_placeholders_resolve_from_channel_config_with_empty_legacy_values(tmp_path):
     path = configured_file(tmp_path)
     (tmp_path / '.env').write_text(
-        'MULTIMODAL_DEEPSEEK_API_KEY=official-private\n'
-        'MULTIMODAL_DEEPSEEK_MODEL=official-vision\n'
+        'DEEPSEEK_API_KEY=official-private\n'
+        'DEEPSEEK_MODEL=official-vision\n'
         'MULTIMODAL_MODEL=\nMULTIMODAL_BASE_URL=\nLOGIN_ACCOUNT_NAME=测试账号\n', encoding='utf-8')
     result = authorization(load_settings(path))
     assert result['multimodal']['model'] == 'official-vision'

@@ -7,17 +7,17 @@
 在项目根目录 `.env` 中独立配置每个渠道的 key 和模型名：
 
 ```dotenv
-MULTIMODAL_YUWAN_API_KEY=
-MULTIMODAL_YUWAN_MODEL=deepseek-v4.1-flash
-MULTIMODAL_DEEPSEEK_API_KEY=
-MULTIMODAL_DEEPSEEK_MODEL=deepseek-flash
+YUWAN_API_KEY=
+YUWAN_MODEL=deepseek-v4.1-flash
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-flash
 REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
 | 渠道 | 固定基础地址 | 密钥变量 | 模型变量 |
 | --- | --- | --- | --- |
-| 鱼玩 | `https://llm-proxy.yuwan-game.com/v1` | `MULTIMODAL_YUWAN_API_KEY` | `MULTIMODAL_YUWAN_MODEL` |
-| DeepSeek 官方 | `https://api.deepseek.com` | `MULTIMODAL_DEEPSEEK_API_KEY` | `MULTIMODAL_DEEPSEEK_MODEL` |
+| 鱼玩 | `https://llm-proxy.yuwan-game.com/v1` | `YUWAN_API_KEY` | `YUWAN_MODEL` |
+| DeepSeek 官方 | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` |
 
 两者均使用 `/chat/completions`。DeepSeek 地址依据[官方 API 文档](https://api-docs.deepseek.com/)。模型名是独立配置项，示例名称可按对应渠道提供的多模态模型修改。
 
@@ -27,7 +27,7 @@ DeepSeek 官方不支持在思考模式下强制或指定工具，详见[请求�
 
 各渠道 key、model 只读取项目根目录 `.env`，进程环境和 `--env-file` 不覆盖它们；有效渠道列表和模型配置在每个进程首次初始化时固定，修改后重启服务及运行中的任务。Redis 沿用服务配置的环境优先级；常驻 worker 通过子进程环境传递其已解析的 `REDIS_URL`，确保父子进程使用同一数据库。普通脚本访问模型也需要 Redis。
 
-兼容旧配置：新鱼玩变量不存在时，分别回退到 `MULTIMODAL_API_KEY`、`MULTIMODAL_MODEL`。显式留空 `MULTIMODAL_YUWAN_API_KEY` 会禁用鱼玩。旧 `MULTIMODAL_BASE_URL` 和任务 JSON 的 `base_url`、`model` 不再决定实际路由；旧 JSON 占位符仍可加载。新 JSON 的 `multimodal` 只需保留 `timeout_seconds` 和 `max_calls`。
+兼容旧配置：新鱼玩变量不存在时，分别回退到 `MULTIMODAL_API_KEY`、`MULTIMODAL_MODEL`。显式留空 `YUWAN_API_KEY` 会禁用鱼玩。旧 `MULTIMODAL_BASE_URL` 和任务 JSON 的 `base_url`、`model` 不再决定实际路由；旧 JSON 占位符仍可加载。新 JSON 的 `multimodal` 只需保留 `timeout_seconds` 和 `max_calls`。
 
 ## 请求流程
 

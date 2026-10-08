@@ -13,9 +13,9 @@ class ChannelDefinition:
 
 CHANNELS = (
     ChannelDefinition('yuwan', 'https://llm-proxy.yuwan-game.com/v1',
-                      'MULTIMODAL_YUWAN_API_KEY', 'MULTIMODAL_YUWAN_MODEL'),
+                      'YUWAN_API_KEY', 'YUWAN_MODEL'),
     ChannelDefinition('deepseek', 'https://api.deepseek.com',
-                      'MULTIMODAL_DEEPSEEK_API_KEY', 'MULTIMODAL_DEEPSEEK_MODEL'),
+                      'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL'),
 )
 API_KEY_ENV_NAMES = ('MULTIMODAL_API_KEY', *(channel.key_variable for channel in CHANNELS))
 

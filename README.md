@@ -80,10 +80,10 @@ Copy-Item .env.example .env
 编辑项目根目录的 `.env`，填写以下配置；已有 `.env` 时直接编辑，不要用示例覆盖：
 
 ```dotenv
-MULTIMODAL_YUWAN_API_KEY=你的鱼玩密钥
-MULTIMODAL_YUWAN_MODEL=deepseek-v4.1-flash
-MULTIMODAL_DEEPSEEK_API_KEY=你的DeepSeek官方密钥
-MULTIMODAL_DEEPSEEK_MODEL=deepseek-flash
+YUWAN_API_KEY=你的鱼玩密钥
+YUWAN_MODEL=deepseek-v4.1-flash
+DEEPSEEK_API_KEY=你的DeepSeek官方密钥
+DEEPSEEK_MODEL=deepseek-flash
 REDIS_URL=redis://127.0.0.1:6379/0
 LOGIN_ACCOUNT_NAME="你要登录的完整昵称"
 ```

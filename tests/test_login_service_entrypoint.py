@@ -80,8 +80,8 @@ def test_default_entrypoint_loads_root_env_from_another_working_directory(monkey
     from dotenv import load_dotenv
 
     (tmp_path / '.env').write_text('REDIS_URL=redis://root.example:6379/3\n'
-                                  'MULTIMODAL_YUWAN_API_KEY=test-key\n'
-                                  'MULTIMODAL_YUWAN_MODEL=test-model\n', encoding='utf-8-sig')
+                                  'YUWAN_API_KEY=test-key\n'
+                                  'YUWAN_MODEL=test-model\n', encoding='utf-8-sig')
     elsewhere = tmp_path / '其他启动目录'
     elsewhere.mkdir()
     (elsewhere / '.env').write_text('REDIS_URL=redis://wrong.example:6379/0', encoding='utf-8')
@@ -146,4 +146,4 @@ def test_missing_channels_fails_at_startup_before_worker_runs(tmp_path, monkeypa
     with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as error:
         entrypoint.main([])
     assert error.value.code == 1
-    assert 'MULTIMODAL_YUWAN_API_KEY' in caplog.text
+    assert 'YUWAN_API_KEY' in caplog.text

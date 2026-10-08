@@ -64,7 +64,7 @@ def test_model_secret_loaded_after_handler_creation_is_still_redacted(monkeypatc
 
 
 @pytest.mark.parametrize('variable', [
-    'MULTIMODAL_API_KEY', 'MULTIMODAL_YUWAN_API_KEY', 'MULTIMODAL_DEEPSEEK_API_KEY',
+    'MULTIMODAL_API_KEY', 'YUWAN_API_KEY', 'DEEPSEEK_API_KEY',
 ])
 def test_root_model_key_is_redacted_from_protocol_and_diagnostic_logs(tmp_path, monkeypatch, variable):
     (tmp_path / '.env').write_text(f'{variable}=private-root-key', encoding='utf-8')

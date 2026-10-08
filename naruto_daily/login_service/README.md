@@ -40,7 +40,7 @@ REDIS_URL=redis://127.0.0.1:6379/0
 
 服务入口和实例池管理命令 `python -m naruto_daily.login_service.pool_admin` 默认都读取项目根目录 `.env`，不依赖启动工作目录。需要另一套服务参数时，可显式传入 `--env-file <路径>`；Redis、OSS 等非模型变量继续以进程环境优先。日常任务通过 `DAILY_CONFIG_PATH` 加载 JSON，账号等普通任务变量也读取根目录 `.env`，不随 JSON 路径改变。
 
-模型配置统一只读取项目根目录 `.env` 中的 `MULTIMODAL_YUWAN_API_KEY`、`MULTIMODAL_YUWAN_MODEL`、`MULTIMODAL_DEEPSEEK_API_KEY`、`MULTIMODAL_DEEPSEEK_MODEL`，与普通脚本共用同一份。进程环境及 `--env-file` 指定文件均不能覆盖这些变量。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次模型 HTTP 尝试通过同一 Redis 的 `INCR` 计数轮询渠道，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
+模型配置统一只读取项目根目录 `.env` 中的 `YUWAN_API_KEY`、`YUWAN_MODEL`、`DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`，与普通脚本共用同一份。进程环境及 `--env-file` 指定文件均不能覆盖这些变量。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次模型 HTTP 尝试通过同一 Redis 的 `INCR` 计数轮询渠道，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
 
 查看固定实例池占用也使用同一环境和配置：
 

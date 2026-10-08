@@ -47,7 +47,7 @@ def load_gateway_settings(values: Mapping[str, str | None] | None = None) -> Gat
         active.append(Channel(definition.name, definition.base_url, model, key))
     if not active:
         raise EnvironmentConfigError('未配置有效多模态渠道，请在根目录 .env 配置 '
-                                     'MULTIMODAL_YUWAN_API_KEY 或 MULTIMODAL_DEEPSEEK_API_KEY')
+                                     'YUWAN_API_KEY 或 DEEPSEEK_API_KEY')
     redis_url = (values.get('REDIS_URL') or '').strip()
     try:
         address = urlsplit(redis_url)
