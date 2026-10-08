@@ -58,10 +58,15 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         config = load_config()
+        from naruto_daily.multimodal.gateway import initialize_gateway
+        initialize_gateway()
         try:
             asyncio.run(run_worker(config))
         except KeyboardInterrupt:
             logging.info("Redis login worker stopped")
+    except environment.EnvironmentConfigError as error:
+        logging.error('多模态网关配置错误：%s', error)
+        raise SystemExit(1) from None
     except Exception as error:
         # SDK exceptions and connection URLs can contain credentials.
         logging.error("Login worker could not start or continue (%s); check Redis/OSS configuration", type(error).__name__)

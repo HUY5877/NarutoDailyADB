@@ -435,7 +435,7 @@ def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_l
     events = [json.loads(line) for line in output.getvalue().splitlines()]
     assert code == 0
     assert calls == ["allocate", "start", "configure", "launch", "qr", "authorize", "finish_login", "daily"]
-    assert [event["type"] for event in events] == [
+    assert [event["type"] for event in events if event['type'] != 'log'] == [
         "stage", "stage", "stage", "qr", "authorized", "logged_in", "daily_completed",
     ]
     assert events[-1] == {"type": "daily_completed", "actionCount": 12}
@@ -585,6 +585,7 @@ def test_daily_legacy_prints_cannot_corrupt_stdout_protocol(monkeypatch, tmp_pat
     assert code == 0
     assert events[-1] == {"type": "daily_completed", "actionCount": 1}
     assert captured.err.splitlines() == [
+        "INFO 多模态网关已初始化：active_channels=yuwan",
         "import legacy tasks", "construct daily session", "wait for authorization", "finish login", "run daily tasks",
     ]
 

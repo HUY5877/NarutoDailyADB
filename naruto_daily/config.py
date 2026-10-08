@@ -165,11 +165,13 @@ def _validate_template_target(target: Any, width: int, height: int, context: str
 def _validate_multimodal_config(model: Any, context: str) -> None:
     if not isinstance(model, dict):
         raise ConfigError(f'{context} 必须是对象')
-    _require_exact_keys(model, {'base_url', 'model', 'timeout_seconds', 'max_calls'}, f'{context}')
-    url = urlsplit(model['base_url']) if isinstance(model['base_url'], str) else None
-    if not url or url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
-        raise ConfigError(f'{context}.base_url 必须是 HTTPS API 地址')
-    if not isinstance(model['model'], str) or not model['model'].strip():
+    _require_exact_keys(model, {'base_url', 'model', 'timeout_seconds', 'max_calls'}, f'{context}',
+                        optional={'base_url', 'model'})
+    if 'base_url' in model:
+        url = urlsplit(model['base_url']) if isinstance(model['base_url'], str) else None
+        if not url or url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise ConfigError(f'{context}.base_url 必须是 HTTPS API 地址')
+    if 'model' in model and (not isinstance(model['model'], str) or not model['model'].strip()):
         raise ConfigError(f'{context}.model 必须是非空模型名称')
     request_timeout = model['timeout_seconds']
     if type(request_timeout) not in (float, int) or not 1 <= request_timeout <= 30:

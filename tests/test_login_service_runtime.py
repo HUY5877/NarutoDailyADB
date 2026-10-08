@@ -1,6 +1,7 @@
 """Verify the Python queue/worker behavior without Redis, OSS, or an emulator."""
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
@@ -469,6 +470,30 @@ def _ldplayer_config(tmp_path):
         ldplayer_template="clean-template", ldplayer_state_dir=tmp_path / "state",
         ldplayer_package="example.game", ldplayer_command_timeout_seconds=23,
     )
+
+
+@pytest.mark.parametrize('daily', [False, True])
+def test_child_receives_configured_routing_redis_only_for_daily_tasks(tmp_path, monkeypatch, daily):
+    config = replace(_ldplayer_config(tmp_path), redis_url='redis://configured:private@test.invalid/2')
+    runtime = LoginRuntime(config, MemoryStorage())
+    monkeypatch.setenv('REDIS_URL', 'redis://unrelated.invalid/0')
+    monkeypatch.setenv('MULTIMODAL_YUWAN_API_KEY', 'private-yuwan')
+    monkeypatch.setenv('MULTIMODAL_DEEPSEEK_API_KEY', 'private-deepseek')
+    spawned = {}
+
+    class CapturedSpawn(Exception):
+        pass
+
+    def capture(command, **kwargs):
+        spawned.update(kwargs)
+        raise CapturedSpawn
+
+    monkeypatch.setattr('naruto_daily.login_service.runtime.subprocess.Popen', capture)
+    with pytest.raises(CapturedSpawn):
+        asyncio.run(runtime._run_child(parse_submission(submission()), ['worker'], {'type': 'start'}, daily=daily))
+    assert spawned['env'].get('REDIS_URL') == (config.redis_url if daily else None)
+    assert 'MULTIMODAL_YUWAN_API_KEY' not in spawned['env']
+    assert 'MULTIMODAL_DEEPSEEK_API_KEY' not in spawned['env']
 
 
 def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_released(monkeypatch, tmp_path):

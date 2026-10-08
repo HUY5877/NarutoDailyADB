@@ -74,12 +74,12 @@ def run_agent(client, model, goal: str, *, joystick: Joystick, max_steps: int = 
               evidence_type: type[NavigationEvidence] = GoalEvidence,
               instructions: str = '',
               completion_probe: Callable[[bytes], str | None] | None = None) -> AgentResult:
-    """真实连接使用 Claude Agent SDK；本地 HTTP 替身只用于离线测试。"""
+    """内置网关使用 OpenAI 协议；保留旧客户端的 Claude Messages 适配。"""
     connection = model.agent_connection()
     base_url = str(connection.get('base_url', ''))
-    # Modelink/OpenAI-compatible endpoints use the native Python OpenAI adapter.
-    # Claude Messages endpoints omit /v1 and keep the Claude Agent SDK path.
-    openai_compatible = (base_url.rstrip('/').endswith('/v1')
+    # 官方 DeepSeek URL 没有 /v1，协议以网关声明为准；旧注入客户端兼容地址判断。
+    openai_compatible = (connection.get('protocol') == 'openai'
+                         or base_url.rstrip('/').endswith('/v1')
                          or base_url.startswith(('http://127.0.0.1:', 'http://localhost:'))
                          or '/' in str(connection.get('model', '')))
     if openai_compatible:

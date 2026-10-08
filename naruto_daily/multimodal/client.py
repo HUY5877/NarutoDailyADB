@@ -11,8 +11,9 @@ from urllib.request import Request
 from .transport import MultimodalError, MultimodalRequestError, request_with_retry
 from .diagnostics import current_model_scene, safe_exception_details
 from naruto_daily.common.environment import (
-    EnvironmentConfigError, read_environment, require_environment, resolve_environment,
+    EnvironmentConfigError, read_environment, resolve_environment,
 )
+from .gateway import initialize_gateway
 from naruto_daily.common.execution import MODEL_REQUEST_TIMEOUT_SECONDS, current_execution
 
 
@@ -26,12 +27,15 @@ class MultimodalClient:
         self._sleep, self._clock = sleep, clock
         try:
             environment = read_environment()
-            self.config = resolve_environment(config, environment)
-            self._key = require_environment(environment, 'MULTIMODAL_API_KEY')
+            self.gateway = initialize_gateway()
+            # 任务 JSON 只控制调用时限等业务参数，URL、密钥、模型由渠道决定。
+            self.config = resolve_environment({key: value for key, value in config.items()
+                                               if key not in ('base_url', 'model')}, environment)
+            channel = self.gateway.channels[0]
+            self.config.update(base_url=channel.base_url, model=channel.model)
+            self._key = channel.api_key
         except EnvironmentConfigError as exc:
             raise MultimodalError(f'多模态配置错误（API 密钥或环境变量）：{exc}') from None
-        if not self._key or any(c.isspace() for c in self._key):
-            raise MultimodalError('多模态 API 密钥为空或格式不正确')
         if current_execution() is not None:
             self.config = {**self.config, 'timeout_seconds': min(
                 float(self.config['timeout_seconds']), MODEL_REQUEST_TIMEOUT_SECONDS)}
@@ -42,7 +46,8 @@ class MultimodalClient:
         if current_execution() is not None:
             timeout = min(timeout, MODEL_REQUEST_TIMEOUT_SECONDS)
         return dict(base_url=self.config['base_url'], model=self.config['model'],
-                    timeout_seconds=timeout, api_key=self._key)
+                    timeout_seconds=timeout, api_key=self._key,
+                    protocol='openai', route_request=self.gateway.route_async_request)
 
     def complete_json(self, png: bytes, prompt: str, *, timeout_seconds=None,
                       refresh_image: Callable[[], bytes] | None = None) -> dict:
@@ -68,6 +73,7 @@ class MultimodalClient:
             build_request(png), request_timeout=float(self.config['timeout_seconds']), timeout_seconds=timeout_seconds,
             open_request=self._open, sleep=self._sleep, clock=self._clock,
             refresh_request=refresh_request,
+            route_request=self.gateway.route_request,
         )
         body = response.body
 

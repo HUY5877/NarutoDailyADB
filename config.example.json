@@ -65,8 +65,6 @@
           "threshold": 0.95
         },
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 6
         }
@@ -139,8 +137,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -168,8 +164,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -197,8 +191,6 @@
         "post_click_wait_seconds": 1,
         "main_menu": "activities",
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
         }
@@ -222,8 +214,6 @@
         "timeout_seconds": 240,
         "post_click_wait_seconds": 1,
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
         }
@@ -239,8 +229,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -268,8 +256,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -297,8 +283,6 @@
         "post_click_wait_seconds": 1,
         "main_menu": "equipment",
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
         }
@@ -312,8 +296,6 @@
         "post_click_wait_seconds": 1,
         "main_menu": "equipment_submenu",
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
         }
@@ -326,8 +308,6 @@
         "post_click_wait_seconds": 1,
         "sweep_timeout_seconds": 120,
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
         }
@@ -343,8 +323,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -370,8 +348,6 @@
         "post_click_wait_seconds": 1,
         "main_menu": "rewards",
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
         }
@@ -455,8 +431,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -480,8 +454,6 @@
         "post_click_wait_seconds": 1,
         "main_menu": "rewards",
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
         }
@@ -539,8 +511,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -564,8 +534,6 @@
         "post_click_wait_seconds": 1,
         "main_menu": "rewards",
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
         }
@@ -652,8 +620,6 @@
           "threshold": 0.9
         },
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 6
         }
@@ -671,8 +637,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -696,8 +660,6 @@
         "post_click_wait_seconds": 1,
         "main_menu": "rewards",
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
         }
@@ -806,8 +768,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -838,8 +798,6 @@
             "name": "游戏主界面",
             "main_menu": "home",
             "multimodal": {
-              "base_url": "${MULTIMODAL_BASE_URL}",
-              "model": "${MULTIMODAL_MODEL}",
               "timeout_seconds": 30,
               "max_calls": 3
             }
@@ -863,8 +821,6 @@
           "post_click_wait_seconds": 3,
           "main_menu": "rewards",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -917,8 +873,6 @@
           "threshold": 0.9
         },
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 6
         },
@@ -1026,8 +980,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -1058,8 +1010,6 @@
             "name": "游戏主界面",
             "main_menu": "home",
             "multimodal": {
-              "base_url": "${MULTIMODAL_BASE_URL}",
-              "model": "${MULTIMODAL_MODEL}",
               "timeout_seconds": 30,
               "max_calls": 3
             }
@@ -1087,8 +1037,6 @@
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 5,
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 10
         }
@@ -1106,8 +1054,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }
@@ -1131,8 +1077,6 @@
         "post_click_wait_seconds": 1,
         "main_menu": "rewards",
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 3
         }
@@ -1230,8 +1174,6 @@
           "threshold": 0.78
         },
         "multimodal": {
-          "base_url": "${MULTIMODAL_BASE_URL}",
-          "model": "${MULTIMODAL_MODEL}",
           "timeout_seconds": 30,
           "max_calls": 10
         },
@@ -1256,8 +1198,6 @@
           "name": "游戏主界面",
           "main_menu": "home",
           "multimodal": {
-            "base_url": "${MULTIMODAL_BASE_URL}",
-            "model": "${MULTIMODAL_MODEL}",
             "timeout_seconds": 30,
             "max_calls": 3
           }

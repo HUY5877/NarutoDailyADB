@@ -107,6 +107,18 @@ def test_reload_reads_edited_dotenv_without_stale_values(tmp_path):
     assert authorization(load_settings(path))["account_name"] == "第二个账号"
 
 
+def test_old_json_placeholders_resolve_from_channel_config_with_empty_legacy_values(tmp_path):
+    path = configured_file(tmp_path)
+    (tmp_path / '.env').write_text(
+        'MULTIMODAL_DEEPSEEK_API_KEY=official-private\n'
+        'MULTIMODAL_DEEPSEEK_MODEL=official-vision\n'
+        'MULTIMODAL_MODEL=\nMULTIMODAL_BASE_URL=\nLOGIN_ACCOUNT_NAME=测试账号\n', encoding='utf-8')
+    result = authorization(load_settings(path))
+    assert result['multimodal']['model'] == 'official-vision'
+    assert result['multimodal']['base_url'] == 'https://api.deepseek.com'
+    assert 'official-private' not in repr(result)
+
+
 @pytest.mark.parametrize("value", [None, "", "   "])
 def test_missing_or_empty_nickname_fails_clearly(tmp_path, monkeypatch, value):
     path = configured_file(tmp_path)

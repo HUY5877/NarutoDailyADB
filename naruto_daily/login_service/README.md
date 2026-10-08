@@ -40,7 +40,7 @@ REDIS_URL=redis://127.0.0.1:6379/0
 
 服务入口和实例池管理命令 `python -m naruto_daily.login_service.pool_admin` 默认都读取项目根目录 `.env`，不依赖启动工作目录。需要另一套服务参数时，可显式传入 `--env-file <路径>`；Redis、OSS 等非模型变量继续以进程环境优先。日常任务通过 `DAILY_CONFIG_PATH` 加载 JSON，账号等普通任务变量也读取根目录 `.env`，不随 JSON 路径改变。
 
-模型配置统一只读取项目根目录 `.env` 中的 `MULTIMODAL_BASE_URL`、`MULTIMODAL_MODEL`、`MULTIMODAL_API_KEY`，与普通脚本共用同一份。进程环境及 `--env-file` 指定文件均不能覆盖这三项。修改配置后，请重启正在运行的任务或常驻 worker。凭据不放进浏览器或提交到仓库。
+模型配置统一只读取项目根目录 `.env` 中的 `MULTIMODAL_YUWAN_API_KEY`、`MULTIMODAL_YUWAN_MODEL`、`MULTIMODAL_DEEPSEEK_API_KEY`、`MULTIMODAL_DEEPSEEK_MODEL`，与普通脚本共用同一份。进程环境及 `--env-file` 指定文件均不能覆盖这些变量。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次模型 HTTP 尝试通过同一 Redis 的 `INCR` 计数轮询渠道，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
 
 查看固定实例池占用也使用同一环境和配置：
 
@@ -148,7 +148,7 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 
 | 文件 | 职责 |
 | --- | --- |
-| `__main__.py` | 校验必填的 `REDIS_URL` 并启动常驻 worker |
+| `__main__.py` | 校验 `REDIS_URL` 和有效模型渠道并启动常驻 worker |
 | `app.py` | 旧 HTTP 演示的 FastAPI 接口与生命周期 |
 | `config.py` / `models.py` | 配置、有效期与任务校验 |
 | `queue.py` / `runtime.py` | Redis 队列与内存演示队列、并发消费、状态回写和清理 |
@@ -166,7 +166,7 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 
 配置 `LDPLAYER_POOL_INDICES=0,1,2`、`WORKER_CONCURRENCY=3` 时，最多有三个任务同时占用实例，等待扫码和执行日常都计入占用。第四个任务保持在 Redis 的 `queued` 状态，直到已有任务结束并释放槽位；排队期间仍遵守客户端会话 TTL。并发数不能扩大实际实例池容量，冷启动管理操作仍通过锁依次执行。
 
-真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，不传 Redis URL、OSS 密钥或服务环境中的模型配置；子进程从项目根目录 `.env` 读取模型配置。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
+真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，并通过子进程环境传入已解析的 `REDIS_URL`，供模型路由使用同一个全局计数器；该地址不进入 JSON 协议或日志。OSS 密钥和服务环境中的模型配置不传递，子进程从项目根目录 `.env` 读取渠道 key 和模型名。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
 
 ## 对象存储
 

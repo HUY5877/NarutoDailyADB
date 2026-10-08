@@ -79,7 +79,9 @@ def test_configured_redis_runs_worker(monkeypatch, source):
 def test_default_entrypoint_loads_root_env_from_another_working_directory(monkeypatch, tmp_path):
     from dotenv import load_dotenv
 
-    (tmp_path / '.env').write_text('REDIS_URL=redis://root.example:6379/3\n', encoding='utf-8-sig')
+    (tmp_path / '.env').write_text('REDIS_URL=redis://root.example:6379/3\n'
+                                  'MULTIMODAL_YUWAN_API_KEY=test-key\n'
+                                  'MULTIMODAL_YUWAN_MODEL=test-model\n', encoding='utf-8-sig')
     elsewhere = tmp_path / '其他启动目录'
     elsewhere.mkdir()
     (elsewhere / '.env').write_text('REDIS_URL=redis://wrong.example:6379/0', encoding='utf-8')
@@ -130,3 +132,18 @@ def test_worker_failure_exits_without_logging_credentials(monkeypatch, caplog):
     assert "RuntimeError" in caplog.text
     assert "entrypoint-test-secret" not in caplog.text
     assert redis_url not in caplog.text
+
+
+def test_missing_channels_fails_at_startup_before_worker_runs(tmp_path, monkeypatch, caplog):
+    (tmp_path / '.env').write_text('REDIS_URL=redis://test.invalid/0\n', encoding='utf-8')
+    monkeypatch.setenv('REDIS_URL', 'redis://test.invalid/0')
+    monkeypatch.setattr(service_config, 'load_config', lambda: SimpleNamespace(redis_url='redis://test.invalid/0'))
+
+    async def forbidden_worker(config):
+        pytest.fail('No worker or provider request should run without configured channels')
+
+    monkeypatch.setattr(entrypoint, 'run_worker', forbidden_worker)
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as error:
+        entrypoint.main([])
+    assert error.value.code == 1
+    assert 'MULTIMODAL_YUWAN_API_KEY' in caplog.text

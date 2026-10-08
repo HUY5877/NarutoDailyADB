@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "naruto-daily-adb"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["numpy>=2", "opencv-python-headless>=4.10", "python-dotenv>=1.0", "pydantic>=2.12", "claude-agent-sdk==0.2.152", "pydantic-ai-slim[openai]==2.41.0"]
+dependencies = ["numpy>=2", "opencv-python-headless>=4.10", "python-dotenv>=1.0", "pydantic>=2.12", "claude-agent-sdk==0.2.152", "pydantic-ai-slim[openai]==2.41.0", "redis>=5,<8"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
@@ -27,6 +27,7 @@ naruto-login-service = "naruto_daily.login_service.__main__:main"
     "login_qr_heading.png", "login_scan_login.png", "login_web_qr_heading.png",
     "login_web_qr_instruction.png", "login_web_qr_expired.png",
 ]
+"naruto_daily.multimodal" = ["README.md"]
 "naruto_daily.multimodal.agent" = ["README.md"]
 "naruto_daily.login_service" = ["README.md"]
 

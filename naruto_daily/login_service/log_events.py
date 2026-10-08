@@ -10,6 +10,7 @@ import re
 from typing import Callable, Iterable, Iterator, TextIO
 
 from naruto_daily.common.environment import EnvironmentConfigError, read_multimodal_environment
+from naruto_daily.multimodal.channels import API_KEY_ENV_NAMES
 
 
 MAX_LOG_MESSAGE_LENGTH = 1_000
@@ -30,11 +31,12 @@ _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 def model_log_secrets() -> tuple[str, ...]:
     """保护实际使用的根目录密钥，同时继续遮蔽进程中残留的旧密钥。"""
     try:
-        key = read_multimodal_environment().get("MULTIMODAL_API_KEY") or ""
+        values = read_multimodal_environment()
     except EnvironmentConfigError:
         # 配置错误由模型调用方报告，日志处理不得掩盖原始异常。
-        key = ""
-    return key.strip(), os.environ.get("MULTIMODAL_API_KEY", "")
+        values = {}
+    return tuple((values.get(name) or '').strip() for name in API_KEY_ENV_NAMES) + tuple(
+        os.environ.get(name, '') for name in API_KEY_ENV_NAMES)
 
 
 def sanitize_log_message(message: str, *, secrets: Iterable[str] = (),
@@ -66,7 +68,7 @@ class DiagnosticLogHandler(logging.StreamHandler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            secrets = (*self._secrets, os.environ.get("MULTIMODAL_API_KEY", ""))
+            secrets = (*self._secrets, *model_log_secrets())
             for line in self.format(record).splitlines():
                 indent = line[:len(line) - len(line.lstrip())]
                 message = sanitize_log_message(line, secrets=secrets, max_length=None)
@@ -95,7 +97,7 @@ class ProtocolLogHandler(logging.Handler):
             # Keep earlier keys protected too if configuration changes in-process.
             message = sanitize_log_message(
                 record.getMessage(),
-                secrets=(*self._secrets, os.environ.get("MULTIMODAL_API_KEY", "")),
+                secrets=(*self._secrets, *model_log_secrets()),
             )
             if not message:
                 return

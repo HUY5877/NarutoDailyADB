@@ -8,16 +8,18 @@ import pytest
 
 from naruto_daily.common import environment
 from naruto_daily.multimodal import client as mm
+from naruto_daily.multimodal.channels import CHANNELS
 
 
 def config(tmp_path):
-    return dict(base_url='https://api.stepfun.com/step_plan/v1', model='step-3.7-flash',
+    return dict(base_url=CHANNELS[0].base_url, model='step-3.7-flash',
                 timeout_seconds=20)
 
 
 def write_model_env(directory, *, key='root-key', base_url='https://root.test/v1', model='root-model'):
     (directory / '.env').write_text(
-        f'MULTIMODAL_API_KEY="{key}"\nMULTIMODAL_BASE_URL={base_url}\nMULTIMODAL_MODEL={model}\n',
+        f'MULTIMODAL_YUWAN_API_KEY="{key}"\nMULTIMODAL_BASE_URL={base_url}\nMULTIMODAL_YUWAN_MODEL={model}\n'
+        'REDIS_URL=redis://test.invalid/0\n',
         encoding='utf-8')
 
 
@@ -28,7 +30,7 @@ def response(content, finish='stop'):
 def test_multimodal_request_sends_image_and_prompt_and_parses_json(tmp_path):
     def open_request(request, timeout):
         payload = json.loads(request.data)
-        assert request.full_url == 'https://api.stepfun.com/step_plan/v1/chat/completions'
+        assert request.full_url == CHANNELS[0].base_url + '/chat/completions'
         assert request.get_header('Authorization') == 'Bearer test-secret'
         assert timeout == pytest.approx(7, abs=.01)
         content = payload['messages'][0]['content']
@@ -108,7 +110,7 @@ def test_client_sends_root_model_url_and_key_despite_service_process_and_cwd(tmp
     monkeypatch.chdir(elsewhere)
 
     def open_request(request, timeout):
-        assert request.full_url == 'https://root.test/v1/chat/completions'
+        assert request.full_url == CHANNELS[0].base_url + '/chat/completions'
         assert request.get_header('Authorization') == 'Bearer root-key'
         assert json.loads(request.data)['model'] == 'root-model'
         return response('{}')
@@ -118,12 +120,14 @@ def test_client_sends_root_model_url_and_key_despite_service_process_and_cwd(tmp
         asset_root=service, open_request=open_request,
     )
     assert client.complete_json(b'png', 'prompt') == {}
-    assert client.agent_connection() == dict(base_url='https://root.test/v1', model='root-model',
-                                            timeout_seconds=20, api_key='root-key')
+    connection = client.agent_connection()
+    assert callable(connection.pop('route_request'))
+    assert connection == dict(base_url=CHANNELS[0].base_url, model='root-model',
+                             api_key='root-key', timeout_seconds=20, protocol='openai')
 
 
-@pytest.mark.parametrize('key', ['', 'invalid key'])
-def test_invalid_root_key_does_not_fall_back_to_process(tmp_path, monkeypatch, key):
+@pytest.mark.parametrize('key', ['', '   '])
+def test_empty_root_key_does_not_fall_back_to_process(tmp_path, monkeypatch, key):
     settings = config(tmp_path)
     write_model_env(tmp_path, key=key)
     monkeypatch.setenv('MULTIMODAL_API_KEY', 'valid-process-key')
@@ -131,15 +135,15 @@ def test_invalid_root_key_does_not_fall_back_to_process(tmp_path, monkeypatch, k
         mm.MultimodalClient(settings, asset_root=tmp_path)
 
 
-@pytest.mark.parametrize('name', ['MULTIMODAL_API_KEY', 'MULTIMODAL_BASE_URL', 'MULTIMODAL_MODEL'])
+@pytest.mark.parametrize('name', ['MULTIMODAL_YUWAN_API_KEY', 'MULTIMODAL_YUWAN_MODEL'])
 @pytest.mark.parametrize('value', [None, ''])
 def test_missing_root_variable_never_uses_service_or_process_fallback(tmp_path, monkeypatch, name, value):
     root, service = tmp_path / 'project', tmp_path / 'service'
     root.mkdir()
     service.mkdir()
     monkeypatch.setattr(environment, 'PROJECT_ROOT', root)
-    values = dict(MULTIMODAL_API_KEY='root-key', MULTIMODAL_BASE_URL='https://root.test/v1',
-                  MULTIMODAL_MODEL='root-model')
+    values = dict(MULTIMODAL_YUWAN_API_KEY='root-key', MULTIMODAL_YUWAN_MODEL='root-model',
+                  REDIS_URL='redis://test.invalid/0')
     for variable in values:
         monkeypatch.setenv(variable, 'https://process.test/v1' if variable == 'MULTIMODAL_BASE_URL' else 'process-value')
     if value is None:
@@ -155,7 +159,7 @@ def test_missing_root_variable_never_uses_service_or_process_fallback(tmp_path, 
             asset_root=service, open_request=lambda *a, **k: pytest.fail('缺少根配置时不得请求'))
 
 
-def test_new_client_reloads_changed_root_url_model_and_key(tmp_path):
+def test_new_client_reuses_startup_channel_configuration(tmp_path):
     service = tmp_path / 'service'
     service.mkdir()
     write_model_env(service, key='service-key', base_url='https://service.test/v1', model='service-model')
@@ -171,8 +175,7 @@ def test_new_client_reloads_changed_root_url_model_and_key(tmp_path):
         client = mm.MultimodalClient(settings, asset_root=service, open_request=open_request)
         assert client.complete_json(b'png', 'prompt') == {}
 
-    assert sent == [('https://first.test/v1/chat/completions', 'first-model', 'Bearer first-key'),
-                    ('https://second.test/v1/chat/completions', 'second-model', 'Bearer second-key')]
+    assert sent == [(CHANNELS[0].base_url + '/chat/completions', 'first-model', 'Bearer first-key')] * 2
 
 
 @pytest.mark.parametrize('failure_status', [None, 400, 401, 418, 529])
@@ -266,5 +269,5 @@ def test_client_retry_without_refresh_callback_keeps_original_image(tmp_path):
     client = mm.MultimodalClient(config(tmp_path), asset_root=tmp_path, open_request=open_request,
                                  sleep=waits.append, clock=lambda: 0)
     assert client.complete_json(b'initial', 'prompt') == {}
-    assert len(sent) == 2 and sent[0] is sent[1]
+    assert len(sent) == 2 and sent[0].data == sent[1].data
     assert waits == [10]

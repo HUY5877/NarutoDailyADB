@@ -232,7 +232,7 @@ class LoginRuntime:
         *, daily: bool = False,
     ) -> bytes:
         # Popen plus threaded pipe reads works with both Windows event-loop policies.
-        # Only job-scoped public configuration enters the child; service/OSS secrets do not.
+        # Public job configuration enters the child; Redis is also needed for model routing.
         if daily:
             self._set_daily_status(record, "starting_emulator")
         child_env = {
@@ -240,6 +240,9 @@ class LoginRuntime:
             if key.upper() in _CHILD_ENV_ALLOWLIST
         }
         child_env["PYTHONIOENCODING"] = "utf-8"
+        if daily and self.config.redis_url:
+            # 与常驻 worker 使用同一 Redis 轮询计数；不放进日志或 JSON 协议。
+            child_env['REDIS_URL'] = self.config.redis_url
         # 模型配置由子进程直接读取项目根目录 .env，服务环境不得覆盖。
         child = subprocess.Popen(
             command,

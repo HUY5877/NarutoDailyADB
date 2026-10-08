@@ -1,6 +1,6 @@
 # NarutoDailyADB
 
-所有模型请求直接访问配置的 API 地址。默认鱼玩网关的导航 SDK 直接请求 `https://llm-proxy.yuwan-game.com/v1/chat/completions`。日常执行期间，普通图片识别和当前鱼玩 OpenAI 兼容导航的模型单次请求上限为 **30 秒**；只有 HTTP **200** 算成功，其他状态（包括 400、401、403）、网络异常和请求超时均等待 **10 秒**，重新截图并继续请求，直到成功、取消或总时限到达，不重跑已经执行的游戏点击或移动。脱离共享任务单独调用时最多重试3次。截图、请求和重试等待都计入同一份总时限，阶段切换不会重新计时。扫码服务从确认手机扫码授权成功起，登录收尾与全部日常最多共用 **50 分钟**；本地扫码秘境也遵循同一规则。总时限到达后停止自动化；服务保留模拟器现场60秒供排查，然后关闭并释放实例。OpenAI SDK 自带重试关闭，取消导航会中断当前请求或重试等待。旧 Claude Messages 导航仍使用 Claude SDK 自身最多3次请求重试，执行也受相同总截止时间约束。
+所有模型请求通过进程内网关路由到鱼玩或 DeepSeek 官方，渠道地址固定在代码中，各自配置 key 和模型。每次 HTTP 尝试（包括重试）使用 Redis `INCR` 返回值对有效渠道数取模，详见[路由配置说明](naruto_daily/multimodal/README.md)。日常执行期间，普通图片识别和 OpenAI 兼容导航的模型单次请求上限为 **30 秒**；只有 HTTP **200** 算成功，其他状态（包括 400、401、403）、网络异常和请求超时均等待 **10 秒**，重新截图并继续请求，直到成功、取消或总时限到达，不重跑已经执行的游戏点击或移动。脱离共享任务单独调用时最多重试3次。截图、请求和重试等待都计入同一份总时限，阶段切换不会重新计时。扫码服务从确认手机扫码授权成功起，登录收尾与全部日常最多共用 **50 分钟**；本地扫码秘境也遵循同一规则。总时限到达后停止自动化；服务保留模拟器现场60秒供排查，然后关闭并释放实例。OpenAI SDK 自带重试关闭，取消导航会中断当前请求或重试等待。旧 Claude Messages 导航仍使用 Claude SDK 自身最多3次请求重试，执行也受相同总截止时间约束。
 
 ## 扫码登录 worker（Python）
 
@@ -80,13 +80,15 @@ Copy-Item .env.example .env
 编辑项目根目录的 `.env`，填写以下配置；已有 `.env` 时直接编辑，不要用示例覆盖：
 
 ```dotenv
-MULTIMODAL_API_KEY=你的API密钥
-MULTIMODAL_BASE_URL=https://llm-proxy.yuwan-game.com/v1
-MULTIMODAL_MODEL=deepseek-v4.1-flash
+MULTIMODAL_YUWAN_API_KEY=你的鱼玩密钥
+MULTIMODAL_YUWAN_MODEL=deepseek-v4.1-flash
+MULTIMODAL_DEEPSEEK_API_KEY=你的DeepSeek官方密钥
+MULTIMODAL_DEEPSEEK_MODEL=deepseek-flash
+REDIS_URL=redis://127.0.0.1:6379/0
 LOGIN_ACCOUNT_NAME="你要登录的完整昵称"
 ```
 
-`MULTIMODAL_BASE_URL` 填基础地址，不包含 `/chat/completions`。`MULTIMODAL_API_KEY`、`MULTIMODAL_BASE_URL`、`MULTIMODAL_MODEL` 三项统一只从项目根目录的 `.env` 读取，适用于普通脚本、本地扫码秘境和扫码服务子任务；进程环境及 `--env-file` 指定文件中的同名值均不覆盖它们。模型配置不随 `--config` 或启动工作目录改变；修改后请重启正在运行的任务或常驻扫码服务。
+两个渠道的 key、model 统一只从项目根目录的 `.env` 读取，适用于普通脚本、本地扫码秘境和扫码服务子任务；进程环境及 `--env-file` 指定文件中的同名值均不覆盖它们。启动时 key 非空即归类为有效渠道，不请求上游校验密钥；不使用的渠道将 key 留空，启用的渠道必须填写各自模型名。有效列表在进程启动时固定，修改后重启任务及常驻扫码服务。普通脚本调用模型同样需要 `REDIS_URL`。
 
 `LOGIN_ACCOUNT_NAME` 等其他任务变量也统一从项目根目录 `.env` 读取，进程环境优先，不随 JSON 所在目录变化。扫码服务和实例池管理保留 `--env-file <路径>`，供显式选择另一套服务变量；模型配置仍固定使用根目录文件。昵称中有空格或 `#` 时请加引号。缺少必需变量时会报出变量名，不输出密钥。真实 `.env` 已加入 Git 忽略，只提交 `.env.example`。
 
@@ -116,9 +118,9 @@ LOGIN_ACCOUNT_NAME="你要登录的完整昵称"
 
 通用导航位于 `naruto_daily/multimodal/agent/`，使用 Pydantic AI 的 `Agent` 管理会话和工具循环，移动工具负责截图和 ADB。当前 `secret_realm/pre_battle.py` 在通用 `battle.run_battle()` 之前读取顶部副本名称，按集中维护的 `SKIPPED_REALMS` 名单默认退出“阴阳秘境”“毒风秘境”“落岩秘境”，然后回房间重新读券；其余已识别秘境直接进入通用战斗。毒风的 `secret_realm/navigation.py` 和 agent 实现保留，默认绕过；以后从 `SKIPPED_REALMS` 移除“毒风秘境”即可恢复原导航分支，无需新增命令行参数。恢复导航后，agent 在每次工具调用中读取页面、提示和 BOSS/交战证据，确认解封后进入战斗；最多移动50步，耗尽则退出，出现结算则交给收尾。详见 [agent 使用说明](naruto_daily/multimodal/agent/README.md)。
 
-默认使用 [鱼玩 LLM 网关](https://llm-proxy.yuwan-game.com/)：项目根目录 `.env` 中设置 `MULTIMODAL_BASE_URL=https://llm-proxy.yuwan-game.com/v1`、`MULTIMODAL_MODEL=deepseek-v4.1-flash`，并将 `MULTIMODAL_API_KEY` 填为该网关的有效密钥。基础地址保留 `/v1`，程序会拼接 `/chat/completions`，视觉导航也使用 OpenAI 兼容客户端。扫码服务也读取这同一份模型配置；Redis、OSS 和雷电服务参数与它们放在同一份根目录 `.env` 中。
+`naruto_daily/multimodal/channels.py` 固定鱼玩和 DeepSeek 官方地址；`gateway.py` 共用 Redis key `naruto:multimodal:route:sequence` 做原子轮询。只配置一个渠道时同样计数；Redis 失败按原有预算重试，不退回本地计数。各 worker 应使用一致的有效渠道配置。旧 `MULTIMODAL_API_KEY`、`MULTIMODAL_MODEL` 仅在对应新鱼玩变量不存在时作为兼容值；新鱼玩 key 显式留空会禁用该渠道。旧 `MULTIMODAL_BASE_URL` 不再控制请求地址。
 
-JSON 中的 `account_name`、`multimodal.base_url` 和 `multimodal.model` 分别使用 `${LOGIN_ACCOUNT_NAME}`、`${MULTIMODAL_BASE_URL}` 和 `${MULTIMODAL_MODEL}` 引用环境配置。`naruto_daily/common/environment.py` 统一读取和解析环境变量，多模态客户端调用前单独读取 `MULTIMODAL_API_KEY`，密钥不会放进任务动作列表。旧的 `api_key_file` 配置已移除。授权截图会发送至配置的模型服务。单次请求上限为 30 秒，接口超时重试使用新截图；每次授权最多 6 次业务识别，网络耗时计入整套任务的总时限。昵称未能读取时仍使用统一的等待 1 秒重新截图补查逻辑。
+JSON 中的 `account_name` 使用 `${LOGIN_ACCOUNT_NAME}`；`multimodal` 只需保留 `timeout_seconds`、`max_calls`。旧 JSON 的 URL 和模型占位符仍可加载，但实际发送时使用所选渠道的 URL、key 和独立模型名。密钥不会放进任务动作列表，旧的 `api_key_file` 配置已移除。授权截图会发送至所选渠道的模型服务。单次请求上限为 30 秒，接口超时重试使用新截图；每次授权最多 6 次业务识别，网络耗时计入整套任务的总时限。昵称未能读取时仍使用统一的等待 1 秒重新截图补查逻辑。
 
 第一次授权完成后，脚本会同时等待“第二次授权页面”或“开始游戏按钮”。如果直接出现开始游戏，说明本次只需一次授权；如果出现第二次授权页面，则点击第二次同意后继续等待开始游戏。该分支使用整套任务的剩余时间，不再单独设置 40 秒阶段预算。
 

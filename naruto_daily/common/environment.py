@@ -10,7 +10,11 @@ from dotenv import dotenv_values
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MULTIMODAL_ENV_NAMES = ('MULTIMODAL_API_KEY', 'MULTIMODAL_BASE_URL', 'MULTIMODAL_MODEL')
+MULTIMODAL_ENV_NAMES = (
+    'MULTIMODAL_API_KEY', 'MULTIMODAL_BASE_URL', 'MULTIMODAL_MODEL',
+    'MULTIMODAL_YUWAN_API_KEY', 'MULTIMODAL_YUWAN_MODEL',
+    'MULTIMODAL_DEEPSEEK_API_KEY', 'MULTIMODAL_DEEPSEEK_MODEL',
+)
 
 
 class EnvironmentConfigError(ValueError):
@@ -31,8 +35,16 @@ def read_multimodal_environment() -> dict[str, str | None]:
 
 
 def read_environment() -> dict[str, str | None]:
+    from naruto_daily.multimodal.channels import legacy_placeholders
     values = _read_root_dotenv()
-    return {**values, **os.environ, **{name: values.get(name) for name in MULTIMODAL_ENV_NAMES}}
+    # 保留“未配置”与“显式留空”的差别，旧鱼玩 key 才能按需兼容。
+    values = legacy_placeholders(values)
+    merged = {**values, **os.environ}
+    for name in MULTIMODAL_ENV_NAMES:
+        merged.pop(name, None)
+        if name in values:
+            merged[name] = values[name]
+    return merged
 
 
 def require_environment(values: Mapping[str, str | None], name: str) -> str:

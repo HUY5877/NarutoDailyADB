@@ -42,7 +42,9 @@ def exception_kind(exc):
     """从异常类型而非异常文字判断原因，供重试和上层错误分类使用。"""
     for error in _exception_chain(exc):
         name = type(error).__name__
-        if name in {'ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout'}:
+        if name == 'GatewayRoutingError':
+            return 'redis_routing'
+        elif name in {'ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout'}:
             return name.removesuffix('Timeout').lower() + '_timeout'
         elif isinstance(error, TimeoutError):
             return 'timeout'

@@ -64,6 +64,13 @@ def main(
         if qr_login and args.task != "secret_realm_farm":
             raise ConfigError("--qr-login 仅用于 run secret_realm_farm")
         settings = load_settings(args.config, skip_account_login=qr_login)
+        if args.command == 'run' and not args.dry_run:
+            from naruto_daily.multimodal.gateway import initialize_gateway
+            from naruto_daily.common.environment import EnvironmentConfigError
+            try:
+                initialize_gateway()
+            except EnvironmentConfigError as error:
+                raise ConfigError(str(error)) from None
         if getattr(args, "serial", None):
             settings = replace(settings, serial=args.serial)
         if qr_login and (settings.screen_width, settings.screen_height) != (1920, 1080):

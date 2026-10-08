@@ -63,9 +63,12 @@ def test_model_secret_loaded_after_handler_creation_is_still_redacted(monkeypatc
     assert events[0]["message"] == "model response repeated [REDACTED]"
 
 
-def test_root_model_key_is_redacted_from_protocol_and_diagnostic_logs(tmp_path, monkeypatch):
-    (tmp_path / '.env').write_text('MULTIMODAL_API_KEY=private-root-key', encoding='utf-8')
-    monkeypatch.setenv('MULTIMODAL_API_KEY', 'stale-process-key')
+@pytest.mark.parametrize('variable', [
+    'MULTIMODAL_API_KEY', 'MULTIMODAL_YUWAN_API_KEY', 'MULTIMODAL_DEEPSEEK_API_KEY',
+])
+def test_root_model_key_is_redacted_from_protocol_and_diagnostic_logs(tmp_path, monkeypatch, variable):
+    (tmp_path / '.env').write_text(f'{variable}=private-root-key', encoding='utf-8')
+    monkeypatch.setenv(variable, 'stale-process-key')
     events, terminal = [], StringIO()
     with forward_task_logs(events.append, diagnostic_stream=terminal):
         logging.getLogger('naruto_daily').info('response echoed private-root-key stale-process-key')
@@ -278,8 +281,9 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
     assert [event["type"] for event in events if event["type"] != "log"] == [
         "stage", "stage", "stage", "qr", "authorized", "logged_in", "daily_completed",
     ]
-    assert [event["message"] for event in events if event["type"] == "log"][:6] == [
-        "import dependencies", "initialize manager", "allocate emulator", "launch game",
+    assert [event["message"] for event in events if event["type"] == "log"][:7] == [
+        "import dependencies", "多模态网关已初始化：active_channels=yuwan",
+        "initialize manager", "allocate emulator", "launch game",
         "fetch qr", "wait for scan",
     ]
     assert any(event.get("actionIndex") == 1 and event.get("actionTotal") == 1 for event in events)

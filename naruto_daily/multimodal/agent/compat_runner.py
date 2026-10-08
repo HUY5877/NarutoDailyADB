@@ -249,7 +249,8 @@ def run_agent(
             return await _refresh_navigation_request(request, latest_png)
 
         # HTTP 客户端与 SDK 同进程运行；退出、异常和取消均关闭连接。
-        async with ModelAsyncClient(request_timeout=timeout, refresh_request=refresh_request) as http:
+        async with ModelAsyncClient(request_timeout=timeout, refresh_request=refresh_request,
+                                    route_request=connection.get('route_request')) as http:
             async with AsyncOpenAI(base_url=connection['base_url'], api_key=connection['api_key'],
                                    timeout=timeout, max_retries=0, http_client=http) as api:
                 agent = Agent(

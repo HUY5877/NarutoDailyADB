@@ -184,6 +184,9 @@ def main(
             lambda event: _send(output_stream, event), diagnostic_stream=sys.stderr,
         ))
         Manager, DriverError, LoginDevice, fetch_login_qr = _load_dependencies()
+        if daily_options is not None:
+            from naruto_daily.multimodal.gateway import initialize_gateway
+            initialize_gateway()
         manager_options = dict(
             console_path=console_path,
             template=template,

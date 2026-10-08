@@ -80,7 +80,7 @@ async def _request_once(request, *, timeout, max_response_bytes, diagnostic):
 
 def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_request=None,
                        sleep=None, clock=None, max_response_bytes=1_048_576, cancel_event=None,
-                       refresh_request=None):
+                       refresh_request=None, route_request=None):
     sleep, clock = sleep or time.sleep, clock or time.monotonic
     execution = current_execution()
     if execution is not None:
@@ -150,19 +150,26 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
                 raise TimeoutError('单次多模态请求时限已到')
 
         try:
+            outbound_request = request
+            if route_request is not None:
+                diagnostic.phase = 'route_channel'
+                outbound_request = route_request(request)
+                check_response_deadline()
+                attempt_timeout = min(attempt_deadline - clock(), remaining_time())
+                diagnostic.phase = 'send_or_wait_headers'
             if open_request is None:
                 # 同步场景使用当前线程的短生命周期事件循环。超时取消并关闭连接，
                 # 不启动后台请求线程，也不会把仍在运行的请求留到下一次重试。
-                result = asyncio.run(_request_once(request, timeout=attempt_timeout,
+                result = asyncio.run(_request_once(outbound_request, timeout=attempt_timeout,
                                                   max_response_bytes=max_response_bytes, diagnostic=diagnostic))
                 body = result.body
             else:
-                with open_request(request, timeout=attempt_timeout) as response:
+                with open_request(outbound_request, timeout=attempt_timeout) as response:
                     diagnostic.phase = 'read_body'
                     diagnostic.status = getattr(response, 'status', 200)
                     check_response_deadline()
                     if diagnostic.status != 200:
-                        raise HTTPError(request.full_url, diagnostic.status, 'Unexpected HTTP status',
+                        raise HTTPError(outbound_request.full_url, diagnostic.status, 'Unexpected HTTP status',
                                         getattr(response, 'headers', None), None)
                     body = response.read(max_response_bytes + 1)
                     headers = getattr(response, 'headers', None)
@@ -228,12 +235,13 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
 class ModelAsyncClient(httpx.AsyncClient):
     """SDK 直连网关；日常任务在刷新当前截图后重试，不重跑已执行的工具。"""
 
-    def __init__(self, *, request_timeout, refresh_request=None, **kwargs):
+    def __init__(self, *, request_timeout, refresh_request=None, route_request=None, **kwargs):
         if current_execution() is not None:
             request_timeout = min(float(request_timeout), MODEL_REQUEST_TIMEOUT_SECONDS)
         super().__init__(timeout=request_timeout, follow_redirects=False, trust_env=False, **kwargs)
         self.request_timeout = float(request_timeout)
         self.refresh_request = refresh_request
+        self.route_request = route_request
 
     async def send(self, request, **kwargs):
         execution = current_execution()
@@ -282,9 +290,14 @@ class ModelAsyncClient(httpx.AsyncClient):
             status_code = None
             try:
                 async with asyncio.timeout(min(request_timeout, remaining)):
+                    outbound_request = request
+                    if self.route_request is not None:
+                        diagnostic.phase = 'route_channel'
+                        outbound_request = await self.route_request(request)
+                        remaining_time()
                     # SDK send 可能包含读体，不能据此断言耗时全部发生在连接阶段。
                     diagnostic.phase = 'http_send'
-                    response = await super().send(request, **kwargs)
+                    response = await super().send(outbound_request, **kwargs)
                     diagnostic.phase = 'read_body'
                     diagnostic.status = response.status_code
                     await response.aread()
@@ -309,7 +322,7 @@ class ModelAsyncClient(httpx.AsyncClient):
                 raise
             except DailyDeadlineExceeded:
                 raise
-            except (httpx.TransportError, TimeoutError) as exc:
+            except (httpx.TransportError, OSError) as exc:
                 diagnostic.failure(exc, status=diagnostic.status)
                 error_kind = exception_kind(exc)
                 if execution is None and attempt == MAX_REQUEST_RETRIES:
