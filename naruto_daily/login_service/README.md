@@ -26,6 +26,10 @@ Copy-Item .env.example .env
 
 ```dotenv
 REDIS_URL=redis://127.0.0.1:6379/0
+OSS_REGION=oss-cn-shanghai
+OSS_BUCKET=your-private-bucket
+OSS_ACCESS_KEY_ID=your-access-key-id
+OSS_ACCESS_KEY_SECRET=your-access-key-secret
 ```
 
 上方地址仅表示本机 Redis。连接实际 Redis 时使用自己的地址和凭据，例如 `redis://:your-password@redis.example.com:6379/0`；需要 TLS 时使用 `rediss://`。Redis 数据库由 URL 的路径决定，未指定时默认 DB 0。Python 和客户端必须使用相同数据库及队列名。
@@ -53,8 +57,6 @@ REDIS_URL=redis://127.0.0.1:6379/0
 | `REDIS_URL` | 必填；未设置、为空或仅包含空白时，启动命令报错退出 |
 | `REDIS_QUEUE_KEY` | `naruto:login:tasks`，必须与客户端相同 |
 | `WORKER_CONCURRENCY` | `2`，同时运行的任务子进程数 |
-| `STORAGE_DRIVER` | `local`；网站/Vercel 链路使用 `oss` |
-| `LOCAL_STORAGE_DIR` | `.data/login-service/objects`，相对项目根目录解析的本地对象目录 |
 | `OSS_KEY_PREFIX` | `login`，必须与客户端相同 |
 | `MOCK_STEP_DELAY_MS` / `EMULATOR_DRIVER` | `600` / `mock`，模拟步骤延迟与驱动 |
 | `LDPLAYER_CONSOLE_PATH` | `ldplayer` 必填，雷电控制台程序的完整路径 |
@@ -158,7 +160,7 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 | `log_events.py` / `run_logs.py` | 子进程日志脱敏、结构化输出，以及父进程有界缓冲和 Redis 执行记录发布 |
 | `qr_navigation.py` / 根目录 `assets/` | 页面识别、ADB 点击和真实二维码裁剪；8 张扫码专用模板平铺为 `assets/login_*.png`，QQ 安卓登录、切换账号、开始游戏继续复用原有三张图片；不调用多模态 API |
 | `pool_admin.py` | 查看实例占用，按任务 ID 显式释放实例 |
-| `storage.py` | 本地与阿里云 OSS 存储适配 |
+| `storage.py` | 阿里云 OSS 二维码存储、读取及过期清理 |
 
 子进程从生成二维码一直运行到等待扫码、确认登录和日常执行结束，期间始终占用同一实例。执行失败或运行超时后，父进程停止脚本并立即上报失败，保留雷电模拟器60秒供排查，再按任务 ID 执行 `quit` 并释放池槽，不删除实例。保留期间不继续执行游戏动作，也不把该实例分配给新任务；其他空闲实例仍可处理任务。成功和主动停止服务时立即清理；保留期间按 `Ctrl+C` 也会提前结束等待并清理。若关闭失败，保留占位，并在运行记录中标记 `instance_cleanup_failed`，供管理员检查后通过 CLI 释放。
 
@@ -170,12 +172,11 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 
 ## 对象存储
 
-默认 `STORAGE_DRIVER=local`，可用于本机验证。本地目录为项目根目录下的 `.data/login-service/objects`，对象键为 `login/{id}/qr.png`，旁边的 `metadata.json` 保存过期时间。写入使用临时文件与原子替换；过期对象及上次运行遗留的过期对象会定期清理。Redis worker 不提供本地文件的 HTTP 访问，因此网站/Vercel 链路应使用真实 OSS。
+扫码服务固定使用阿里云 OSS 保存二维码，对象键为 `login/{id}/qr.png`。上传、读取、删除和过期清理统一走 OSS；启动时检查地域、Bucket 和访问密钥是否配置，缺少任一项都会停止启动。
 
 真实 OSS 使用 Python `oss2` SDK，在项目根目录 `.env` 中保留或填写以下配置，并与客户端使用同一 Bucket 和地域：
 
 ```dotenv
-STORAGE_DRIVER=oss
 OSS_REGION=oss-cn-shanghai
 OSS_BUCKET=your-private-bucket
 OSS_ACCESS_KEY_ID=your-access-key-id
@@ -187,7 +188,7 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 
 服务端拥有指定前缀的写入/读取/删除权限，客户端 TS 后端仅需读取权限；凭据可以不同。OSS 对象使用 HTTPS、私有 ACL、PNG 类型、`no-store` 和过期时间元数据。浏览器通过自己的后端读图片，不获得 OSS 密钥，也不需要 OSS CORS。
 
-真实 OSS 已完成二维码上传与客户端读取联调。过期元数据不等于云端生命周期规则，应配置此前缀的 Bucket 生命周期，兜底清理服务崩溃时的遗留对象。切换 OSS 不会自动启用真实雷电。
+真实 OSS 已完成二维码上传与客户端读取联调。过期元数据不等于云端生命周期规则，应配置此前缀的 Bucket 生命周期，兜底清理服务崩溃时的遗留对象。真实雷电仍通过 `EMULATOR_DRIVER=ldplayer` 启用。
 
 ## 验证
 

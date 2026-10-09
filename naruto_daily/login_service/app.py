@@ -52,7 +52,7 @@ def create_app(
         return {
             "status": "ok",
             "simulation": True,
-            "storage": runtime.config.storage_driver,
+            "storage": "oss",
             **runtime.stats,
         }
 

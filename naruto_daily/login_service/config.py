@@ -23,8 +23,6 @@ class ServiceConfig:
     host: str = "127.0.0.1"
     port: int = 4320
     service_token: str = DEFAULT_SERVICE_TOKEN
-    storage_driver: str = "local"
-    local_storage_dir: Path = PROJECT_ROOT / ".data/login-service/objects"
     key_prefix: str = "login"
     concurrency: int = 2
     max_queue_size: int = 100
@@ -82,9 +80,6 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
     redis_queue_key = env.get("REDIS_QUEUE_KEY", "naruto:login:tasks")
     if not re.fullmatch(r"[a-zA-Z0-9_:{}-]{1,128}", redis_queue_key):
         raise ValueError("Invalid REDIS_QUEUE_KEY")
-    storage_driver = env.get("STORAGE_DRIVER", "local")
-    if storage_driver not in {"local", "oss"}:
-        raise ValueError("STORAGE_DRIVER must be local or oss")
     emulator_driver = env.get("EMULATOR_DRIVER", "mock")
     if emulator_driver not in {"mock", "ldplayer"}:
         raise ValueError("EMULATOR_DRIVER must be mock or ldplayer")
@@ -141,27 +136,22 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
     if host.lower() not in {"127.0.0.1", "::1", "localhost"} and service_token == DEFAULT_SERVICE_TOKEN:
         raise ValueError("Set a unique SERVICE_TOKEN before binding HOST outside loopback")
     oss = {
-        "oss_region": env.get("OSS_REGION", ""),
-        "oss_bucket": env.get("OSS_BUCKET", ""),
-        "oss_access_key_id": env.get("OSS_ACCESS_KEY_ID", ""),
-        "oss_access_key_secret": env.get("OSS_ACCESS_KEY_SECRET", ""),
+        "oss_region": env.get("OSS_REGION", "").strip(),
+        "oss_bucket": env.get("OSS_BUCKET", "").strip(),
+        "oss_access_key_id": env.get("OSS_ACCESS_KEY_ID", "").strip(),
+        "oss_access_key_secret": env.get("OSS_ACCESS_KEY_SECRET", "").strip(),
         "oss_sts_token": env.get("OSS_STS_TOKEN") or None,
     }
-    if storage_driver == "oss" and any(not oss[name] for name in (
+    if any(not oss[name] for name in (
         "oss_region", "oss_bucket", "oss_access_key_id", "oss_access_key_secret",
     )):
         raise ValueError("OSS_REGION, OSS_BUCKET, OSS_ACCESS_KEY_ID and OSS_ACCESS_KEY_SECRET are required for OSS")
-    local_storage_dir = Path(env.get("LOCAL_STORAGE_DIR", str(ServiceConfig.local_storage_dir)))
-    if not local_storage_dir.is_absolute():
-        local_storage_dir = PROJECT_ROOT / local_storage_dir
     return ServiceConfig(
         redis_url=redis_url,
         redis_queue_key=redis_queue_key,
         host=host,
         port=_integer(env, "PORT", 4320, 0, 65535),
         service_token=service_token,
-        storage_driver=storage_driver,
-        local_storage_dir=local_storage_dir.resolve(),
         key_prefix=key_prefix,
         concurrency=_integer(env, "WORKER_CONCURRENCY", 2, 1, 16),
         max_queue_size=_integer(env, "MAX_QUEUE_SIZE", 100, 1, 10_000),

@@ -11,6 +11,8 @@ from uuid import uuid4
 
 import pytest
 
+from oss_fakes import OSS_ENV
+
 from naruto_daily.login_service.config import PROJECT_ROOT, ServiceConfig, load_config
 from naruto_daily.login_service.models import HttpError, MAX_TTL_MS, equal_secret, parse_submission
 from naruto_daily.login_service.queue import MockRedisQueue, SAFE_DRIVER_ERRORS
@@ -59,16 +61,13 @@ async def eventually(predicate, timeout=5):
             await asyncio.sleep(0.01)
 
 
-def test_config_defaults_and_project_relative_storage(monkeypatch, tmp_path):
+def test_config_defaults_and_project_relative_state(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    config = load_config({})
+    config = load_config(OSS_ENV)
     assert config.port == 4320
     assert config.concurrency == 2
     assert config.max_queue_size == 100
     assert config.max_tasks == 500
-    assert config.local_storage_dir == PROJECT_ROOT / ".data/login-service/objects"
-    assert load_config({"LOCAL_STORAGE_DIR": "relative-objects"}).local_storage_dir == PROJECT_ROOT / "relative-objects"
-    assert load_config({"LOCAL_STORAGE_DIR": str(tmp_path)}).local_storage_dir == tmp_path
     assert config.ldplayer_console_path is None
     assert config.ldplayer_template == ""
     assert config.ldplayer_pool_indices == ()
@@ -81,6 +80,7 @@ def test_ldplayer_config_resolves_paths_and_redacts_oss_secrets(tmp_path):
     console = tmp_path / "dnconsole.exe"
     console.write_bytes(b"")
     config = load_config({
+        **OSS_ENV,
         "REDIS_URL": "redis://localhost/0",
         "EMULATOR_DRIVER": "ldplayer",
         "LDPLAYER_CONSOLE_PATH": str(console),
@@ -104,6 +104,7 @@ def test_ldplayer_pool_config_does_not_require_clone_template(tmp_path):
     console = tmp_path / "dnconsole.exe"
     console.write_bytes(b"")
     config = load_config({
+        **OSS_ENV,
         "REDIS_URL": "redis://localhost/0",
         "EMULATOR_DRIVER": "ldplayer",
         "LDPLAYER_CONSOLE_PATH": str(console),
@@ -118,6 +119,7 @@ def test_ldplayer_pool_requires_redis_worker_mode(tmp_path):
     console.write_bytes(b"")
     with pytest.raises(ValueError, match="REDIS_URL"):
         load_config({
+            **OSS_ENV,
             "EMULATOR_DRIVER": "ldplayer", "LDPLAYER_CONSOLE_PATH": str(console),
             "LDPLAYER_POOL_INDICES": "0,2",
         })
@@ -130,31 +132,45 @@ def test_ldplayer_pool_requires_redis_worker_mode(tmp_path):
 ])
 def test_ldplayer_config_rejects_missing_console_or_template(env):
     with pytest.raises(ValueError, match="LDPLAYER"):
-        load_config(env)
+        load_config({**OSS_ENV, **env})
 
 
 @pytest.mark.parametrize("env", [
     {"HOST": "0.0.0.0"}, {"SERVICE_TOKEN": "short"}, {"PORT": "not-a-number"},
     {"PORT": "-1"}, {"WORKER_CONCURRENCY": "0"}, {"MAX_TASKS": "1.2"},
-    {"STORAGE_DRIVER": "bad"}, {"EMULATOR_DRIVER": "bad"}, {"OSS_KEY_PREFIX": "../unsafe"},
-    {"STORAGE_DRIVER": "oss"}, {"LDPLAYER_COMMAND_TIMEOUT_SECONDS": "0"},
+    {"EMULATOR_DRIVER": "bad"}, {"OSS_KEY_PREFIX": "../unsafe"},
+    {"LDPLAYER_COMMAND_TIMEOUT_SECONDS": "0"},
     {"LDPLAYER_POOL_INDICES": "0,0"}, {"LDPLAYER_POOL_INDICES": "0,00"},
     {"LDPLAYER_POOL_INDICES": "-1,2"},
     {"LDPLAYER_POOL_INDICES": "0,"}, {"LDPLAYER_POOL_INDICES": "zero,2"},
 ])
 def test_config_rejects_invalid_values(env):
     with pytest.raises(ValueError):
-        load_config(env)
+        load_config({**OSS_ENV, **env})
 
 
-def test_config_allows_explicit_oss_and_non_loopback_credentials():
+def test_config_allows_oss_and_non_loopback_credentials():
     config = load_config({
-        "HOST": "0.0.0.0", "SERVICE_TOKEN": "unique-token-for-test", "STORAGE_DRIVER": "oss",
+        "HOST": "0.0.0.0", "SERVICE_TOKEN": "unique-token-for-test",
         "OSS_REGION": "oss-cn-hangzhou", "OSS_BUCKET": "example", "OSS_ACCESS_KEY_ID": "test-id",
         "OSS_ACCESS_KEY_SECRET": "test-secret", "OSS_STS_TOKEN": "test-sts", "OSS_KEY_PREFIX": "/login/test/",
     })
     assert config.key_prefix == "login/test"
     assert config.oss_sts_token == "test-sts"
+
+
+@pytest.mark.parametrize("name", OSS_ENV)
+@pytest.mark.parametrize("value", [None, "", " \t "])
+def test_config_requires_each_oss_setting(name, value):
+    env = dict(OSS_ENV)
+    if value is None:
+        env.pop(name)
+    else:
+        env[name] = value
+    with pytest.raises(ValueError, match="required for OSS") as error:
+        load_config(env)
+    assert name in str(error.value)
+    assert OSS_ENV["OSS_ACCESS_KEY_SECRET"] not in str(error.value)
 
 
 @pytest.mark.parametrize("changes", [

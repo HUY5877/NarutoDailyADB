@@ -12,6 +12,8 @@ from uuid import uuid4
 
 import pytest
 
+from oss_fakes import OSS_ENV
+
 from naruto_daily.login_service.config import PROJECT_ROOT, ServiceConfig, load_config
 from naruto_daily.login_service.ldplayer import LDPlayerPoolFull
 from naruto_daily.login_service.models import parse_submission
@@ -732,10 +734,10 @@ def test_ldplayer_child_receives_daily_configuration_and_uses_daily_protocol(mon
 
 def test_daily_configuration_defaults_and_relative_path(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    config = load_config({})
+    config = load_config(OSS_ENV)
     assert config.daily_config_path == PROJECT_ROOT / "config.example.json"
     assert config.daily_timeout_seconds == 3000
-    configured = load_config({"DAILY_CONFIG_PATH": "config.example.json", "DAILY_TIMEOUT_SECONDS": "300"})
+    configured = load_config({**OSS_ENV, "DAILY_CONFIG_PATH": "config.example.json", "DAILY_TIMEOUT_SECONDS": "300"})
     assert configured.daily_config_path == PROJECT_ROOT / "config.example.json"
     assert configured.daily_timeout_seconds == 300
 
@@ -745,7 +747,7 @@ def test_daily_configuration_defaults_and_relative_path(monkeypatch, tmp_path):
     (3000, 3000), (3001, 3000), (7200, 3000), (86400, 3000),
 ])
 def test_daily_timeout_settings_cannot_extend_50_minute_ceiling(configured, expected):
-    assert load_config({"DAILY_TIMEOUT_SECONDS": str(configured)}).daily_timeout_seconds == expected
+    assert load_config({**OSS_ENV, "DAILY_TIMEOUT_SECONDS": str(configured)}).daily_timeout_seconds == expected
     assert ServiceConfig(daily_timeout_seconds=configured).daily_timeout_seconds == expected
 
 
@@ -796,7 +798,7 @@ def test_child_deadline_beyond_35_minutes_is_accepted_without_extending_it(deadl
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "never"])
 def test_daily_configuration_rejects_invalid_timeout(value):
     with pytest.raises(ValueError, match="DAILY_TIMEOUT_SECONDS"):
-        load_config({"DAILY_TIMEOUT_SECONDS": value})
+        load_config({**OSS_ENV, "DAILY_TIMEOUT_SECONDS": value})
 
 
 def test_unwritable_run_journal_does_not_lose_consumer_or_skip_instance_cleanup(monkeypatch, tmp_path):

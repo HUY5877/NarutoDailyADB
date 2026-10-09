@@ -29,9 +29,9 @@ async def run_worker(config) -> None:
         await runtime.start()
         address = urlsplit(config.redis_url)
         logging.info(
-            "Redis login worker ready: host=%s port=%s db=%s queue=%s concurrency=%s storage=%s emulator=%s",
+            "Redis login worker ready: host=%s port=%s db=%s queue=%s concurrency=%s storage=oss emulator=%s",
             address.hostname, address.port or 6379, address.path.lstrip("/") or "0",
-            config.redis_queue_key, config.concurrency, config.storage_driver, config.emulator_driver,
+            config.redis_queue_key, config.concurrency, config.emulator_driver,
         )
         await stopping.wait()
     finally:

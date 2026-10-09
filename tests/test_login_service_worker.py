@@ -11,6 +11,8 @@ from uuid import uuid4
 
 import pytest
 
+from oss_fakes import OSS_ENV
+
 from naruto_daily.login_service.config import ServiceConfig, load_config
 from naruto_daily.login_service.queue import RedisTaskQueue, SAFE_TASK_ERROR
 from naruto_daily.login_service.runtime import LoginRuntime
@@ -339,7 +341,7 @@ def test_shutdown_during_initial_status_write_does_not_spawn_and_requeues(monkey
     "redis://test-user:private-password@localhost/1", "redis://localhost/15",
 ])
 def test_config_accepts_default_or_explicit_redis_database_and_redacts_url(url):
-    config = load_config({"REDIS_URL": url})
+    config = load_config({**OSS_ENV, "REDIS_URL": url})
     assert config.redis_url == url
     assert url not in repr(config)
     assert "private-password" not in repr(config)
@@ -353,7 +355,7 @@ def test_config_accepts_default_or_explicit_redis_database_and_redacts_url(url):
 ])
 def test_config_rejects_unsafe_redis_urls_without_exposing_credentials(url):
     with pytest.raises(ValueError) as error:
-        load_config({"REDIS_URL": url})
+        load_config({**OSS_ENV, "REDIS_URL": url})
     assert "REDIS_URL" in str(error.value)
     assert "private-password" not in str(error.value)
     assert "private-host" not in str(error.value)

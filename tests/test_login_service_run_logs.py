@@ -11,6 +11,8 @@ from uuid import uuid4
 
 import pytest
 
+from oss_fakes import OSS_ENV
+
 from naruto_daily.login_service.config import ServiceConfig, load_config
 from naruto_daily.login_service.models import parse_queue_task
 from naruto_daily.login_service.queue import RedisTaskQueue, SAFE_DRIVER_ERRORS
@@ -614,4 +616,4 @@ def test_parent_rejects_invalid_log_metadata_before_publication(changes):
 ])
 def test_run_log_config_rejects_unbounded_or_too_short_retention(env):
     with pytest.raises(ValueError):
-        load_config(env)
+        load_config({**OSS_ENV, **env})

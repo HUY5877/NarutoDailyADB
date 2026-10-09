@@ -12,9 +12,12 @@ from fastapi.testclient import TestClient
 from PIL import Image
 import pytest
 
+from oss_fakes import OSS_ENV, FakeBucket
+
 from naruto_daily.login_service.app import create_app
 from naruto_daily.login_service.config import load_config
 from naruto_daily.login_service.runtime import LoginRuntime
+from naruto_daily.login_service.storage import AliyunObjectStorage
 
 
 def iso(value):
@@ -34,15 +37,16 @@ def task(ttl_ms=10_000):
 @contextmanager
 def service(tmp_path, **overrides):
     config = replace(
-        load_config({}),
+        load_config(OSS_ENV),
         **{
-            "local_storage_dir": tmp_path,
+            "ldplayer_state_dir": tmp_path,
             "step_delay_ms": 5,
             "sweep_interval_ms": 20,
             **overrides,
         },
     )
-    runtime = LoginRuntime(config)
+    storage = AliyunObjectStorage(config.key_prefix, config, bucket=FakeBucket())
+    runtime = LoginRuntime(config, storage)
     with TestClient(create_app(runtime)) as client:
         client.headers.update({"X-Service-Token": config.service_token})
         yield client, runtime
@@ -113,7 +117,7 @@ def test_authenticated_submission_dedup_and_png_object_contract(tmp_path):
         assert response.headers["cache-control"] == "no-store"
         assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
         assert len(response.content) == int(head.headers["content-length"])
-        assert response.content == (tmp_path / "login" / submission["id"] / "qr.png").read_bytes()
+        assert response.content == runtime.storage._bucket.objects[f"login/{submission['id']}/qr.png"][0]
         with Image.open(BytesIO(response.content)) as png:
             assert png.format == "PNG"
             assert png.width == png.height
@@ -128,7 +132,7 @@ def test_health_is_public_and_internal_endpoints_require_service_token(tmp_path)
         health = client.get("/health")
         assert health.status_code == 200
         assert health.json() == {
-            "status": "ok", "simulation": True, "storage": "local",
+            "status": "ok", "simulation": True, "storage": "oss",
             "active": 0, "queued": 0, "tasks": 0,
         }
         submission = task()
@@ -178,7 +182,7 @@ def test_ready_qr_expires_and_retained_task_is_eventually_removed(tmp_path):
         assert client.head(path).status_code == 404
         wait_for(lambda: runtime.stats["tasks"], lambda count: count == 0)
         assert get_task(client, submission).status_code == 404
-        assert not (tmp_path / "login" / submission["id"] / "qr.png").exists()
+        assert f"login/{submission['id']}/qr.png" not in runtime.storage._bucket.objects
 
 
 def test_ldplayer_mode_rejects_missing_console_configuration_at_startup(tmp_path):
