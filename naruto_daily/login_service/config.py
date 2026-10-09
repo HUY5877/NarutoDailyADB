@@ -65,7 +65,10 @@ def _integer(env: Mapping[str, str], name: str, fallback: int, minimum: int, max
 
 
 def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
-    env = os.environ if env is None else env
+    if env is None:
+        from naruto_daily.common.environment import initialize_environment
+        initialize_environment()
+        env = os.environ
     redis_url = env.get("REDIS_URL", "").strip() or None
     if redis_url:
         try:

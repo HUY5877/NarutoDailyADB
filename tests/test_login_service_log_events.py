@@ -66,14 +66,13 @@ def test_model_secret_loaded_after_handler_creation_is_still_redacted(monkeypatc
 @pytest.mark.parametrize('variable', [
     'YUWAN_API_KEY', 'DEEPSEEK_API_KEY',
 ])
-def test_root_model_key_is_redacted_from_protocol_and_diagnostic_logs(tmp_path, monkeypatch, variable):
-    (tmp_path / '.env').write_text(f'{variable}=private-root-key', encoding='utf-8')
-    monkeypatch.setenv(variable, 'stale-process-key')
+def test_cloud_model_key_is_redacted_from_protocol_and_diagnostic_logs(tmp_path, monkeypatch, variable):
+    monkeypatch.setenv(variable, 'private-cloud-key')
     events, terminal = [], StringIO()
     with forward_task_logs(events.append, diagnostic_stream=terminal):
-        logging.getLogger('naruto_daily').info('response echoed private-root-key stale-process-key')
-    assert events[0]['message'] == 'response echoed [REDACTED] [REDACTED]'
-    assert terminal.getvalue() == 'INFO response echoed [REDACTED] [REDACTED]\n'
+        logging.getLogger('naruto_daily').info('response echoed private-cloud-key')
+    assert events[0]['message'] == 'response echoed [REDACTED]'
+    assert terminal.getvalue() == 'INFO response echoed [REDACTED]\n'
 
 
 def test_log_event_keeps_only_safe_fields_and_normalizes_level_and_time():

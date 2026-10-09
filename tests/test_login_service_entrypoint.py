@@ -15,7 +15,6 @@ from naruto_daily.login_service import config as service_config
 @pytest.fixture(autouse=True)
 def isolated_entrypoint(monkeypatch):
     monkeypatch.delenv("REDIS_URL", raising=False)
-    monkeypatch.setattr(entrypoint, "load_dotenv", lambda *args, **kwargs: None)
 
     def unexpected_web_start(*args, **kwargs):
         pytest.fail("The worker entrypoint must never initialize a local web service")
@@ -48,18 +47,16 @@ def test_missing_redis_fails_before_loading_config_or_starting_worker(
     assert "REDIS_URL" in caplog.text
 
 
-@pytest.mark.parametrize("source", ["environment", "env_file"])
+@pytest.mark.parametrize("source", ["environment", "cloud"])
 def test_configured_redis_runs_worker(monkeypatch, source):
     redis_url = "redis://localhost:6379/0"
     config = SimpleNamespace(redis_url=redis_url)
     calls = []
     env_file = Path("entrypoint-test.env")
 
-    def fake_load_dotenv(path, *, override, encoding):
-        assert path == env_file
-        assert override is False
-        assert encoding == 'utf-8-sig'
-        if source == "env_file":
+    def fake_initialize(path=None):
+        assert path is None or path == env_file
+        if source == "cloud":
             monkeypatch.setenv("REDIS_URL", redis_url)
 
     async def fake_run_worker(actual_config):
@@ -67,7 +64,7 @@ def test_configured_redis_runs_worker(monkeypatch, source):
 
     if source == "environment":
         monkeypatch.setenv("REDIS_URL", redis_url)
-    monkeypatch.setattr(entrypoint, "load_dotenv", fake_load_dotenv)
+    monkeypatch.setattr(entrypoint.environment, "initialize_environment", fake_initialize)
     monkeypatch.setattr(service_config, "load_config", lambda: config)
     monkeypatch.setattr(entrypoint, "run_worker", fake_run_worker)
 
@@ -76,17 +73,24 @@ def test_configured_redis_runs_worker(monkeypatch, source):
     assert calls == [config]
 
 
-def test_default_entrypoint_loads_root_env_from_another_working_directory(monkeypatch, tmp_path):
-    from dotenv import load_dotenv
+def test_default_entrypoint_loads_bootstrap_from_project_root(monkeypatch, tmp_path):
+    from naruto_daily.common import cloudflare_kv
 
-    (tmp_path / '.env').write_text('REDIS_URL=redis://root.example:6379/3\n'
-                                  'YUWAN_API_KEY=test-key\n'
-                                  'YUWAN_MODEL=test-model\n', encoding='utf-8-sig')
-    elsewhere = tmp_path / '其他启动目录'
+    (tmp_path / '.env').write_text('CLOUDFLARE_API_TOKEN=root-token\n', encoding='utf-8-sig')
+    elsewhere = tmp_path / 'other-directory'
     elsewhere.mkdir()
-    (elsewhere / '.env').write_text('REDIS_URL=redis://wrong.example:6379/0', encoding='utf-8')
+    (elsewhere / '.env').write_text('CLOUDFLARE_API_TOKEN=wrong-token', encoding='utf-8')
     monkeypatch.chdir(elsewhere)
-    monkeypatch.setattr(entrypoint, 'load_dotenv', load_dotenv)
+    monkeypatch.setattr(entrypoint.environment, '_initialized', False)
+    # The initializer mutates only this test's environment mapping.
+    monkeypatch.setattr(os, 'environ', dict(os.environ))
+
+    def fetch(settings):
+        assert settings['CLOUDFLARE_API_TOKEN'] == 'root-token'
+        return {'REDIS_URL': 'redis://cloud.invalid/3',
+                'YUWAN_API_KEY': 'cloud-key', 'YUWAN_MODEL': 'cloud-model'}
+
+    monkeypatch.setattr(cloudflare_kv, 'fetch_environment', fetch)
     monkeypatch.setattr(service_config, 'load_config', lambda: SimpleNamespace(redis_url=os.environ['REDIS_URL']))
     calls = []
 
@@ -95,7 +99,7 @@ def test_default_entrypoint_loads_root_env_from_another_working_directory(monkey
 
     monkeypatch.setattr(entrypoint, 'run_worker', run)
     entrypoint.main([])
-    assert calls == ['redis://root.example:6379/3']
+    assert calls == ['redis://cloud.invalid/3']
 
 
 def test_keyboard_interrupt_stops_worker_normally(monkeypatch, caplog):
@@ -135,7 +139,8 @@ def test_worker_failure_exits_without_logging_credentials(monkeypatch, caplog):
 
 
 def test_missing_channels_fails_at_startup_before_worker_runs(tmp_path, monkeypatch, caplog):
-    (tmp_path / '.env').write_text('REDIS_URL=redis://test.invalid/0\n', encoding='utf-8')
+    monkeypatch.delenv('YUWAN_API_KEY')
+    monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
     monkeypatch.setenv('REDIS_URL', 'redis://test.invalid/0')
     monkeypatch.setattr(service_config, 'load_config', lambda: SimpleNamespace(redis_url='redis://test.invalid/0'))
 

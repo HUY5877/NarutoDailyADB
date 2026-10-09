@@ -7,7 +7,7 @@ from naruto_daily.common import environment
 from naruto_daily.config import ConfigError, load_settings
 
 
-ENV_NAMES = (*environment.CHANNEL_ENV_NAMES, "LOGIN_ACCOUNT_NAME")
+ENV_NAMES = ("LOGIN_ACCOUNT_NAME",)
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +45,7 @@ def test_config_reads_root_env_not_working_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(other)
     result = authorization(load_settings(path))
     assert result["account_name"] == "另一个测试昵称 #1"
-    assert result["multimodal"]["model"] == "test-vision"
+    assert result["multimodal"]["model"] == "step-3.7-flash"
     assert "test-secret" not in repr(result)
 
 
@@ -56,7 +56,7 @@ def test_process_environment_still_overrides_account_dotenv(tmp_path, monkeypatc
     assert authorization(load_settings(path))["account_name"] == "进程环境中的昵称"
 
 
-def test_model_config_uses_project_root_despite_external_config_process_and_cwd(tmp_path, monkeypatch):
+def test_model_config_uses_injected_cloud_values_despite_local_files_and_cwd(tmp_path, monkeypatch):
     root, service, elsewhere = (tmp_path / name for name in ('project', 'service', 'elsewhere'))
     for directory in (root, service, elsewhere):
         directory.mkdir()
@@ -71,11 +71,11 @@ def test_model_config_uses_project_root_despite_external_config_process_and_cwd(
     result = authorization(load_settings(configured_file(service)))
 
     assert result['account_name'] == '根目录账号'
-    assert result['multimodal']['model'] == 'root-model'
-    assert environment.read_environment()['YUWAN_API_KEY'] == 'test-secret'
+    assert result['multimodal']['model'] == 'process-model'
+    assert environment.read_environment()['YUWAN_API_KEY'] == 'process-key'
 
 
-def test_reloading_external_config_reads_edited_root_model_values(tmp_path, monkeypatch):
+def test_reloading_local_files_keeps_injected_cloud_model(tmp_path, monkeypatch):
     root, service = tmp_path / 'project', tmp_path / 'service'
     root.mkdir()
     service.mkdir()
@@ -88,8 +88,8 @@ def test_reloading_external_config_reads_edited_root_model_values(tmp_path, monk
     write_env(root, model='second-model')
     second = authorization(load_settings(path))
 
-    assert first['multimodal']['model'] == 'first-model'
-    assert second['multimodal']['model'] == 'second-model'
+    assert first['multimodal']['model'] == 'step-3.7-flash'
+    assert second['multimodal']['model'] == 'step-3.7-flash'
     assert first['account_name'] == second['account_name'] == '另一个测试昵称 #1'
 
 
@@ -101,7 +101,10 @@ def test_reload_reads_edited_dotenv_without_stale_values(tmp_path):
     assert authorization(load_settings(path))["account_name"] == "第二个账号"
 
 
-def test_official_channel_model_placeholder_resolves_without_yuwan_config(tmp_path):
+def test_official_channel_model_placeholder_resolves_without_yuwan_config(tmp_path, monkeypatch):
+    monkeypatch.delenv("YUWAN_API_KEY")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "official-private")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "official-vision")
     path = configured_file(tmp_path, model_variable='DEEPSEEK_MODEL')
     (tmp_path / '.env').write_text(
         'DEEPSEEK_API_KEY=official-private\n'

@@ -61,13 +61,13 @@ def test_api_errors_do_not_expose_credentials(tmp_path, error):
     assert 'test-secret' not in str(raised.value)
 
 
-def test_missing_root_env_does_not_fall_back_to_service_or_process_key(tmp_path, monkeypatch):
+def test_missing_cloud_key_does_not_fall_back_to_local_files(tmp_path, monkeypatch):
     settings = config(tmp_path)
-    (tmp_path / '.env').unlink()
+    write_model_env(tmp_path, key='old-root-key')
     service = tmp_path / 'service'
     service.mkdir()
     write_model_env(service, key='service-key')
-    monkeypatch.setenv('YUWAN_API_KEY', 'process-key')
+    monkeypatch.delenv('YUWAN_API_KEY', raising=False)
     with pytest.raises(mm.MultimodalError, match='密钥'):
         mm.MultimodalClient(settings, asset_root=service,
                             open_request=lambda *args, **kwargs: pytest.fail('缺少根配置时不得请求'))
@@ -96,7 +96,7 @@ def test_invalid_response_logs_safe_details_with_transport_request_id(tmp_path, 
         assert private not in caplog.text
 
 
-def test_client_sends_root_model_url_and_key_despite_service_process_and_cwd(tmp_path, monkeypatch):
+def test_client_sends_injected_cloud_model_and_key_despite_local_files_and_cwd(tmp_path, monkeypatch):
     root, service, elsewhere = (tmp_path / name for name in ('project', 'service', 'elsewhere'))
     for directory in (root, service, elsewhere):
         directory.mkdir()
@@ -110,8 +110,8 @@ def test_client_sends_root_model_url_and_key_despite_service_process_and_cwd(tmp
 
     def open_request(request, timeout):
         assert request.full_url == CHANNELS[0].base_url + '/chat/completions'
-        assert request.get_header('Authorization') == 'Bearer root-key'
-        assert json.loads(request.data)['model'] == 'root-model'
+        assert request.get_header('Authorization') == 'Bearer environment-key'
+        assert json.loads(request.data)['model'] == 'environment-model'
         return response('{}')
 
     client = mm.MultimodalClient(
@@ -121,34 +121,34 @@ def test_client_sends_root_model_url_and_key_despite_service_process_and_cwd(tmp
     assert client.complete_json(b'png', 'prompt') == {}
     connection = client.agent_connection()
     assert callable(connection.pop('route_request'))
-    assert connection == dict(base_url=CHANNELS[0].base_url, model='root-model',
-                             api_key='root-key', timeout_seconds=20, protocol='openai')
+    assert connection == dict(base_url=CHANNELS[0].base_url, model='environment-model',
+                             api_key='environment-key', timeout_seconds=20, protocol='openai')
 
 
 @pytest.mark.parametrize('key', ['', '   '])
-def test_empty_root_key_does_not_fall_back_to_process(tmp_path, monkeypatch, key):
+def test_empty_cloud_key_does_not_fall_back_to_local_file(tmp_path, monkeypatch, key):
     settings = config(tmp_path)
-    write_model_env(tmp_path, key=key)
-    monkeypatch.setenv('YUWAN_API_KEY', 'valid-process-key')
+    write_model_env(tmp_path, key='old-root-key')
+    monkeypatch.setenv('YUWAN_API_KEY', key)
     with pytest.raises(mm.MultimodalError, match='密钥'):
         mm.MultimodalClient(settings, asset_root=tmp_path)
 
 
 @pytest.mark.parametrize('name', ['YUWAN_API_KEY', 'YUWAN_MODEL'])
 @pytest.mark.parametrize('value', [None, ''])
-def test_missing_root_variable_never_uses_service_or_process_fallback(tmp_path, monkeypatch, name, value):
+def test_missing_cloud_variable_never_uses_local_file_fallback(tmp_path, monkeypatch, name, value):
     root, service = tmp_path / 'project', tmp_path / 'service'
     root.mkdir()
     service.mkdir()
     monkeypatch.setattr(environment, 'PROJECT_ROOT', root)
     values = dict(YUWAN_API_KEY='root-key', YUWAN_MODEL='root-model',
                   REDIS_URL='redis://test.invalid/0')
-    for variable in values:
-        monkeypatch.setenv(variable, 'process-value')
+    for variable, setting in values.items():
+        monkeypatch.setenv(variable, setting)
     if value is None:
-        values.pop(name)
+        monkeypatch.delenv(name)
     else:
-        values[name] = value
+        monkeypatch.setenv(name, value)
     (root / '.env').write_text('\n'.join(f'{variable}={setting}' for variable, setting in values.items()), encoding='utf-8')
     write_model_env(service, key='service-key', model='service-model')
 
@@ -158,7 +158,7 @@ def test_missing_root_variable_never_uses_service_or_process_fallback(tmp_path, 
             asset_root=service, open_request=lambda *a, **k: pytest.fail('缺少根配置时不得请求'))
 
 
-def test_new_client_reuses_startup_channel_configuration(tmp_path):
+def test_new_client_reuses_startup_channel_configuration(tmp_path, monkeypatch):
     service = tmp_path / 'service'
     service.mkdir()
     write_model_env(service, key='service-key', model='service-model')
@@ -170,7 +170,8 @@ def test_new_client_reuses_startup_channel_configuration(tmp_path):
 
     settings = dict(timeout_seconds=20)
     for version in ('first', 'second'):
-        write_model_env(tmp_path, key=f'{version}-key', model=f'{version}-model')
+        monkeypatch.setenv('YUWAN_API_KEY', f'{version}-key')
+        monkeypatch.setenv('YUWAN_MODEL', f'{version}-model')
         client = mm.MultimodalClient(settings, asset_root=service, open_request=open_request)
         assert client.complete_json(b'png', 'prompt') == {}
 

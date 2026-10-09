@@ -25,7 +25,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="LDPlayer 固定实例池管理")
     parser.add_argument(
         "--env-file", type=Path, default=environment.PROJECT_ROOT / ".env",
-        help="默认读取项目根目录的 .env；Redis/OSS 等服务变量支持进程环境覆盖",
+        help="Cloudflare 连接凭据与机器配置文件，默认项目根目录 .env",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="列出固定池实例及任务绑定")
@@ -53,10 +53,8 @@ def _safe_status(value: object) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    from dotenv import load_dotenv
-
-    load_dotenv(args.env_file, override=False, encoding="utf-8-sig")
     try:
+        environment.initialize_environment(args.env_file)
         from .config import load_config
 
         config = load_config()

@@ -18,6 +18,7 @@ import time
 from typing import TYPE_CHECKING
 
 from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS
+from naruto_daily.common.environment import model_environment_for_child
 
 from .config import ServiceConfig
 from .ldplayer import LDPlayerError, LDPlayerPoolFull
@@ -240,10 +241,12 @@ class LoginRuntime:
             if key.upper() in _CHILD_ENV_ALLOWLIST
         }
         child_env["PYTHONIOENCODING"] = "utf-8"
+        if daily:
+            child_env.update(model_environment_for_child())
         if daily and self.config.redis_url:
             # 与常驻 worker 使用同一 Redis 轮询计数；不放进日志或 JSON 协议。
             child_env['REDIS_URL'] = self.config.redis_url
-        # 模型配置由子进程直接读取项目根目录 .env，服务环境不得覆盖。
+        # 子进程复用启动时的模型配置，不重新请求 KV，也不读取本地模型 key。
         child = subprocess.Popen(
             command,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

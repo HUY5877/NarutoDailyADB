@@ -5,11 +5,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import logging
-import os
 import re
 from typing import Callable, Iterable, Iterator, TextIO
 
-from naruto_daily.common.environment import EnvironmentConfigError, read_multimodal_environment
+from naruto_daily.common.environment import read_multimodal_environment
 from naruto_daily.multimodal.channels import API_KEY_ENV_NAMES
 
 
@@ -29,14 +28,9 @@ _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def model_log_secrets() -> tuple[str, ...]:
-    """保护实际使用的根目录密钥，同时继续遮蔽进程中残留的旧密钥。"""
-    try:
-        values = read_multimodal_environment()
-    except EnvironmentConfigError:
-        # 配置错误由模型调用方报告，日志处理不得掩盖原始异常。
-        values = {}
-    return tuple((values.get(name) or '').strip() for name in API_KEY_ENV_NAMES) + tuple(
-        os.environ.get(name, '') for name in API_KEY_ENV_NAMES)
+    """保护启动时注入环境变量的模型密钥。"""
+    values = read_multimodal_environment()
+    return tuple((values.get(name) or '').strip() for name in API_KEY_ENV_NAMES)
 
 
 def sanitize_log_message(message: str, *, secrets: Iterable[str] = (),

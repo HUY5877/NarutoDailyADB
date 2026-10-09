@@ -489,7 +489,7 @@ def _ldplayer_config(tmp_path):
 
 
 @pytest.mark.parametrize('daily', [False, True])
-def test_child_receives_configured_routing_redis_only_for_daily_tasks(tmp_path, monkeypatch, daily):
+def test_child_receives_routing_redis_and_models_only_for_daily_tasks(tmp_path, monkeypatch, daily):
     config = replace(_ldplayer_config(tmp_path), redis_url='redis://configured:private@test.invalid/2')
     runtime = LoginRuntime(config, MemoryStorage())
     monkeypatch.setenv('REDIS_URL', 'redis://unrelated.invalid/0')
@@ -508,8 +508,8 @@ def test_child_receives_configured_routing_redis_only_for_daily_tasks(tmp_path, 
     with pytest.raises(CapturedSpawn):
         asyncio.run(runtime._run_child(parse_submission(submission()), ['worker'], {'type': 'start'}, daily=daily))
     assert spawned['env'].get('REDIS_URL') == (config.redis_url if daily else None)
-    assert 'YUWAN_API_KEY' not in spawned['env']
-    assert 'DEEPSEEK_API_KEY' not in spawned['env']
+    assert spawned['env'].get('YUWAN_API_KEY') == ('private-yuwan' if daily else None)
+    assert spawned['env'].get('DEEPSEEK_API_KEY') == ('private-deepseek' if daily else None)
 
 
 def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_released(monkeypatch, tmp_path):
@@ -530,7 +530,7 @@ def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_relea
     monkeypatch.setenv("REDIS_URL", "redis://user:private@host/0")
     monkeypatch.setenv("OSS_ACCESS_KEY_SECRET", "private-oss-secret")
     for name in ("YUWAN_API_KEY", "YUWAN_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL"):
-        monkeypatch.setenv(name, "stale-service-value")
+        monkeypatch.setenv(name, "cloud-model-value")
     windows_paths = {
         "SYSTEMDRIVE": "C:", "COMSPEC": r"C:\Windows\System32\cmd.exe",
         "PATHEXT": ".COM;.EXE;.BAT;.CMD", "APPDATA": r"C:\Users\test\AppData\Roaming",
@@ -544,6 +544,7 @@ def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_relea
     for name, value in windows_paths.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("LOGIN_SERVICE_PRIVATE_SECRET", "must-not-enter-child")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "must-not-enter-child")
     monkeypatch.setattr("naruto_daily.login_service.runtime.subprocess.Popen", popen)
     closed = []
 
@@ -574,8 +575,9 @@ def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_relea
             assert "REDIS_URL" not in spawned["kwargs"]["env"]
             assert "OSS_ACCESS_KEY_SECRET" not in spawned["kwargs"]["env"]
             assert "LOGIN_SERVICE_PRIVATE_SECRET" not in spawned["kwargs"]["env"]
+            assert "CLOUDFLARE_API_TOKEN" not in spawned["kwargs"]["env"]
             for name in ("YUWAN_API_KEY", "YUWAN_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL"):
-                assert name not in spawned["kwargs"]["env"]
+                assert spawned["kwargs"]["env"][name] == "cloud-model-value"
             assert {name: spawned["kwargs"]["env"][name] for name in windows_paths} == windows_paths
         finally:
             await runtime.stop()

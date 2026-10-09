@@ -114,17 +114,20 @@ def test_concurrent_clients_do_not_read_then_write_counter(configured_environmen
     assert set(configured_environment.keys) == {gateway.ROUTING_COUNTER_KEY}
 
 
-def test_startup_snapshot_ignores_process_overrides_and_later_file_changes(tmp_path, monkeypatch, configured_environment):
+def test_startup_snapshot_uses_injected_cloud_values_and_ignores_later_changes(tmp_path, monkeypatch, configured_environment):
     path = tmp_path / '.env'
     path.write_text('DEEPSEEK_API_KEY=official-root\n'
                     'DEEPSEEK_MODEL=official-model\nREDIS_URL=redis://test.invalid/0\n', encoding='utf-8')
-    monkeypatch.setenv('YUWAN_API_KEY', 'must-not-enable')
-    monkeypatch.setenv('DEEPSEEK_API_KEY', 'must-not-use')
+    monkeypatch.delenv('YUWAN_API_KEY')
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'cloud-key')
+    monkeypatch.setenv('DEEPSEEK_MODEL', 'cloud-model')
     router = gateway.initialize_gateway()
     assert [(channel.name, channel.model, channel.api_key) for channel in router.channels] == [
-        ('deepseek', 'official-model', 'official-root')]
+        ('deepseek', 'cloud-model', 'cloud-key')]
     path.write_text('', encoding='utf-8')
+    monkeypatch.setenv('DEEPSEEK_MODEL', 'later-model')
     assert gateway.initialize_gateway() is router
+    assert router.channels[0].model == 'cloud-model'
     assert configured_environment.value == 0
 
 

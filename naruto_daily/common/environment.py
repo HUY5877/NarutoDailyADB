@@ -1,9 +1,11 @@
-"""统一读取项目根目录 .env，不随配置 JSON 或启动目录改变。"""
+"""启动时加载 Cloudflare KV；本地文件提供连接凭据、可选鱼玩和机器配置。"""
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
+from threading import Lock
 from typing import Any, Mapping
 
 from dotenv import dotenv_values
@@ -14,39 +16,84 @@ CHANNEL_ENV_NAMES = (
     'YUWAN_API_KEY', 'YUWAN_MODEL',
     'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL',
 )
+LOCAL_CHANNEL_ENV_NAMES = ('YUWAN_API_KEY', 'YUWAN_MODEL')
+CLOUD_ENV_NAMES = (*CHANNEL_ENV_NAMES, 'REDIS_URL', 'REDIS_QUEUE_KEY',
+                   'OSS_REGION', 'OSS_BUCKET', 'OSS_ACCESS_KEY_ID',
+                   'OSS_ACCESS_KEY_SECRET', 'OSS_STS_TOKEN', 'OSS_KEY_PREFIX')
+INHERITED_CONFIG_MARKER = '_NARUTO_CLOUD_CONFIG_LOADED'
+_initialized = False
+_initialization_lock = Lock()
 
 
 class EnvironmentConfigError(ValueError):
     """环境配置缺失或无法读取。"""
 
 
-def _read_root_dotenv() -> dict[str, str | None]:
+def _read_local_dotenv(path: Path, *, include_local_channel: bool = False) -> dict[str, str | None]:
     try:
-        return dict(dotenv_values(PROJECT_ROOT / '.env', encoding='utf-8-sig', interpolate=False))
+        values = dotenv_values(path, encoding='utf-8-sig', interpolate=False)
+        return {name: value for name, value in values.items()
+                if name not in (*CLOUD_ENV_NAMES, INHERITED_CONFIG_MARKER)
+                or include_local_channel and name in LOCAL_CHANNEL_ENV_NAMES}
     except (OSError, UnicodeError):
-        raise EnvironmentConfigError('无法读取项目根目录中的 .env 文件') from None
+        raise EnvironmentConfigError('无法读取本地环境配置文件') from None
+
+
+def initialize_environment(env_file: Path | None = None) -> None:
+    """每个进程初始化一次；任务子进程复用父进程传入的配置。"""
+    global _initialized
+    with _initialization_lock:
+        if _initialized:
+            return
+        if os.environ.get(INHERITED_CONFIG_MARKER) == '1':
+            _initialized = True
+            return
+        local = _read_local_dotenv(env_file or PROJECT_ROOT / '.env', include_local_channel=True)
+        for name, value in local.items():
+            if value is not None and name not in LOCAL_CHANNEL_ENV_NAMES:
+                os.environ.setdefault(name, value)
+        from .cloudflare_kv import fetch_environment
+
+        values = fetch_environment(os.environ)
+        cloud_count = len(values)
+        local_yuwan = bool((local.get('YUWAN_API_KEY') or '').strip())
+        if local_yuwan:
+            if not (local.get('YUWAN_MODEL') or '').strip():
+                raise EnvironmentConfigError('本地启用鱼玩时，请在 .env 配置非空的 YUWAN_MODEL')
+            values.update({name: local[name] for name in LOCAL_CHANNEL_ENV_NAMES})
+        # Publish only after every page and value has been read successfully.
+        # Missing cloud settings must never reuse stale local/process credentials.
+        for name in CLOUD_ENV_NAMES:
+            os.environ.pop(name, None)
+        os.environ.update(values)
+        _initialized = True
+        logging.getLogger(__name__).info('Cloudflare KV 配置已加载：%d 项；鱼玩本地配置：%s',
+                                         cloud_count, '启用' if local_yuwan else '未启用',
+                                         extra={'backend_only': True})
+
+
+def model_environment_for_child() -> dict[str, str]:
+    """Only model settings are needed by a daily child; omit OSS and CF credentials."""
+    values = {name: os.environ[name] for name in CHANNEL_ENV_NAMES if name in os.environ}
+    values[INHERITED_CONFIG_MARKER] = '1'
+    return values
 
 
 def read_multimodal_environment() -> dict[str, str | None]:
-    """每次读取根目录文件；缺失值也不得回退到服务或进程中的旧配置。"""
-    values = _read_root_dotenv()
-    return {name: values.get(name) for name in CHANNEL_ENV_NAMES}
+    """读取启动时注入的渠道配置；日志脱敏也可调用，不触发网络请求。"""
+    return {name: os.environ.get(name) for name in CHANNEL_ENV_NAMES}
 
 
 def read_environment() -> dict[str, str | None]:
-    values = _read_root_dotenv()
-    merged = {**values, **os.environ}
-    for name in CHANNEL_ENV_NAMES:
-        merged.pop(name, None)
-        if name in values:
-            merged[name] = values[name]
-    return merged
+    initialize_environment()
+    return {**_read_local_dotenv(PROJECT_ROOT / '.env'), **os.environ}
 
 
 def require_environment(values: Mapping[str, str | None], name: str) -> str:
     value = values.get(name)
     if value is None or not value.strip():
-        source = '项目根目录的 .env' if name in CHANNEL_ENV_NAMES else '项目根目录的 .env 或进程环境'
+        source = ('Cloudflare KV 或本地 .env' if name in LOCAL_CHANNEL_ENV_NAMES else
+                  'Cloudflare KV' if name in CLOUD_ENV_NAMES else 'Cloudflare KV、本地 .env 或进程环境')
         raise EnvironmentConfigError(f'请在{source}中配置非空的 {name}')
     return value.strip()
 

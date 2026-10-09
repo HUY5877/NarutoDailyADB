@@ -4,7 +4,7 @@
 
 ## 配置
 
-在项目根目录 `.env` 中独立配置每个渠道的 key 和模型名：
+在 Cloudflare KV 中独立配置各渠道的 key 和模型名，以下每行对应一项 KV：
 
 ```dotenv
 YUWAN_API_KEY=
@@ -25,7 +25,9 @@ DeepSeek 官方不支持在思考模式下强制或指定工具，详见[请求�
 
 启动时只按去除首尾空白后的 key 是否非空确定有效渠道，不请求上游验证 key、模型或额度。有效渠道必须填写模型名；没有有效渠道或缺少 `REDIS_URL` 时明确报配置错误。只配置一个渠道也正常参与 Redis 计数。
 
-各渠道 key、model 只读取项目根目录 `.env`，进程环境和 `--env-file` 不覆盖它们；有效渠道列表和模型配置在每个进程首次初始化时固定，修改后重启服务及运行中的任务。Redis 沿用服务配置的环境优先级；常驻 worker 通过子进程环境传递其已解析的 `REDIS_URL`，确保父子进程使用同一数据库。普通脚本访问模型也需要 Redis。
+DeepSeek 和 Redis 只读取启动时从 Cloudflare KV 注入的环境变量，不回退到本地 `.env`。鱼玩可选用本地配置：`.env` 中 `YUWAN_API_KEY` 非空时，优先使用本地 key 和 `YUWAN_MODEL`，否则使用 KV 的鱼玩配置。根目录 `.env` 还需配置 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 和 `CLOUDFLARE_KV_NAMESPACE_ID`，详见[项目配置说明](../../README.md)。
+
+服务启动只拉取一次 KV，读取全部成功后初始化网关。有效渠道列表在本次启动中固定，修改配置后重启服务；任务子进程继承父进程的模型配置和已解析 `REDIS_URL`，不重复拉取云端。普通脚本访问模型也使用相同的启动加载流程。
 
 配置只使用上表中的渠道变量，key 留空即禁用对应渠道。任务 JSON 的 `multimodal` 只需保留 `timeout_seconds` 和 `max_calls`，请删除旧的 URL、模型占位符；它们不再决定实际路由，也不再通过旧配置自动补齐。
 

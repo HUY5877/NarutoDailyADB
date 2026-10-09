@@ -8,8 +8,6 @@ from pathlib import Path
 import signal
 from urllib.parse import urlsplit
 
-from dotenv import load_dotenv
-
 from naruto_daily.common import environment
 
 
@@ -44,19 +42,17 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Python 扫码登录任务服务")
     parser.add_argument(
         "--env-file", type=Path, default=environment.PROJECT_ROOT / ".env",
-        help="默认读取项目根目录的 .env；Redis/OSS 等服务变量支持进程环境覆盖",
+        help="Cloudflare 连接凭据与机器配置文件，默认项目根目录 .env",
     )
     args = parser.parse_args(argv)
-    load_dotenv(args.env_file, override=False, encoding="utf-8-sig")
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    if not os.environ.get("REDIS_URL", "").strip():
-        logging.error("REDIS_URL is required; configure it in %s or in the environment", args.env_file)
-        raise SystemExit(1)
 
     from .config import load_config
 
     try:
+        environment.initialize_environment(args.env_file)
+        if not os.environ.get("REDIS_URL", "").strip():
+            raise environment.EnvironmentConfigError('请在 Cloudflare KV 配置非空的 REDIS_URL')
         config = load_config()
         from naruto_daily.multimodal.gateway import initialize_gateway
         initialize_gateway()
@@ -65,7 +61,7 @@ def main(argv: list[str] | None = None) -> None:
         except KeyboardInterrupt:
             logging.info("Redis login worker stopped")
     except environment.EnvironmentConfigError as error:
-        logging.error('多模态网关配置错误：%s', error)
+        logging.error('启动配置错误：%s', error)
         raise SystemExit(1) from None
     except Exception as error:
         # SDK exceptions and connection URLs can contain credentials.

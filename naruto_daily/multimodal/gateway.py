@@ -46,8 +46,8 @@ def load_gateway_settings(values: Mapping[str, str | None] | None = None) -> Gat
             raise EnvironmentConfigError(f'请配置有效渠道 {definition.name} 的 {definition.model_variable}')
         active.append(Channel(definition.name, definition.base_url, model, key))
     if not active:
-        raise EnvironmentConfigError('未配置有效多模态渠道，请在根目录 .env 配置 '
-                                     'YUWAN_API_KEY 或 DEEPSEEK_API_KEY')
+        raise EnvironmentConfigError('未配置有效多模态渠道，请在 Cloudflare KV 配置 '
+                                     'DEEPSEEK_API_KEY，或在本地 .env / KV 配置 YUWAN_API_KEY')
     redis_url = (values.get('REDIS_URL') or '').strip()
     try:
         address = urlsplit(redis_url)

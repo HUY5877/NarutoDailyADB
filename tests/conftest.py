@@ -51,10 +51,13 @@ def configured_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway, '_async_redis_client', lambda _: AsyncCounter())
 
     monkeypatch.setattr(environment, 'PROJECT_ROOT', tmp_path)
-    (tmp_path / '.env').write_text(
-        'YUWAN_MODEL=step-3.7-flash\nYUWAN_API_KEY=test-secret\n'
-        'REDIS_URL=redis://test.invalid/0\n', encoding='utf-8')
-    for name in (*environment.CHANNEL_ENV_NAMES, 'REDIS_URL'):
+    monkeypatch.setattr(environment, '_initialized', True)
+    (tmp_path / '.env').write_text('', encoding='utf-8')
+    for name in (*environment.CLOUD_ENV_NAMES, environment.INHERITED_CONFIG_MARKER,
+                 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_KV_NAMESPACE_ID'):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('YUWAN_MODEL', 'step-3.7-flash')
+    monkeypatch.setenv('YUWAN_API_KEY', 'test-secret')
+    monkeypatch.setenv('REDIS_URL', 'redis://test.invalid/0')
     monkeypatch.setenv('LOGIN_ACCOUNT_NAME', '离落花开花败')
     return counter

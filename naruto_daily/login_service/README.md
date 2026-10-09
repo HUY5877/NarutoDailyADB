@@ -22,7 +22,17 @@ python -m venv .venv
 Copy-Item .env.example .env
 ```
 
-已有 `.env` 时直接编辑，不要重复复制覆盖。模型、账号、Redis、OSS 和雷电配置统一放在项目根目录 `.env`，无需在服务模块内另建配置文件。运行 Redis worker 至少设置：
+已有 `.env` 时直接编辑，不要重复复制覆盖。根目录 `.env` 保存 Cloudflare 连接凭据、可选鱼玩渠道和雷电机器参数：
+
+```dotenv
+CLOUDFLARE_API_TOKEN=your-read-only-token
+CLOUDFLARE_ACCOUNT_ID=your-account-id
+CLOUDFLARE_KV_NAMESPACE_ID=your-namespace-id
+# YUWAN_API_KEY=your-yuwan-key
+# YUWAN_MODEL=your-yuwan-model
+```
+
+Token 需要目标账户的 Workers KV Storage Read 权限。启动通过官方 `cloudflare` SDK 列出命名空间全部 key，分页并分批读取纯文本值，读取完整后注入环境变量。失败停止启动，不使用半份配置。至少启用一个模型渠道（KV 或本地鱼玩），并在 KV 中配置以下服务参数（每行对应一项 KV）：
 
 ```dotenv
 REDIS_URL=redis://127.0.0.1:6379/0
@@ -42,9 +52,9 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 
 已有 `.venv-login-service` 时也可继续用该环境的 Python，双击脚本会优先选择它。激活其他已安装依赖的环境后可使用 `python -m naruto_daily.login_service`，安装后的 `naruto-login-service` 命令也可用。worker 会持续等待并消费任务；暂时断线会自动重连，停止时按 `Ctrl+C`。
 
-服务入口和实例池管理命令 `python -m naruto_daily.login_service.pool_admin` 默认都读取项目根目录 `.env`，不依赖启动工作目录。需要另一套服务参数时，可显式传入 `--env-file <路径>`；Redis、OSS 等非模型变量继续以进程环境优先。日常任务通过 `DAILY_CONFIG_PATH` 加载 JSON，账号等普通任务变量也读取根目录 `.env`，不随 JSON 路径改变。
+服务入口和实例池管理命令 `python -m naruto_daily.login_service.pool_admin` 默认使用根目录 `.env` 中的 Cloudflare 连接凭据，不依赖启动工作目录；`--env-file <路径>` 可指定另一份本地配置。连接凭据及机器参数允许进程环境覆盖，KV 中的业务配置覆盖同名进程值。日常任务通过 `DAILY_CONFIG_PATH` 加载 JSON。
 
-模型配置统一只读取项目根目录 `.env` 中的 `YUWAN_API_KEY`、`YUWAN_MODEL`、`DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`，与普通脚本共用同一份。进程环境及 `--env-file` 指定文件均不能覆盖这些变量。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次模型 HTTP 尝试通过同一 Redis 的 `INCR` 计数轮询渠道，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
+DeepSeek、Redis 和 OSS 统一从 KV 读取，不回退到本地文件。鱼玩是例外：本地 `YUWAN_API_KEY` 非空时优先使用本地 key 和 `YUWAN_MODEL`，否则使用 KV 的鱼玩配置。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次模型 HTTP 尝试通过同一 Redis 的 `INCR` 计数轮询渠道，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
 
 查看固定实例池占用也使用同一环境和配置：
 
@@ -168,13 +178,13 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 
 配置 `LDPLAYER_POOL_INDICES=0,1,2`、`WORKER_CONCURRENCY=3` 时，最多有三个任务同时占用实例，等待扫码和执行日常都计入占用。第四个任务保持在 Redis 的 `queued` 状态，直到已有任务结束并释放槽位；排队期间仍遵守客户端会话 TTL。并发数不能扩大实际实例池容量，冷启动管理操作仍通过锁依次执行。
 
-真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，并通过子进程环境传入已解析的 `REDIS_URL`，供模型路由使用同一个全局计数器；该地址不进入 JSON 协议或日志。OSS 密钥和服务环境中的模型配置不传递，子进程从项目根目录 `.env` 读取渠道 key 和模型名。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
+真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，并通过子进程环境传入已解析的 `REDIS_URL`，供模型路由使用同一个全局计数器；该地址不进入 JSON 协议或日志。模型渠道 key 和模型名也通过子进程环境继承，子进程不重新拉取 KV、不重新读取本地模型 key；OSS 密钥和 Cloudflare Token 不传递。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
 
 ## 对象存储
 
 扫码服务固定使用阿里云 OSS 保存二维码，对象键为 `login/{id}/qr.png`。上传、读取、删除和过期清理统一走 OSS；启动时检查地域、Bucket 和访问密钥是否配置，缺少任一项都会停止启动。
 
-真实 OSS 使用 Python `oss2` SDK，在项目根目录 `.env` 中保留或填写以下配置，并与客户端使用同一 Bucket 和地域：
+真实 OSS 使用 Python `oss2` SDK，在 Cloudflare KV 中逐项配置以下值，并与客户端使用同一 Bucket 和地域：
 
 ```dotenv
 OSS_REGION=oss-cn-shanghai
