@@ -4,7 +4,7 @@ from naruto_daily.secret_realm import pre_battle
 from test_secret_navigation import Scenario, execute
 
 
-@pytest.mark.parametrize('realm', ['阴阳秘境', '毒风秘境', '落岩秘境'])
+@pytest.mark.parametrize('realm', ['阴阳秘境', '毒风秘境', '落岩秘境', '溶岩秘境', '熔岩秘境', '岩秘境'])
 def test_skipped_realms_exit_and_redeploy_after_fresh_tickets_without_navigation_or_attack(monkeypatch, realm):
     scenario = Scenario(realm=realm)
     # A skipped run may leave the ticket count unchanged; read it again before redeploying.

@@ -121,7 +121,7 @@ LOGIN_ACCOUNT_NAME="你要登录的完整昵称"
 
 `naruto_daily/multimodal/client.py` 是通用的图片 + 提示词 → JSON API 客户端，包含超时、响应校验和异常脱敏；`naruto_daily/multimodal/prompts.py` 单独保存场景提示词，后续多模态场景可复用客户端并添加模板。提示词不预填目标账号，模型只负责读取，是否匹配由本地代码决定。
 
-通用导航位于 `naruto_daily/multimodal/agent/`，使用 Pydantic AI 的 `Agent` 管理会话和工具循环，移动工具负责截图和 ADB。当前 `secret_realm/pre_battle.py` 在通用 `battle.run_battle()` 之前读取顶部副本名称，按集中维护的 `SKIPPED_REALMS` 名单默认退出“阴阳秘境”“毒风秘境”“落岩秘境”，然后回房间重新读券；其余已识别秘境直接进入通用战斗。毒风的 `secret_realm/navigation.py` 和 agent 实现保留，默认绕过；以后从 `SKIPPED_REALMS` 移除“毒风秘境”即可恢复原导航分支，无需新增命令行参数。恢复导航后，agent 在每次工具调用中读取页面、提示和 BOSS/交战证据，确认解封后进入战斗；最多移动50步，耗尽则退出，出现结算则交给收尾。详见 [agent 使用说明](naruto_daily/multimodal/agent/README.md)。
+通用导航位于 `naruto_daily/multimodal/agent/`，使用 Pydantic AI 的 `Agent` 管理会话和工具循环，移动工具负责截图和 ADB。当前 `secret_realm/pre_battle.py` 在通用 `battle.run_battle()` 之前读取顶部副本名称，按集中维护的 `SKIPPED_REALMS` 名单默认退出“阴阳秘境”“毒风秘境”，并用正则 `re.search(r'岩', name)` 退出所有名称包含“岩”的秘境（包括误读为“溶岩”“熔岩”的情况），然后回房间重新读券；其余已识别秘境直接进入通用战斗。毒风的 `secret_realm/navigation.py` 和 agent 实现保留，默认绕过；以后从 `SKIPPED_REALMS` 移除“毒风秘境”即可恢复原导航分支，无需新增命令行参数。恢复导航后，agent 在每次工具调用中读取页面、提示和 BOSS/交战证据，确认解封后进入战斗；最多移动50步，耗尽则退出，出现结算则交给收尾。详见 [agent 使用说明](naruto_daily/multimodal/agent/README.md)。
 
 `naruto_daily/multimodal/channels.py` 固定鱼玩和 DeepSeek 官方地址；`gateway.py` 共用 Redis key `naruto:multimodal:route:sequence` 做原子轮询。只配置一个渠道时同样计数；Redis 失败按原有预算重试，不退回本地计数。各 worker 应使用一致的有效渠道配置，只读取各渠道独立的 key 和模型名；渠道 key 留空即禁用。
 
@@ -233,7 +233,7 @@ JSON 中的 `account_name` 使用 `${LOGIN_ACCOUNT_NAME}`；`multimodal` 只需�
 兼容旧配置：`battle_marker` 和 `start_timeout_seconds` 字段暂时保留，但通用战斗模块不再使用它们进行入场识别或等待。
 
 
-秘境出战加载后，现有大模型通用读取顶部中央、计时器上方实际显示的完整副本名称，包括“阴阳秘境”“毒风秘境”“落岩秘境”等，不根据背景、人物或 BOSS 名称猜测。`secret_realm/pre_battle.py` 集中维护 `SKIPPED_REALMS = frozenset({'阴阳秘境', '毒风秘境', '落岩秘境'})`。确认名称在名单内时，调用同一个 `exit_secret_battle()`，依次识别并点击右上角暂停、“退出战斗”、退出确认框内的“确定”。每一步点击前重新截图复查；“确定”必须与“确认退出本次战斗吗”提示出现在同一帧。名单内的三个秘境均不进入攻击或导航；其余已识别秘境使用通用快速战斗。名称未知则重新截图重试，超过调用或等待上限报错停止。
+秘境出战加载后，现有大模型通用读取顶部中央、计时器上方实际显示的完整副本名称，包括“阴阳秘境”“毒风秘境”“落岩秘境”等，不根据背景、人物或 BOSS 名称猜测。`secret_realm/pre_battle.py` 集中维护 `SKIPPED_REALMS = frozenset({'阴阳秘境', '毒风秘境'})`，并用正则 `re.search(r'岩', name)` 匹配含“岩”的名称。确认名称在名单内或正则命中时，调用同一个 `exit_secret_battle()`，依次识别并点击右上角暂停、“退出战斗”、退出确认框内的“确定”。每一步点击前重新截图复查；“确定”必须与“确认退出本次战斗吗”提示出现在同一帧。命中跳过规则的秘境均不进入攻击或导航，“溶岩秘境”“熔岩秘境”等误读同样退出；其余已识别秘境使用通用快速战斗。名称未知则重新截图重试，超过调用或等待上限报错停止。
 
 阴阳、毒风、落岩主动退出后，均沿用返回房间流程，重新读取挑战券；有券且出战前复查仍大于0就继续，为0则结束，未知券数不出战。主动退出和战斗结束都只根据当前券数决定是否继续，不要求券数下降。日志中的战斗场数统计已结束的战斗，不作为通关判断，主动退出不计入该数量。副本名称识别只在每次秘境出战后运行，不影响丰饶之间，也不会在每轮技能点击时调用模型。
 
