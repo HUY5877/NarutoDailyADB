@@ -34,6 +34,8 @@ class Settings:
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
 TASK_NAMES = {"login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "secret_realm", "secret_realm_farm"}
 ACTION_KEYS = {
+    "main_menu_tap": {"type", "name", "main_menu", "multimodal", "timeout_seconds",
+                      "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds"},
     "handle_ichiraku_takeout": {"type", "timeout_seconds", "post_click_wait_seconds", "multimodal"},
     "handle_equipment_upgrade": {"type", "timeout_seconds", "post_click_wait_seconds", "multimodal",
                                   "max_rounds", "poll_seconds", "sweep_timeout_seconds",
@@ -163,17 +165,30 @@ def _validate_template_target(target: Any, width: int, height: int, context: str
 def _validate_multimodal_config(model: Any, context: str) -> None:
     if not isinstance(model, dict):
         raise ConfigError(f'{context} 必须是对象')
-    _require_exact_keys(model, {'base_url', 'model', 'timeout_seconds', 'max_calls'}, f'{context}')
-    url = urlsplit(model['base_url']) if isinstance(model['base_url'], str) else None
-    if not url or url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
-        raise ConfigError(f'{context}.base_url 必须是 HTTPS API 地址')
-    if not isinstance(model['model'], str) or not model['model'].strip():
+    _require_exact_keys(model, {'base_url', 'model', 'timeout_seconds', 'max_calls'}, f'{context}',
+                        optional={'base_url', 'model'})
+    if 'base_url' in model:
+        url = urlsplit(model['base_url']) if isinstance(model['base_url'], str) else None
+        if not url or url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise ConfigError(f'{context}.base_url 必须是 HTTPS API 地址')
+    if 'model' in model and (not isinstance(model['model'], str) or not model['model'].strip()):
         raise ConfigError(f'{context}.model 必须是非空模型名称')
     request_timeout = model['timeout_seconds']
     if type(request_timeout) not in (float, int) or not 1 <= request_timeout <= 30:
         raise ConfigError(f'{context}.timeout_seconds 必须在 1 到 30 之间')
     if type(model['max_calls']) is not int or not 2 <= model['max_calls'] <= 10:
         raise ConfigError(f'{context}.max_calls 必须在 2 到 10 之间')
+
+
+def _validate_main_target(target, context, *, marker=False):
+    from naruto_daily.common.main_screen import MAIN_TARGETS
+    _require_exact_keys(target, {'name', 'main_menu', 'multimodal'}, context)
+    if not isinstance(target['name'], str) or not target['name'].strip():
+        raise ConfigError(f'{context}.name 必须是非空字符串')
+    menu = target['main_menu']
+    if not isinstance(menu, str) or menu not in MAIN_TARGETS or (menu == 'home') != marker:
+        raise ConfigError(f'{context}.main_menu 必须指定有效的主界面' + ('确认目标' if marker else '按钮'))
+    _validate_multimodal_config(target['multimodal'], f'{context}.multimodal')
 
 
 def _validate_battle(battle: Any, width: int, height: int, context: str, max_timeout=180) -> None:
@@ -298,7 +313,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         _require_exact_keys(action, keys, context)
         for key, expected_type in nested.items():
             child = action[key]
-            if not isinstance(child, dict) or child.get("type") != expected_type:
+            allowed = {expected_type, 'main_menu_tap'} if key == 'reward_button' else {expected_type}
+            if not isinstance(child, dict) or child.get("type") not in allowed:
                 raise ConfigError(f"{context}.{key} 必须是 {expected_type} 动作")
             _validate_action(child, width, height, f"{context}.{key}")
         if method == "ninja_challenge":
@@ -312,20 +328,25 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
                 raise ConfigError(f"{context} 的主界面滑动必须向左")
         return
     if action_type in {
-            "required_template_tap", "finish_login_authorization", "return_to_main",
+            "required_template_tap", "main_menu_tap", "finish_login_authorization", "return_to_main",
             "handle_coin_fortune", "popup_cleanup", "handle_organization_prayer",
             "handle_free_recruit", "handle_abundance", "authorize_account", "handle_secret_realm",
             "handle_survival_challenge",
     }:
         optional_keys = CLICK_WAIT_KEYS
     elif action_type == "find_card_and_click":
-        optional_keys = {"completed_skip_type"} | CLICK_WAIT_KEYS
+        # 奖励页滑动参数已统一；保留旧字段以便现有配置继续加载。
+        optional_keys = {"completed_skip_type", "max_swipes", "swipe_x1", "swipe_y1",
+                         "swipe_x2", "swipe_y2", "swipe_duration_ms", "wait_seconds"} | CLICK_WAIT_KEYS
     else:
         optional_keys = set()
     if action_type == "handle_abundance":
         optional_keys = optional_keys | {"multimodal"}
     if action_type == "handle_survival_challenge":
         optional_keys = optional_keys | {"sweep_prompt"}
+    if action_type == "handle_equipment_upgrade":
+        # 兼容旧配置；装备流程已全部使用模型判断，不再依赖这四个模板。
+        optional_keys = optional_keys | {"one_click_sweep", "start_sweep", "sweep_done", "advance"}
     _require_exact_keys(action, ACTION_KEYS[action_type], context, optional_keys)
     if action_type == "tap":
         _coordinate(action["x"], width, context)
@@ -374,22 +395,16 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             raise ConfigError(f"{context} 的 poll_seconds 必须在 0.2 到 5 之间")
         _validate_click_waits(action, context)
         main_page_marker = action["main_page_marker"]
-        _validate_template_target(
-            main_page_marker,
-            width,
-            height,
-            f"{context}.main_page_marker",
-            require_name=True,
-        )
-        if not (
-            main_page_marker["left"] >= 1500
-            and main_page_marker["top"] >= 300
-            and main_page_marker["right"] <= width
-            and main_page_marker["bottom"] <= 800
-        ):
-            raise ConfigError(f"{context} 的主界面标记搜索区域必须限制在右侧奖励区域")
-        if main_page_marker["threshold"] < 0.90:
-            raise ConfigError(f"{context} 的主界面标记阈值不能低于 0.90")
+        if isinstance(main_page_marker, dict) and 'main_menu' in main_page_marker:
+            _validate_main_target(main_page_marker, f'{context}.main_page_marker', marker=True)
+        else:
+            _validate_template_target(main_page_marker, width, height,
+                                      f"{context}.main_page_marker", require_name=True)
+            if not (main_page_marker["left"] >= 1500 and main_page_marker["top"] >= 300
+                    and main_page_marker["right"] <= width and main_page_marker["bottom"] <= 800):
+                raise ConfigError(f"{context} 的主界面标记搜索区域必须限制在右侧奖励区域")
+            if main_page_marker["threshold"] < 0.90:
+                raise ConfigError(f"{context} 的主界面标记阈值不能低于 0.90")
         close_target = action["close_target"]
         _validate_template_target(close_target, width, height, f"{context}.close_target", require_name=True)
         if not (
@@ -402,10 +417,13 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         if close_target["threshold"] < 0.95:
             raise ConfigError(f"{context} 的关闭按钮阈值不能低于 0.95")
         return
-    elif action_type == "required_template_tap":
-        target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
-        target = {key: action[key] for key in target_keys}
-        _validate_template_target(target, width, height, context, require_name=True)
+    elif action_type in {"required_template_tap", "main_menu_tap"}:
+        if action_type == 'main_menu_tap':
+            _validate_main_target({k: action[k] for k in ('name', 'main_menu', 'multimodal')}, context)
+        else:
+            target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
+            target = {key: action[key] for key in target_keys}
+            _validate_template_target(target, width, height, context, require_name=True)
         timeout_seconds = action["timeout_seconds"]
         poll_seconds = action["poll_seconds"]
         if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or not 1 <= timeout_seconds <= 60:
@@ -459,6 +477,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         _validate_template_target(start_game, width, height, f"{context}.start_game", require_name=True)
         return
     elif action_type == "find_card_and_click":
+        if (width, height) != (1920, 1080):
+            raise ConfigError(f"{context} 的奖励卡片统一导航只支持 1920×1080 安卓画面")
         target_keys = {"name", "template", "left", "top", "right", "bottom", "threshold"}
         target = {key: action[key] for key in target_keys}
         _validate_template_target(target, width, height, context, require_name=True)
@@ -489,20 +509,24 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             raise ConfigError(f"{context} 的按钮搜索区域左右范围无效")
         if action["button_top_offset"] >= action["button_bottom_offset"]:
             raise ConfigError(f"{context} 的按钮搜索区域上下范围无效")
-        max_swipes = action["max_swipes"]
-        if not isinstance(max_swipes, int) or isinstance(max_swipes, bool) or not 0 <= max_swipes <= 10:
-            raise ConfigError(f"{context} 的 max_swipes 必须在 0 到 10 之间")
+        if "max_swipes" in action:
+            max_swipes = action["max_swipes"]
+            if not isinstance(max_swipes, int) or isinstance(max_swipes, bool) or not 0 <= max_swipes <= 10:
+                raise ConfigError(f"{context} 的 max_swipes 必须在 0 到 10 之间")
         for key, limit in (
             ("swipe_x1", width), ("swipe_x2", width),
             ("swipe_y1", height), ("swipe_y2", height),
         ):
-            _coordinate(action[key], limit, f"{context}.{key}")
-        duration = action["swipe_duration_ms"]
-        if not isinstance(duration, int) or isinstance(duration, bool) or not 1 <= duration <= 10_000:
-            raise ConfigError(f"{context} 的 swipe_duration_ms 必须在 1 到 10000 之间")
-        wait_seconds = action["wait_seconds"]
-        if not isinstance(wait_seconds, (int, float)) or isinstance(wait_seconds, bool) or not 0 <= wait_seconds <= 10:
-            raise ConfigError(f"{context} 的 wait_seconds 必须在 0 到 10 之间")
+            if key in action:
+                _coordinate(action[key], limit, f"{context}.{key}")
+        if "swipe_duration_ms" in action:
+            duration = action["swipe_duration_ms"]
+            if not isinstance(duration, int) or isinstance(duration, bool) or not 1 <= duration <= 10_000:
+                raise ConfigError(f"{context} 的 swipe_duration_ms 必须在 1 到 10000 之间")
+        if "wait_seconds" in action:
+            wait_seconds = action["wait_seconds"]
+            if not isinstance(wait_seconds, (int, float)) or isinstance(wait_seconds, bool) or not 0 <= wait_seconds <= 10:
+                raise ConfigError(f"{context} 的 wait_seconds 必须在 0 到 10 之间")
         _validate_click_waits(action, context)
         completed_skip_type = action.get("completed_skip_type", "handle_organization_prayer")
         if completed_skip_type not in {
@@ -568,10 +592,12 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
                 if type(value) not in (int, float) or not lower <= value <= upper or (key == 'max_rounds' and type(value) is not int):
                     raise ConfigError(f'{context}.{key} 必须在 {lower} 到 {upper} 之间')
             for key in ('one_click_sweep', 'start_sweep', 'sweep_done', 'advance'):
+                if key not in action:
+                    continue
                 _validate_template_target(action[key], width, height, f'{context}.{key}', True)
                 if action[key]['threshold'] < .85:
                     raise ConfigError(f'{context}.{key} 识别阈值不能低于 0.85')
-            if action['advance']['top'] < 720 or action['advance']['left'] < 1500:
+            if 'advance' in action and (action['advance']['top'] < 720 or action['advance']['left'] < 1500):
                 raise ConfigError(f'{context}.advance 必须限制在右下角，避开升级按钮')
         return
     elif action_type == "handle_survival_challenge":
@@ -713,7 +739,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         free_button = action["free_button"]
         if not isinstance(free_button, dict):
             raise ConfigError(f"{context}.free_button 必须是按钮区域对象")
-        _require_exact_keys(free_button, {"name", "left", "top", "right", "bottom", "click_x", "click_y"}, f"{context}.free_button")
+        _require_exact_keys(free_button, {"name", "left", "top", "right", "bottom"}, f"{context}.free_button")
         if not isinstance(free_button["name"], str) or not free_button["name"].strip():
             raise ConfigError(f"{context}.free_button.name 必须是非空字符串")
         _coordinate(free_button["left"], width, context)
@@ -721,11 +747,6 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         for edge, start, limit in (("right", "left", width), ("bottom", "top", height)):
             if type(free_button[edge]) is not int or not free_button[start] < free_button[edge] <= limit:
                 raise ConfigError(f"{context}.free_button.{edge} 超出有效按钮区域")
-        _coordinate(free_button["click_x"], width, context)
-        _coordinate(free_button["click_y"], height, context)
-        if not (free_button["left"] <= free_button["click_x"] < free_button["right"]
-                and free_button["top"] <= free_button["click_y"] < free_button["bottom"]):
-            raise ConfigError(f"{context} 的免费招募点击坐标必须位于按钮区域内")
         if not (
             free_button["left"] >= 800
             and free_button["top"] >= 650
@@ -747,13 +768,25 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
     return
 
 
-def load_settings(path: Path) -> Settings:
+def load_settings(path: Path, *, skip_account_login: bool = False) -> Settings:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigError(f"无法加载配置：{exc}") from exc
+    if skip_account_login:
+        tasks = payload.get("tasks") if isinstance(payload, dict) else None
+        login = tasks.get("login") if isinstance(tasks, dict) else None
+        if not isinstance(login, list):
+            raise ConfigError("扫码登录配置必须包含 tasks.login 动作列表")
+        start = next((index for index, action in enumerate(login)
+                      if isinstance(action, dict)
+                      and action.get("type") == "finish_login_authorization"), None)
+        if start is None:
+            raise ConfigError("扫码登录配置缺少 finish_login_authorization 衔接动作")
+        # 扫码已经替代账号选择；先移除旧登录前缀，避免要求保存账号的环境变量。
+        tasks["login"] = login[start:]
     try:
-        payload = resolve_environment(payload, read_environment(Path(path).parent))
+        payload = resolve_environment(payload, read_environment())
     except EnvironmentConfigError as exc:
         raise ConfigError(str(exc)) from None
     if not isinstance(payload, dict):

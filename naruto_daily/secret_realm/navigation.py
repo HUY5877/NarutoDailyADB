@@ -5,10 +5,11 @@ from typing import Literal
 from pydantic import Field
 
 from naruto_daily.multimodal.agent import Joystick, NavigationEvidence, run_agent
+from .boss_detection import poison_boss_visible
 
 
-# 项目当前固定 1920×1080 布局；中心取自现有秘境战斗参考截图左下角摇杆。
-SECRET_JOYSTICK = Joystick(x=320, y=840, radius=80, duration_ms=300)
+# 固定 1920×1080 布局；中心经毒风未解封场景实机校准，避免右移时向下偏。
+SECRET_JOYSTICK = Joystick(x=327, y=825, radius=80, duration_ms=300)
 POISON_SEAL_GOAL = '走到毒风秘境真正的封印区域，触发解封并召唤 BOSS。'
 POISON_SEAL_INSTRUCTIONS = '''每轮仅根据当前最新截图，先检查页面结束状态，再抄写文字事实，最后决定导航动作。
 move 和 finish 都必须按工具结构逐项填写全部事实字段，不要嵌套对象或把整份证据编码成字符串；finish 不接受 reached 字段，是否完成由证据规则判定。
@@ -61,13 +62,15 @@ class PoisonEvidence(NavigationEvidence):
                     '明确未交战为no，不确定为unknown。仅可用yes/no/unknown字符串，不能覆盖结束页面或待解封提示。')
     visible_text: str = Field(max_length=2000, description='逐字抄写当前可见文字，不加入推测；无可读文字可为空')
 
-    def state(self) -> Literal['pending', 'reached', 'blocked']:
+    def state(self) -> Literal['pending', 'reached', 'finished', 'blocked']:
+        if self.page == 'result':
+            return 'finished'
         if self.page != 'battle':
             return 'blocked'
         # 仅检查模型已抄写文字和事实字段是否矛盾，不增加 OCR 或模型请求。
         text = re.sub(r'\W+', '', self.visible_text).casefold()
         if any(marker in text for marker in ('失败', '胜利', '结算', '点击任意位置关闭')):
-            return 'blocked'
+            return 'finished'
         if self.seal_prompt_visible != 'no':
             return 'pending'
         if any(marker in text for marker in ('解开封印召唤boss', '解除封印召唤boss',
@@ -78,7 +81,14 @@ class PoisonEvidence(NavigationEvidence):
         return 'pending'
 
 
+def _poison_completion_probe(png: bytes) -> str | None:
+    if poison_boss_visible(png):
+        return '本地已确认毒风 BOSS 名称、风徽章和血条，立即结束导航并进入战斗'
+    return None
+
+
 def navigate_to_poison_seal(images, model):
     return run_agent(images.client, model, POISON_SEAL_GOAL,
                      joystick=SECRET_JOYSTICK, max_steps=50, sleep=images.sleep,
-                     evidence_type=PoisonEvidence, instructions=POISON_SEAL_INSTRUCTIONS)
+                     evidence_type=PoisonEvidence, instructions=POISON_SEAL_INSTRUCTIONS,
+                     completion_probe=_poison_completion_probe)

@@ -7,6 +7,7 @@ from typing import Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from naruto_daily.common.visual import VisualError
+from naruto_daily.common.execution import check_execution
 
 
 class AgentError(VisualError):
@@ -30,6 +31,7 @@ class Joystick:
             raise ValueError('单次移动时长必须在 1 到 10000 毫秒之间')
 
     def move(self, client, direction: str) -> None:
+        check_execution()
         if direction not in ('w', 'a', 's', 'd'):
             raise AgentError('移动动作只能是单个 w/a/s/d')
         dx, dy = {'w': (0, -1), 'a': (-1, 0), 's': (0, 1), 'd': (1, 0)}[direction]
@@ -56,7 +58,7 @@ class NavigationEvidence(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     observation: str = Field(min_length=1, max_length=2000, pattern=r'\S')
 
-    def state(self) -> Literal['pending', 'reached', 'blocked']:
+    def state(self) -> Literal['pending', 'reached', 'finished', 'blocked']:
         raise NotImplementedError
 
 
@@ -70,21 +72,24 @@ class GoalEvidence(NavigationEvidence):
 def run_agent(client, model, goal: str, *, joystick: Joystick, max_steps: int = 50,
               settle_seconds: float = 0.5, sleep: Callable[[float], None] = time.sleep,
               evidence_type: type[NavigationEvidence] = GoalEvidence,
-              instructions: str = '') -> AgentResult:
-    """真实连接使用 Claude Agent SDK；本地 HTTP 替身只用于离线测试。"""
+              instructions: str = '',
+              completion_probe: Callable[[bytes], str | None] | None = None) -> AgentResult:
+    """内置网关使用 OpenAI 协议；保留旧客户端的 Claude Messages 适配。"""
     connection = model.agent_connection()
     base_url = str(connection.get('base_url', ''))
-    # Modelink/OpenAI-compatible endpoints use the native Python OpenAI adapter.
-    # Claude Messages endpoints omit /v1 and keep the Claude Agent SDK path.
-    openai_compatible = (base_url.rstrip('/').endswith('/v1')
+    # 官方 DeepSeek URL 没有 /v1，协议以网关声明为准；旧注入客户端兼容地址判断。
+    openai_compatible = (connection.get('protocol') == 'openai'
+                         or base_url.rstrip('/').endswith('/v1')
                          or base_url.startswith(('http://127.0.0.1:', 'http://localhost:'))
                          or '/' in str(connection.get('model', '')))
     if openai_compatible:
         from .compat_runner import run_agent as run_compat_agent
         return run_compat_agent(client, model, goal, joystick=joystick, max_steps=max_steps,
                                 settle_seconds=settle_seconds, sleep=sleep,
-                                evidence_type=evidence_type, instructions=instructions)
+                                evidence_type=evidence_type, instructions=instructions,
+                                completion_probe=completion_probe)
     from .claude_runner import run_agent as run_claude_agent
     return run_claude_agent(client, model, goal, joystick=joystick, max_steps=max_steps,
                             settle_seconds=settle_seconds, sleep=sleep,
-                            evidence_type=evidence_type, instructions=instructions)
+                            evidence_type=evidence_type, instructions=instructions,
+                            completion_probe=completion_probe)

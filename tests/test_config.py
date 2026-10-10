@@ -391,7 +391,8 @@ def test_coin_fortune_rejects_paid_button_risk(tmp_path, mutate, message):
         load_settings(write_config(tmp_path, payload))
 
 
-def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
+@pytest.mark.parametrize('legacy_swipe_settings', [False, True])
+def test_find_card_and_click_accepts_shared_navigation_and_legacy_settings(tmp_path, legacy_swipe_settings):
     payload = valid_payload()
     payload["screen"] = {"width": 1920, "height": 1080}
     payload["tasks"]["organization_pray"] = [{
@@ -418,6 +419,10 @@ def test_find_card_and_click_accepts_horizontal_scan_settings(tmp_path):
         "completed_skip_type": "handle_organization_prayer",
     }]
 
+    if not legacy_swipe_settings:
+        for key in ('max_swipes', 'swipe_x1', 'swipe_x2', 'swipe_y1', 'swipe_y2',
+                    'swipe_duration_ms', 'wait_seconds'):
+            payload['tasks']['organization_pray'][0].pop(key)
     settings = load_settings(write_config(tmp_path, payload))
 
     assert settings.tasks["organization_pray"][0]["button_template"] == "assets/go_now_button.png"
@@ -431,8 +436,7 @@ def test_free_recruit_accepts_red_dot_and_safe_button_targets(tmp_path):
     payload["screen"] = {"width": 1920, "height": 1080}
     payload["tasks"]["recruit"] = [{
         "type": "handle_free_recruit",
-        "multimodal": {"base_url": "${MULTIMODAL_BASE_URL}", "model": "${MULTIMODAL_MODEL}",
-                       "timeout_seconds": 20, "max_calls": 6},
+        "multimodal": {"timeout_seconds": 20, "max_calls": 6},
         "timeout_seconds": 40,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 0.5,
@@ -455,7 +459,7 @@ def test_free_recruit_accepts_red_dot_and_safe_button_targets(tmp_path):
         },
         "free_button": {
             "name": "免费招募按钮",
-            "left": 900, "top": 800, "right": 1500, "bottom": 910, "click_x": 1330, "click_y": 865,
+            "left": 900, "top": 800, "right": 1500, "bottom": 910,
         },
         "result_confirm": {
             "name": "招募结果确定按钮", "template": "assets/recruit_confirm.png",
@@ -512,8 +516,7 @@ def test_free_recruit_rejects_paid_button_and_unrelated_red_dot_risk(
     payload["screen"] = {"width": 1920, "height": 1080}
     action = {
         "type": "handle_free_recruit",
-        "multimodal": {"base_url": "${MULTIMODAL_BASE_URL}", "model": "${MULTIMODAL_MODEL}",
-                       "timeout_seconds": 20, "max_calls": 6},
+        "multimodal": {"timeout_seconds": 20, "max_calls": 6},
         "timeout_seconds": 40,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 3,
@@ -536,7 +539,7 @@ def test_free_recruit_rejects_paid_button_and_unrelated_red_dot_risk(
         },
         "free_button": {
             "name": "免费招募按钮",
-            "left": 900, "top": 800, "right": 1500, "bottom": 910, "click_x": 1330, "click_y": 865,
+            "left": 900, "top": 800, "right": 1500, "bottom": 910,
         },
         "result_confirm": {
             "name": "招募结果确定按钮", "template": "assets/recruit_confirm.png",

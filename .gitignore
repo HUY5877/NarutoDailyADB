@@ -14,3 +14,7 @@ build/
 .env
 .env.*
 !.env.example
+
+# Python QR login service
+.venv-login-service/
+.data/

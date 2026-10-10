@@ -4,8 +4,11 @@ import pytest
 
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.model_workflow import ModelWorkflow
-from naruto_daily.equipment.handler import handle_equipment_upgrade, lowest_equipment, first_material, _finish_material
 from naruto_daily.equipment import prompts
+from naruto_daily.equipment.handler import (
+    handle_equipment_upgrade, lowest_equipment, _finish_material,
+    MATERIAL_POINTS, EQUIPMENT_POINTS, BLANK, MATERIAL_BUTTON, AUTO_STOP, START_SWEEP, ADVANCE,
+)
 from naruto_daily.ichiraku import handle_ichiraku_takeout
 
 
@@ -23,67 +26,271 @@ class Client:
 class Model:
     def __init__(self, *answers):
         self.answers = iter(answers)
+        self.prompts = []
 
     def complete_json(self, png, prompt, **kwargs):
+        self.prompts.append(prompt)
         answer = next(self.answers)
         if isinstance(answer, Exception):
             raise answer
         return answer
 
 
-class OverviewOnlyModel(Model):
-    def complete_json(self, png, prompt, **kwargs):
-        assert prompt == prompts.EQUIPMENT, '进阶按钮仍可用时不应进入材料识别'
-        return super().complete_json(png, prompt, **kwargs)
-
-
-def target(name):
-    return dict(name=name, template=name + '.png', left=0, top=0, right=1920,
-                bottom=1080, threshold=.9)
-
-
 def action():
     return dict(timeout_seconds=1800, max_rounds=100, poll_seconds=1,
                 post_click_wait_seconds=1, sweep_timeout_seconds=120,
-                multimodal=dict(max_calls=2),
-                **{key: target(key) for key in ('one_click_sweep', 'start_sweep', 'sweep_done', 'advance')})
+                multimodal=dict(max_calls=2))
 
 
-CENTERS = {'one_click_sweep': (650, 840), 'start_sweep': (1300, 780),
-           'sweep_done': (1300, 900), 'advance': (1750, 830)}
+CENTERS = {'one_click_sweep': MATERIAL_BUTTON, 'start_sweep': START_SWEEP,
+           'sweep_done': (1300, 900), 'advance': ADVANCE}
 
 
-def matcher(png, path, roi, threshold):
-    if path.stem == 'advance':
-        return None, .1
-    if path.stem == 'sweep_done' and png == b'(1600, 920)':
-        return None, .1
-    return CENTERS[path.stem], 1
+def matcher(*args, **kwargs):
+    raise AssertionError('装备流程应全部由模型判断，不能调用图片模板')
 
 
-def overview(levels=None, selected_slot=5):
-    return dict(page='equipment', progressions=levels or [85, 45, 23, 85, 2, 78], selected_slot=selected_slot)
-
-
-def materials(states=None, advance=False):
-    return dict(page='equipment', selected_slot=5,
-                materials=states or ['sweepable', 'filled', 'filled', 'filled', 'filled', 'sweepable'],
-                can_advance=advance)
+def overview(levels=None):
+    return dict(page='equipment', progressions=levels or [85, 45, 23, 85, 2, 78], selected_slot=5)
 
 
 def material(button):
     return dict(page='material', action=button)
 
 
-def setup(stamina):
-    return dict(page='sweep_setup', stamina=stamina, auto_stop=True)
+def setup(stamina, auto_stop=True):
+    return dict(page='sweep_setup', stamina=stamina, auto_stop=auto_stop)
 
 
-def run(*answers, config=None, match=matcher):
+def sweep_result(stamina, runs=1, animation_finished=True):
+    return dict(page='sweep_result', stamina=stamina, completed_runs=runs,
+                animation_finished=animation_finished)
+
+
+def advance(ready=False, selected=5):
+    return dict(page='equipment', selected_slot=selected, can_advance=ready)
+
+
+def filled_slots(count=6):
+    return [state for _ in range(count) for state in
+            (dict(page='material_info'), dict(page='equipment'))]
+
+
+def run(*answers, config=None):
     client = Client()
-    result = handle_equipment_upgrade(client, config or action(), model=Model(*answers),
-                                      template_matcher=match, sleep=lambda _: None)
-    return client, result
+    model = Model(*answers)
+    handle_equipment_upgrade(client, config or action(), model=model,
+                             template_matcher=matcher, sleep=lambda _: None)
+    return client, model
+
+
+def test_all_six_slots_are_opened_left_to_right_before_one_advance_check(caplog):
+    with caplog.at_level('INFO', logger='naruto_daily'):
+        client, model = run(overview(), *filled_slots(), advance(False))
+    assert client.taps == [EQUIPMENT_POINTS[4]] + [p for slot in MATERIAL_POINTS for p in (slot, BLANK)]
+    assert model.prompts.count(prompts.MATERIAL_ENTRY) == 6
+    assert model.prompts.count(prompts.ADVANCE) == 1
+    assert model.prompts[-1] == prompts.ADVANCE
+    assert '材料6/6' in caplog.text
+
+
+def test_mixed_slots_synthesize_sweep_equip_then_advance_and_select_new_lowest():
+    client, model = run(
+        overview(), *filled_slots(1),
+        material('synthesize'), material('equip'), dict(page='equipment'),
+        material('sweep'), setup(20), sweep_result(15), dict(page='material'),
+        material('synthesize'), material('equip'), dict(page='equipment'),
+        material('equip'), dict(page='equipment'), *filled_slots(2), advance(True),
+        overview([85, 45, 23, 85, 50, 78]), material('sweep'), setup(4),
+        dict(page='material'), dict(page='equipment'),
+    )
+    assert [p for p in client.taps if p in MATERIAL_POINTS] == [*MATERIAL_POINTS, MATERIAL_POINTS[0]]
+    assert [p for p in client.taps if p in EQUIPMENT_POINTS] == [EQUIPMENT_POINTS[4], EQUIPMENT_POINTS[2]]
+    advance_index = client.taps.index(ADVANCE)
+    assert client.taps[advance_index - 2:advance_index] == [MATERIAL_POINTS[5], BLANK]
+    assert client.taps.count(START_SWEEP) == 1
+    assert client.taps.count(MATERIAL_BUTTON) == 7
+    assert client.taps.count(ADVANCE) == 1
+    assert model.prompts.count(prompts.ADVANCE) == 1
+    assert model.prompts[:model.prompts.index(prompts.ADVANCE)].count(prompts.MATERIAL_ENTRY) == 6
+
+
+def test_no_advance_after_material_operation_starts_another_full_round():
+    client, model = run(
+        overview(), material('equip'), dict(page='equipment'), *filled_slots(5), advance(False),
+        overview(), *filled_slots(), advance(False),
+    )
+    assert [p for p in client.taps if p in MATERIAL_POINTS] == list(MATERIAL_POINTS) * 2
+    assert model.prompts.count(prompts.ADVANCE) == 2
+    assert ADVANCE not in client.taps
+
+
+def test_read_only_card_must_close_before_the_next_slot_is_opened():
+    client, _ = run(overview(), dict(page='material_info'), dict(page='material_info'),
+                    dict(page='equipment'), *filled_slots(5), advance(False))
+    assert client.taps[:5] == [EQUIPMENT_POINTS[4], MATERIAL_POINTS[0], BLANK, BLANK, MATERIAL_POINTS[1]]
+
+
+@pytest.mark.parametrize('bad', [dict(page='unknown'), dict(page='equipment'),
+                               dict(page='material', action='unknown')])
+def test_unknown_material_entry_does_not_count_as_equipped_or_sweepable(bad):
+    client = Client()
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, action(), model=Model(overview(), bad, bad),
+                                 template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps == [EQUIPMENT_POINTS[4], MATERIAL_POINTS[0]]
+
+
+@pytest.mark.parametrize('bad', [advance(None), advance('true'), advance(1),
+                               advance(True, 1), advance(True, True), dict(page='material')])
+def test_uncertain_advance_or_wrong_equipment_never_clicks_advance(bad):
+    client = Client()
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, action(), model=Model(overview(), *filled_slots(), bad, bad),
+                                 template_matcher=matcher, sleep=lambda _: None)
+    assert [p for p in client.taps if p in MATERIAL_POINTS] == list(MATERIAL_POINTS)
+    assert ADVANCE not in client.taps
+
+
+@pytest.mark.parametrize('advance_rounds', [1, 2])
+def test_advance_without_level_change_continues_full_material_round(advance_rounds):
+    client, model = run(
+        *([overview(), *filled_slots(), advance(True)] * advance_rounds),
+        overview(), *filled_slots(), advance(False),
+    )
+    round_taps = [EQUIPMENT_POINTS[4]] + [p for slot in MATERIAL_POINTS for p in (slot, BLANK)]
+    assert client.taps == (round_taps + [ADVANCE]) * advance_rounds + round_taps
+    assert model.prompts.count(prompts.ADVANCE) == advance_rounds + 1
+
+
+def test_sweep_with_partial_materials_rechecks_stamina_on_same_slot_then_finishes():
+    client, model = run(
+        overview(), material('sweep'), setup(30), sweep_result(20), dict(page='material'),
+        material('sweep'), setup(20), sweep_result(10), dict(page='material'),
+        material('synthesize'), material('equip'), dict(page='equipment'),
+        *filled_slots(5), advance(False), overview(), *filled_slots(), advance(False),
+    )
+    assert client.taps.count(START_SWEEP) == 2
+    first_next_slot = client.taps.index(MATERIAL_POINTS[1])
+    assert client.taps[:first_next_slot].count(MATERIAL_POINTS[0]) == 1
+    assert model.prompts.count(prompts.STAMINA) == 2
+
+
+def test_partial_sweep_low_stamina_exits_without_skipping_to_next_slot_or_advancing():
+    client, model = run(
+        overview(), material('sweep'), setup(33), sweep_result(5, runs=6), dict(page='material'),
+        material('sweep'), setup(5), dict(page='material'), dict(page='equipment'),
+    )
+    assert [p for p in client.taps if p in MATERIAL_POINTS] == [MATERIAL_POINTS[0]]
+    assert client.taps.count(START_SWEEP) == 1
+    assert client.taps.count(MATERIAL_BUTTON) == 2
+    assert prompts.ADVANCE not in model.prompts
+
+
+def test_unchecked_auto_stop_is_confirmed_once_before_starting_sweep(caplog):
+    client = Client()
+    observed = []
+
+    class RecordingModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            if prompt == prompts.STAMINA:
+                observed.append((png, len(client.taps)))
+            return super().complete_json(png, prompt, **kwargs)
+
+    with caplog.at_level('INFO', logger='naruto_daily'):
+        handle_equipment_upgrade(client, action(), model=RecordingModel(
+            overview(), material('sweep'), setup(20, False), setup(20, False), setup(10),
+            sweep_result(5), dict(page='material'), material('sweep'), setup(5),
+            dict(page='material'), dict(page='equipment')),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps.count(AUTO_STOP) == 1
+    assert client.taps.count(START_SWEEP) == 1
+    assert observed[1] == observed[2] == (repr(AUTO_STOP).encode(), 4)
+    assert client.taps.index(START_SWEEP) == 4
+    assert '体力读数 10→5' in caplog.text
+
+
+@pytest.mark.parametrize('bad', [
+    sweep_result(10, runs=0), sweep_result(10, runs=True), sweep_result(10, runs='2'),
+    sweep_result(None), sweep_result(True), sweep_result(10, animation_finished=None),
+    sweep_result(10, animation_finished='true'), dict(page='material'), dict(page='unknown'),
+])
+def test_uncertain_sweep_result_never_dismisses_or_restarts_sweep(bad):
+    client = Client()
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), material('sweep'), setup(20), bad, bad),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps[-1] == START_SWEEP
+    assert BLANK not in client.taps
+    assert client.taps.count(START_SWEEP) == 1
+
+
+def test_animation_finishes_and_result_layer_closes_before_reading_material():
+    client = Client()
+    checks = []
+
+    class GuardModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            if prompt == prompts.SWEEP_RESULT:
+                checks.append(client.taps.count(BLANK))
+            if prompt == prompts.MATERIAL:
+                assert client.taps.count(BLANK) == 2
+            return super().complete_json(png, prompt, **kwargs)
+
+    handle_equipment_upgrade(client, action(), model=GuardModel(
+        overview(), material('sweep'), setup(30),
+        sweep_result(5, runs=5, animation_finished=False), sweep_result(5, runs=5),
+        dict(page='sweep_result'), dict(page='material'), material('sweep'), setup(5),
+        dict(page='material'), dict(page='equipment')),
+        template_matcher=matcher, sleep=lambda _: None)
+    assert checks == [0, 0]
+    assert client.taps.count(START_SWEEP) == 1
+
+
+def test_late_sweep_result_cannot_dismiss_or_click_material(monkeypatch):
+    from naruto_daily.common import model_workflow
+    now = [0]
+    monkeypatch.setattr(model_workflow.time, 'monotonic', lambda: now[0])
+    client = Client()
+
+    class LateModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            if prompt == prompts.SWEEP_RESULT:
+                now[0] = 150
+            return super().complete_json(png, prompt, **kwargs)
+
+    with pytest.raises(VisualError, match='超时'):
+        handle_equipment_upgrade(client, action(), model=LateModel(
+            overview(), material('sweep'), setup(20), sweep_result(10)),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps[-1] == START_SWEEP
+
+
+def test_round_limit_stops_repeated_unapplied_material_operation():
+    client = Client()
+    with pytest.raises(VisualError, match='最多2轮'):
+        handle_equipment_upgrade(client, dict(action(), max_rounds=2), model=Model(*(
+            [overview(), material('equip'), dict(page='equipment'), *filled_slots(5), advance(False)] * 2)),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps.count(MATERIAL_BUTTON) == 2
+
+
+@pytest.mark.parametrize('legacy_templates', [False, True])
+def test_equipment_config_accepts_model_only_and_legacy_templates(tmp_path, legacy_templates):
+    import json
+    from naruto_daily.config import load_settings
+    root = Path(__file__).parents[1]
+    payload = json.loads((root / 'config.example.json').read_text(encoding='utf-8'))
+    step = next(a for a in payload['tasks']['equipment_upgrade'] if a['type'] == 'handle_equipment_upgrade')
+    assert not {'one_click_sweep', 'start_sweep', 'sweep_done', 'advance'} & step.keys()
+    if legacy_templates:
+        for key in ('one_click_sweep', 'start_sweep', 'sweep_done', 'advance'):
+            step[key] = dict(name=key, template='assets/equipment_' + key + '.png',
+                             left=1550, top=740, right=1920, bottom=930, threshold=.9)
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    assert load_settings(path).tasks['equipment_upgrade']
 
 
 def test_minimum_progression_and_ties_use_row_major_order():
@@ -97,105 +304,6 @@ def test_unreadable_equipment_is_not_guessed(levels):
         lowest_equipment(overview(levels))
 
 
-def test_material_selection_uses_leftmost_missing_slot_and_requires_selected_equipment():
-    assert first_material(materials(['filled', 'sweepable', 'filled', 'sweepable', 'filled', 'filled']), 5) == 2
-    assert first_material(materials(['filled'] * 6, True), 5) is None
-    with pytest.raises(VisualError):
-        first_material(materials(), 1)
-    with pytest.raises(VisualError):
-        first_material(materials(['filled'] * 6, False), 5)
-
-
-def test_filled_material_info_is_closed_and_next_missing_slot_is_opened():
-    before = materials(['filled', 'equipable', 'filled', 'sweepable', 'sweepable', 'sweepable'])
-    after = materials(['filled', 'filled', 'filled', 'sweepable', 'sweepable', 'sweepable'])
-    client, _ = run(
-        overview(), before, dict(page='material_info'), dict(page='equipment'), after,
-        material('sweep'), setup(4), dict(page='material'), dict(page='equipment'),
-    )
-    assert client.taps == [
-        (525, 610), (1244, 690), (1600, 920), (1518, 690),
-        CENTERS['one_click_sweep'], (1600, 920), (1600, 920),
-    ]
-
-
-def test_last_filled_material_info_leads_to_advance_after_verification():
-    def advance_after_info(png, path, roi, threshold):
-        if path.stem == 'advance' and png == b'(1600, 920)':
-            return CENTERS['advance'], 1
-        return matcher(png, path, roi, threshold)
-
-    client, _ = run(
-        overview(), materials(['filled'] * 5 + ['equipable']),
-        dict(page='material_info'), dict(page='equipment'), materials(['filled'] * 6, True),
-        overview([85, 45, 23, 85, 3, 78]), materials(), material('sweep'), setup(4),
-        dict(page='material'), dict(page='equipment'),
-        match=advance_after_info,
-    )
-    assert client.taps[:4] == [(525, 610), (1792, 690), (1600, 920), CENTERS['advance']]
-    assert client.taps.count((1792, 690)) == 1
-
-
-def test_multiple_filled_info_cards_continue_forward_without_reopening_them():
-    client, _ = run(
-        overview(), materials(['filled', 'equipable', 'equipable', 'sweepable', 'filled', 'filled']),
-        dict(page='material_info'), dict(page='material_info'), dict(page='equipment'),
-        materials(['filled', 'filled', 'equipable', 'sweepable', 'filled', 'filled']),
-        dict(page='material_info'), dict(page='equipment'),
-        materials(['filled', 'filled', 'filled', 'sweepable', 'filled', 'filled']),
-        material('sweep'), setup(4), dict(page='material'), dict(page='equipment'),
-    )
-    assert client.taps == [
-        (525, 610), (1244, 690), (1600, 920), (1600, 920),
-        (1380, 690), (1600, 920), (1518, 690), CENTERS['one_click_sweep'],
-        (1600, 920), (1600, 920),
-    ]
-
-
-def test_info_verification_cannot_reopen_an_earlier_confirmed_filled_slot():
-    client = Client()
-    with pytest.raises(VisualError, match='已确认的成品格'):
-        handle_equipment_upgrade(client, action(), model=Model(
-            overview(), materials(['filled', 'equipable', 'filled', 'sweepable', 'filled', 'filled']),
-            dict(page='material_info'), dict(page='equipment'),
-            materials(['equipable', 'filled', 'filled', 'sweepable', 'filled', 'filled'])),
-            template_matcher=matcher, sleep=lambda _: None)
-    assert client.taps == [(525, 610), (1244, 690), (1600, 920)]
-
-
-@pytest.mark.parametrize('state', ['equipable', 'sweepable', 'craftable'])
-def test_material_info_does_not_skip_slot_without_filled_confirmation(state):
-    client = Client()
-    before = materials(['filled', 'equipable', 'filled', 'sweepable', 'sweepable', 'sweepable'])
-    after = materials(['filled', state, 'filled', 'sweepable', 'sweepable', 'sweepable'])
-    with pytest.raises(VisualError, match='第2格.*已装备'):
-        handle_equipment_upgrade(client, action(), model=Model(
-            overview(), before, dict(page='material_info'), dict(page='equipment'), after),
-            template_matcher=matcher, sleep=lambda _: None)
-    assert client.taps == [(525, 610), (1244, 690), (1600, 920)]
-
-
-@pytest.mark.parametrize('after', [
-    dict(materials(), selected_slot=1), dict(page='unknown'), dict(page='material_info'),
-])
-def test_material_info_requires_fresh_same_equipment_verification(after):
-    client = Client()
-    with pytest.raises(VisualError):
-        handle_equipment_upgrade(client, action(), model=Model(
-            overview(), materials(), dict(page='material_info'), dict(page='equipment'), after, after),
-            template_matcher=matcher, sleep=lambda _: None)
-    assert client.taps == [(525, 610), (1106, 690), (1600, 920)]
-
-
-def test_unknown_material_entry_is_not_treated_as_read_only_info():
-    client = Client()
-    with pytest.raises(VisualError):
-        handle_equipment_upgrade(client, action(), model=Model(
-            overview(), materials(), dict(page='unknown'), dict(page='unknown')),
-            template_matcher=matcher, sleep=lambda _: None)
-    assert client.taps == [(525, 610), (1106, 690)]
-
-
 def test_material_info_after_synthesis_does_not_trigger_entry_recovery():
     client = Client()
     flow = ModelWorkflow(client, action(), model=Model(
@@ -206,24 +314,98 @@ def test_material_info_after_synthesis_does_not_trigger_entry_recovery():
 
 
 @pytest.mark.parametrize('stamina', [0, 4, 5])
-def test_low_stamina_dismisses_both_layers_without_starting(stamina):
-    client, _ = run(overview(), materials(), material('sweep'), setup(stamina),
+@pytest.mark.parametrize('auto_stop', [False, True])
+def test_low_stamina_dismisses_both_layers_without_starting(stamina, auto_stop):
+    client, _ = run(overview(), material('sweep'), setup(stamina, auto_stop),
                     dict(page='material'), dict(page='equipment'))
+    assert CENTERS['start_sweep'] not in client.taps
+    assert AUTO_STOP not in client.taps
+    assert client.taps[-2:] == [(1600, 920)] * 2
+
+
+@pytest.mark.parametrize('max_calls', [1, 2, 3])
+def test_persistently_unchecked_auto_stop_stops_without_repeating_checkbox(max_calls):
+    client = Client()
+    recheck_frames = []
+
+    class RecordingModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            if AUTO_STOP in client.taps:
+                recheck_frames.append(png)
+            return super().complete_json(png, prompt, **kwargs)
+
+    config = dict(action(), multimodal=dict(max_calls=max_calls))
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, config, model=RecordingModel(
+            overview(), material('sweep'), setup(20, False),
+            *[setup(20, False)] * max_calls), template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps.count(AUTO_STOP) == 1
+    assert CENTERS['start_sweep'] not in client.taps
+    assert recheck_frames == [repr(AUTO_STOP).encode()] * max_calls
+
+
+@pytest.mark.parametrize('bad', [
+    dict(page='material', stamina=20, auto_stop=True), setup(None),
+    setup(20, None), setup(20, 'true'),
+])
+def test_uncertain_auto_stop_recheck_never_starts_or_repeats_checkbox(bad):
+    client = Client()
+    with pytest.raises(VisualError):
+        handle_equipment_upgrade(client, action(), model=Model(
+            overview(), material('sweep'), setup(20, False), bad, bad),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps.count(AUTO_STOP) == 1
+    assert client.taps[-1] == AUTO_STOP
+    assert CENTERS['start_sweep'] not in client.taps
+
+
+@pytest.mark.parametrize('stamina', [0, 5])
+@pytest.mark.parametrize('auto_stop', [False, True])
+def test_stamina_falling_to_limit_during_checkbox_recheck_closes_without_sweep(stamina, auto_stop):
+    client, _ = run(
+        overview(), material('sweep'), setup(20, False), setup(stamina, auto_stop),
+        dict(page='material'), dict(page='equipment'),
+    )
+    assert client.taps.count(AUTO_STOP) == 1
     assert CENTERS['start_sweep'] not in client.taps
     assert client.taps[-2:] == [(1600, 920)] * 2
 
 
-def test_sweep_synthesize_equip_reselect_then_stop():
-    client, _ = run(
-        overview(), materials(), material('sweep'), setup(6),
-        material('synthesize'), material('equip'), dict(page='equipment'),
-        overview(), materials(['filled'] * 5 + ['sweepable']), material('sweep'), setup(1),
-        dict(page='material'), dict(page='equipment'),
-    )
-    assert client.taps.count(CENTERS['start_sweep']) == 1
-    assert client.taps.count((525, 610)) == 2
-    assert client.taps.count((650, 840)) == 4  # 两次打开扫荡、合成、装备
-    assert CENTERS['sweep_done'] not in client.taps  # 继续扫荡只作完成标记
+def test_late_auto_stop_confirmation_cannot_start_sweep(monkeypatch):
+    from naruto_daily.common import model_workflow
+    now = [0]
+    monkeypatch.setattr(model_workflow.time, 'monotonic', lambda: now[0])
+    client = Client()
+    rechecks = []
+
+    class LateModel(Model):
+        def complete_json(self, png, prompt, **kwargs):
+            if AUTO_STOP in client.taps:
+                rechecks.append(png)
+                now[0] = 2000
+            return super().complete_json(png, prompt, **kwargs)
+
+    with pytest.raises(VisualError, match='超时'):
+        handle_equipment_upgrade(client, action(), model=LateModel(
+            overview(), material('sweep'), setup(20, False), setup(20)),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert rechecks == [repr(AUTO_STOP).encode()]
+    assert client.taps.count(AUTO_STOP) == 1
+    assert client.taps[-1] == AUTO_STOP
+    assert CENTERS['start_sweep'] not in client.taps
+
+
+def test_checkbox_click_wait_exhausting_timeout_stops_before_recheck_or_sweep():
+    client = Client()
+    # 前三次点击各等1秒，勾选后最后0.5秒耗尽剩余时间。
+    config = dict(action(), timeout_seconds=3.5)
+    with pytest.raises(VisualError, match='超时'):
+        handle_equipment_upgrade(client, config, model=Model(
+            overview(), material('sweep'), setup(20, False)),
+            template_matcher=matcher, sleep=lambda _: None)
+    assert client.taps.count(AUTO_STOP) == 1
+    assert client.taps[-1] == AUTO_STOP
+    assert CENTERS['start_sweep'] not in client.taps
 
 
 def test_delayed_synthesis_result_is_rechecked_without_repeating_click():
@@ -335,99 +517,17 @@ def test_synthesis_recheck_wait_exhausting_timeout_stops_before_model_or_click()
     assert client.taps == [(650, 840)]
 
 
-@pytest.mark.parametrize('advances', [1, 2])
-def test_visible_advance_precedes_materials_even_when_level_reading_is_unchanged(advances):
-    client = Client()
-
-    def available_advance(png, path, roi, threshold):
-        if path.stem == 'advance' and client.taps.count(CENTERS['advance']) < advances:
-            return CENTERS['advance'], 1
-        return matcher(png, path, roi, threshold)
-
-    class AdvanceFirstModel(Model):
-        def complete_json(self, png, prompt, **kwargs):
-            if prompt == prompts.MATERIALS:
-                assert client.taps.count(CENTERS['advance']) == advances, '进阶按钮消失前不应读取材料'
-            return super().complete_json(png, prompt, **kwargs)
-
-    handle_equipment_upgrade(client, action(), model=AdvanceFirstModel(
-        *[overview() for _ in range(advances + 1)],
-        materials(), material('sweep'), setup(4), dict(page='material'), dict(page='equipment')),
-        template_matcher=available_advance, sleep=lambda _: None)
-    assert client.taps[:advances * 2] == [(525, 610), (1750, 830)] * advances
-    assert client.taps[advances * 2:advances * 2 + 3] == [(525, 610), (1106, 690), (650, 840)]
-    assert client.taps.count(CENTERS['advance']) == advances
-
-
-def test_advancing_reselects_new_lowest_equipment_before_checking_button():
-    client = Client()
-
-    def available_advance(png, path, roi, threshold):
-        if path.stem == 'advance':
-            return CENTERS['advance'], 1
-        return matcher(png, path, roi, threshold)
-
-    with pytest.raises(VisualError, match='最多2轮'):
-        handle_equipment_upgrade(client, dict(action(), max_rounds=2), model=OverviewOnlyModel(
-            overview([2, 5, 6, 7, 3, 8]), overview([2, 5, 6, 7, 3, 8], selected_slot=1),
-            overview([4, 5, 6, 7, 3, 8], selected_slot=1), overview([4, 5, 6, 7, 3, 8])),
-            template_matcher=available_advance, sleep=lambda _: None)
-    assert client.taps == [(275, 360), (1750, 830), (525, 610), (1750, 830)]
-
-
-def test_ignored_equipment_selection_cannot_advance_previous_equipment():
-    client = Client()
-    with pytest.raises(VisualError):
-        handle_equipment_upgrade(client, dict(action(), max_rounds=1), model=OverviewOnlyModel(
-            overview(selected_slot=1), overview(selected_slot=1), overview(selected_slot=1)),
-            template_matcher=lambda *args: (CENTERS['advance'], 1), sleep=lambda _: None)
-    assert client.taps == [(525, 610)]
-
-
-def test_persistent_advance_button_still_respects_round_limit():
-    client = Client()
-    with pytest.raises(VisualError, match='最多2轮'):
-        handle_equipment_upgrade(client, dict(action(), max_rounds=2), model=OverviewOnlyModel(overview(), overview()),
-            template_matcher=lambda *args: (CENTERS['advance'], 1), sleep=lambda _: None)
-    assert client.taps == [(525, 610), (1750, 830), (525, 610), (1750, 830)]
-
-
-def test_advance_detection_after_timeout_does_not_click(monkeypatch):
-    from naruto_daily.common import model_workflow
-    now = [0]
-    monkeypatch.setattr(model_workflow.time, 'monotonic', lambda: now[0])
-    client = Client()
-
-    def late_match(*args):
-        now[0] = 2000
-        return CENTERS['advance'], 1
-
-    with pytest.raises(VisualError, match='超时'):
-        handle_equipment_upgrade(client, action(), model=OverviewOnlyModel(overview()),
-            template_matcher=late_match, sleep=lambda _: None)
-    assert client.taps == [(525, 610)]
-
-
 @pytest.mark.parametrize('bad', [dict(page='material', stamina=200, auto_stop=True),
-                               setup(True), setup(None), dict(page='sweep_setup', stamina=200, auto_stop=False)])
+                               setup(True), setup(None), setup(200, None), setup(200, 'true'),
+                               setup(200, 0), setup(200, 1), dict(page='sweep_setup', stamina=200)])
 def test_uncertain_stamina_or_wrong_layer_never_starts_sweep(bad):
     client = Client()
     with pytest.raises(VisualError):
         handle_equipment_upgrade(client, action(), model=Model(
-            overview(), materials(), material('sweep'), bad, bad),
+            overview(), material('sweep'), bad, bad),
             template_matcher=matcher, sleep=lambda _: None)
     assert CENTERS['start_sweep'] not in client.taps
-
-
-def test_missing_completion_marker_times_out_without_dismissing_active_sweep():
-    client = Client()
-    def missing_done(png, path, roi, threshold):
-        return (None, .1) if path.stem == 'sweep_done' else matcher(png, path, roi, threshold)
-    with pytest.raises(VisualError, match='sweep_done.*超时'):
-        handle_equipment_upgrade(client, action(), model=Model(
-            overview(), materials(), material('sweep'), setup(10)),
-            template_matcher=missing_done, sleep=lambda _: None)
-    assert client.taps[-1] == CENTERS['start_sweep']
+    assert AUTO_STOP not in client.taps
 
 
 @pytest.mark.parametrize('slots', [[], [1, 2, 3], [2, 3]])
@@ -446,32 +546,6 @@ def test_takeout_unrecognized_page_does_not_click():
         handle_ichiraku_takeout(client, action(), model=Model(dict(page='unknown'), dict(page='unknown')),
                                sleep=lambda _: None)
     assert not client.taps
-
-
-def test_sweep_with_partial_materials_reopens_and_checks_stamina_again():
-    client, _ = run(overview(), materials(), material('sweep'), setup(33),
-                    material('sweep'), dict(page='equipment'),
-                    overview(), materials(), material('sweep'), setup(4),
-                    dict(page='material'), dict(page='equipment'))
-    assert client.taps.count(CENTERS['start_sweep']) == 1
-    assert client.taps.count(CENTERS['one_click_sweep']) == 2
-
-
-def test_ignored_result_dismiss_is_retried_before_reading_material():
-    client = Client()
-    def delayed_dismiss(png, path, roi, threshold):
-        if path.stem == 'sweep_done':
-            return (None, .1) if client.taps.count((1600, 920)) >= 2 else (CENTERS['sweep_done'], 1)
-        return matcher(png, path, roi, threshold)
-    class GuardModel(Model):
-        def complete_json(self, png, prompt, **kwargs):
-            if '根据左面板底部' in prompt and CENTERS['start_sweep'] in client.taps:
-                assert client.taps.count((1600, 920)) >= 2, '扫荡结果弹层仍未关闭'
-            return super().complete_json(png, prompt, **kwargs)
-    handle_equipment_upgrade(client, action(), model=GuardModel(
-        overview(), materials(), material('sweep'), setup(6), material('sweep'), dict(page='equipment'),
-        overview(), materials(), material('sweep'), setup(4), dict(page='material'), dict(page='equipment')),
-        template_matcher=delayed_dismiss, sleep=lambda _: None)
 
 
 def test_late_model_response_cannot_trigger_click(monkeypatch):

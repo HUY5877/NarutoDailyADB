@@ -6,19 +6,30 @@ build-backend = "setuptools.build_meta"
 name = "naruto-daily-adb"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["numpy>=2", "opencv-python-headless>=4.10", "python-dotenv>=1.0", "pydantic>=2.12", "claude-agent-sdk==0.2.152", "pydantic-ai-slim[openai]==2.41.0"]
+dependencies = ["numpy>=2", "opencv-python-headless>=4.10", "python-dotenv>=1.0", "pydantic>=2.12", "claude-agent-sdk==0.2.152", "pydantic-ai-slim[openai]==2.41.0", "redis>=5,<8", "cloudflare>=5.9,<6"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+login-service = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "qrcode[pil]>=8,<9", "oss2>=2.19,<3", "redis>=5,<8"]
+login-service-test = ["pytest>=8", "httpx>=0.28,<1", "fakeredis[lua]>=2,<3"]
 
 [project.scripts]
 naruto-daily = "naruto_daily.cli:main"
+naruto-login-service = "naruto_daily.login_service.__main__:main"
 
-[tool.setuptools.packages.find]
-include = ["naruto_daily*"]
+[tool.setuptools.package-dir]
+"naruto_daily.assets" = "assets"
 
 [tool.setuptools.package-data]
+"naruto_daily.assets" = [
+    "qq_android_button.png", "qq_account_switch_account.png", "start_game_button.png",
+    "login_add_account.png", "login_game_back.png", "login_other_login.png",
+    "login_qr_heading.png", "login_scan_login.png", "login_web_qr_heading.png",
+    "login_web_qr_instruction.png", "login_web_qr_expired.png",
+]
+"naruto_daily.multimodal" = ["README.md"]
 "naruto_daily.multimodal.agent" = ["README.md"]
+"naruto_daily.login_service" = ["README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

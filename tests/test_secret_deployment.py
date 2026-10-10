@@ -38,7 +38,7 @@ def test_positive_tickets_confirm_warning_once_and_wait_for_loading():
     assert wait_after_deploy(ImageRecognition(client, asset_root=ROOT, sleep=waits.append),
                              action(), confirmed_tickets=32, clock=lambda: 0)
     assert len(client.taps) == 1
-    assert sum(waits) == 18  # 点击前3秒 + 确认后15秒加载。
+    assert sum(waits) == 12  # 点击前3秒 + 确认后9秒加载。
 
 
 @pytest.mark.parametrize('fixture', ['secret_flame_battle', 'secret_leave_team_dialog'])
@@ -47,7 +47,7 @@ def test_no_warning_or_other_confirm_dialog_is_not_clicked(fixture):
     client, waits = Client(fixture), []
     assert not wait_after_deploy(ImageRecognition(client, asset_root=ROOT, sleep=waits.append),
                                  action(), confirmed_tickets=1, clock=lambda: 0)
-    assert client.taps == [] and sum(waits) == 15
+    assert client.taps == [] and sum(waits) == 9
 
 
 @pytest.mark.parametrize('tickets', [0, None, -1, True, '32'])
@@ -71,7 +71,7 @@ def test_delayed_warning_is_found_and_loading_wait_restarts_after_confirm():
     client.screenshot = screenshot
     assert wait_after_deploy(ImageRecognition(client, asset_root=ROOT, sleep=waits.append),
                              action(), confirmed_tickets=32, clock=lambda: 0)
-    assert len(client.taps) == 1 and sum(waits) == 24
+    assert len(client.taps) == 1 and sum(waits) == 18
 
 
 def test_warning_still_visible_after_confirm_times_out_without_repeat_click():

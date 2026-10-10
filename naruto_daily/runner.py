@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from naruto_daily.common.adb_client import AdbClient
+from naruto_daily.common.execution import action_with_execution_budget, check_execution, execution_sleep
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.login import cleanup_popups
@@ -26,6 +27,7 @@ from .equipment import handle_equipment_upgrade
 
 LOGGER = logging.getLogger("naruto_daily")
 ACTION_NAMES = {
+    "main_menu_tap": "大模型识别主界面入口后点击",
     "handle_ichiraku_takeout": "判断并领取一乐外卖",
     "handle_equipment_upgrade": "优先最低装备扫荡材料、合成和进阶",
     "enter_secret_realm": "进入秘境探险",
@@ -64,18 +66,27 @@ class ActionRunner:
         asset_root: Path = Path("."),
     ):
         self.client = client
-        self.sleep = sleep
+        self.sleep = lambda seconds: execution_sleep(seconds, sleep)
         self.dry_run = dry_run
         self.template_matcher = template_matcher
         self.asset_root = Path(asset_root)
 
     def run(self, actions: Sequence[dict]) -> RunSummary:
-        LOGGER.info("开始执行，共 %d 个动作", len(actions))
+        LOGGER.info(
+            "开始执行，共 %d 个动作", len(actions),
+            extra={"action_index": 0, "action_total": len(actions)},
+        )
         images = ImageRecognition(self.client, self.template_matcher, self.asset_root, self.sleep)
+        action_count = len(actions)
         skip_action_type: str | None = None
         completed_card_name = ""
         for index, action in enumerate(actions, start=1):
-            LOGGER.info("动作 %d/%d：%s", index, len(actions), ACTION_NAMES.get(action["type"], "未知动作"))
+            check_execution()
+            action = action_with_execution_budget(action)
+            LOGGER.info(
+                "动作 %d/%d：%s", index, len(actions), ACTION_NAMES.get(action["type"], "未知动作"),
+                extra={"action_index": index, "action_total": len(actions)},
+            )
             if self.dry_run:
                 LOGGER.info("模拟运行，不发送输入")
                 continue
@@ -124,7 +135,7 @@ class ActionRunner:
                     asset_root=self.asset_root,
                     sleep=self.sleep,
                 )
-            elif action_type == "required_template_tap":
+            elif action_type in {"required_template_tap", "main_menu_tap"}:
                 required_template_tap(self.client, action, template_matcher=self.template_matcher,
                                       asset_root=self.asset_root, sleep=self.sleep)
             elif action_type == "authorize_account":
@@ -174,6 +185,10 @@ class ActionRunner:
             elif action_type == "handle_secret_realm":
                 handle_secret_realm(self.client, action, template_matcher=self.template_matcher,
                                     asset_root=self.asset_root, sleep=self.sleep)
+                # 秘境处理器仅在确认挑战券为0时正常返回；此时整次任务已完成。
+                action_count = index
+                LOGGER.info('秘境已确认挑战券为0，结束本次任务，跳过后续 %d 个动作', len(actions) - index)
+                break
             elif action_type == "handle_abundance":
                 handle_abundance(
                     self.client, action, template_matcher=self.template_matcher,
@@ -201,5 +216,9 @@ class ActionRunner:
                 )
             else:
                 raise ValueError(f"不支持的动作类型：{action_type!r}")
-        LOGGER.info("执行结束：%d 个动作", len(actions))
-        return RunSummary(len(actions))
+        check_execution()
+        LOGGER.info(
+            "执行结束：%d 个动作", action_count,
+            extra={"action_index": action_count, "action_total": action_count},
+        )
+        return RunSummary(action_count)

@@ -113,7 +113,7 @@ class Model:
         return {'reset_count': next(self.counts)}
 
 
-def run(action_value, client, model, waits):
+def run(action_value, client, model, waits, *, background_start=False, missing_targets=()):
     def matcher(png, path, roi, threshold):
         name = path.stem
         visible = {
@@ -124,6 +124,9 @@ def run(action_value, client, model, waits):
             'confirm_second': {'confirm_second'},
             'reset_confirm': {'reset_confirm'},
         }.get(client.state, set())
+        if background_start and client.state in {'ready', 'confirm_first', 'confirm_second'}:
+            visible.add('start_sweep')
+        visible.difference_update(missing_targets)
         centers = {
             'start_sweep': (1100, 900), 'ready': (1100, 900),
             'confirm_first': (1100, 900), 'confirm_second': (1100, 900),
@@ -155,37 +158,191 @@ def test_survival_without_transfer_starts_directly_and_zero_breaks():
     assert waits[-1] == 60
 
 
-@pytest.mark.parametrize('counts,expected_resets', [([1, 0], 1), ([2, 1, 0], 2)])
-def test_survival_uses_last_reset_and_continues_until_zero(counts, expected_resets):
+@pytest.mark.parametrize('counts', [[1, 0], [2, 1, 0]])
+def test_survival_resets_for_every_positive_count_and_exits_only_at_zero(counts):
     client, waits = Client(transfer=False), []
-    action_value = action()
-    action_value['timeout_seconds'] = 300
-
-    run(action_value, client, Model(counts), waits)
-
-    assert client.taps.count((1400, 900, 'map')) == expected_resets
-    assert client.taps.count((1100, 900, 'reset_confirm')) == expected_resets
-    assert client.taps.count((1100, 900, 'map')) == len(counts)
-    assert waits.count(60) == len(counts)
-    assert client.taps[-1] == (1100, 900, 'confirm_second')
+    model = Model(counts)
+    run(dict(action(), timeout_seconds=300), client, model, waits)
+    states = [state for _, _, state in client.taps]
+    sweep = ['map', 'ready', 'confirm_first', 'confirm_second']
+    assert states == (sweep + ['map', 'reset_confirm']) * (len(counts) - 1) + sweep
+    assert sum(x == 1400 for x, _, _ in client.taps) == len(counts) - 1
+    assert model.calls == waits.count(60) == len(counts)
 
 
-def test_survival_rejects_invalid_model_result():
+@pytest.mark.parametrize('initial_transfer', [False, True])
+def test_survival_dismisses_transfer_again_after_reset_before_next_sweep(initial_transfer):
+    class TransferAfterResetClient(Client):
+        def tap(self, x, y):
+            reset_confirmed = self.state == 'reset_confirm'
+            super().tap(x, y)
+            if reset_confirmed:
+                self.state = 'transfer'
+
+    client, waits = TransferAfterResetClient(transfer=initial_transfer), []
+    run(action(), client, Model([1, 0]), waits)
+    states = [state for _, _, state in client.taps]
+    assert states.count('transfer') == 1 + int(initial_transfer)
+    reset = states.index('reset_confirm')
+    assert states[reset + 1:reset + 4] == ['transfer', 'map', 'ready']
+    assert waits.count(60) == 2
+
+
+@pytest.mark.parametrize('count', [None, True, -1, '1'])
+def test_survival_rejects_invalid_model_result(count):
     client, waits = Client(transfer=False), []
     with pytest.raises(VisualError, match='重置次数'):
-        run(action(), client, Model([None]), waits)
+        run(action(), client, Model([count]), waits)
     assert not any(x == 1400 for x, _, _ in client.taps)
 
 
-def test_missing_ready_stops_within_button_timeout_instead_of_whole_task():
+def test_unresponsive_start_sweep_retries_twice_then_zero_reset_count_finishes():
     client, waits = Client(transfer=False), []
     action_value = action()
     action_value['timeout_seconds'] = 900
     client.tap = lambda x, y: client.taps.append((x, y, client.state))
-    with pytest.raises(VisualError, match='ready'):
-        run(action_value, client, Model([]), waits)
-    assert len(client.taps) == 1  # Start sweep is never clicked again while awaiting ready.
+    model = Model([0])
+    run(action_value, client, model, waits)
+    assert len(client.taps) == 3  # Initial click and at most two fresh-screen retries.
+    assert all(state == 'map' for _, _, state in client.taps)
+    assert model.calls == 1
+    assert 60 not in waits
     assert sum(waits) <= 21
+
+
+def test_unresponsive_start_sweep_resets_once_then_runs_next_sweep_normally():
+    class UnavailableUntilResetClient(Client):
+        def __init__(self):
+            super().__init__(transfer=False)
+            self.reset_done = False
+
+        def tap(self, x, y):
+            if self.state == 'map' and x == 1100 and not self.reset_done:
+                self.taps.append((x, y, self.state))
+                return
+            if self.state == 'reset_confirm':
+                self.reset_done = True
+            super().tap(x, y)
+
+    client, waits = UnavailableUntilResetClient(), []
+    model = Model([1, 0])
+    run(action(), client, model, waits)
+    assert client.taps == [
+        (1100, 900, 'map'), (1100, 900, 'map'), (1100, 900, 'map'),
+        (1400, 900, 'map'), (1100, 900, 'reset_confirm'),
+        (1100, 900, 'map'), (1100, 900, 'ready'),
+        (1100, 900, 'confirm_first'), (1100, 900, 'confirm_second'),
+    ]
+    assert model.calls == 2
+    assert waits.count(60) == 1
+
+
+def test_unresponsive_start_sweep_cannot_blindly_click_missing_reset_button():
+    client, waits = Client(transfer=False), []
+    client.tap = lambda x, y: client.taps.append((x, y, client.state))
+    model = Model([1])
+    with pytest.raises(VisualError, match='reset.*超时'):
+        run(action(), client, model, waits, missing_targets={'reset'})
+    assert len(client.taps) == 3
+    assert all(x == 1100 and state == 'map' for x, _, state in client.taps)
+    assert model.calls == 1
+    assert 60 not in waits
+
+
+def test_unresponsive_start_sweep_rejects_unknown_reset_count_without_resetting():
+    client, waits = Client(transfer=False), []
+    client.tap = lambda x, y: client.taps.append((x, y, client.state))
+    with pytest.raises(VisualError, match='重置次数'):
+        run(action(), client, Model([None]), waits)
+    assert len(client.taps) == 3
+    assert not any(x == 1400 for x, _, _ in client.taps)
+    assert 60 not in waits
+
+
+def test_start_sweep_recovers_when_first_click_does_not_change_page(caplog):
+    client, waits = Client(transfer=False), []
+    original_tap = client.tap
+
+    def tap(x, y):
+        if not client.taps:
+            client.taps.append((x, y, client.state))
+        else:
+            original_tap(x, y)
+
+    client.tap = tap
+    with caplog.at_level('INFO', logger='naruto_daily'):
+        run(action(), client, Model([0]), waits)
+    assert [state for _, _, state in client.taps] == ['map', 'map', 'ready', 'confirm_first', 'confirm_second']
+    assert '第1/2次补点' in caplog.text
+    assert '停止补点开始扫荡' in caplog.text
+    assert waits[-1] == 60
+
+
+@pytest.mark.parametrize('next_stage', ['ready', 'confirm_first', 'confirm_second'])
+def test_foreground_stage_prevents_retrying_start_sweep_behind_dialog(next_stage):
+    client, waits = Client(transfer=False), []
+    original_tap = client.tap
+
+    def tap(x, y):
+        was_map = client.state == 'map'
+        original_tap(x, y)
+        if was_map:
+            client.state = next_stage
+
+    client.tap = tap
+    run(action(), client, Model([0]), waits, background_start=True)
+    assert sum(state == 'map' for _, _, state in client.taps) == 1
+    expected = ['ready', 'confirm_first', 'confirm_second']
+    assert [state for _, _, state in client.taps[1:]] == expected[expected.index(next_stage):]
+
+
+@pytest.mark.parametrize('eventually_ready', [False, True])
+def test_unknown_loading_screen_is_waited_for_without_blind_reclick(eventually_ready):
+    client, waits = Client(transfer=False), []
+    original_tap = client.tap
+    loading_shots = 0
+
+    def tap(x, y):
+        was_map = client.state == 'map'
+        original_tap(x, y)
+        if was_map:
+            client.state = 'loading'
+
+    def screenshot():
+        nonlocal loading_shots
+        if client.state == 'loading':
+            loading_shots += 1
+            if eventually_ready and loading_shots == 6:
+                client.state = 'ready'
+        return client.state.encode()
+
+    client.tap, client.screenshot = tap, screenshot
+    if eventually_ready:
+        run(action(), client, Model([0]), waits)
+    else:
+        with pytest.raises(VisualError, match='开始扫荡后等待名单或扫荡确认页面超时'):
+            run(action(), client, Model([]), waits)
+        assert len(client.taps) == 1
+        assert sum(waits) <= 21
+    assert not any(state == 'loading' for _, _, state in client.taps)
+    assert sum(state == 'map' for _, _, state in client.taps) == 1
+
+
+def test_late_post_click_screenshot_cannot_trigger_start_sweep_retry(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr('naruto_daily.survival_challenge.handler.time.monotonic', lambda: now[0])
+    client, waits = Client(transfer=False), []
+    client.tap = lambda x, y: client.taps.append((x, y, client.state))
+
+    def screenshot():
+        if client.taps:
+            now[0] += 25
+        return client.state.encode()
+
+    client.screenshot = screenshot
+    with pytest.raises(VisualError, match='开始扫荡后等待名单或扫荡确认页面超时'):
+        run(action(), client, Model([]), waits)
+    assert len(client.taps) == 1
 
 
 def test_slow_screenshot_result_cannot_trigger_click_after_button_timeout(monkeypatch):

@@ -7,12 +7,55 @@ from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.execution import current_execution
 from naruto_daily.multimodal.client import MultimodalClient
 from .free_button import click_free_recruit
 from naruto_daily.common.visual import VisualError, find_template_in_png
 
 
 LOGGER = logging.getLogger("naruto_daily")
+
+# 1920×1080：只在左侧列表慢滑约一个标签的高度，避免惯性滚动越过目标。
+ORDINARY_SCROLL = (120, 900, 120, 780, 500)
+ORDINARY_MAX_SWIPES = 8
+
+
+def _find_ordinary_targets(images: ImageRecognition, action: dict) -> tuple[dict, dict]:
+    target = dict(action['ordinary_tab'], top=200)
+    deadline = images.elapsed + float(action['timeout_seconds'])
+    wall_deadline = time.monotonic() + float(action['timeout_seconds'])
+    swipes = 0
+    while True:
+        remaining = min(deadline - images.elapsed, wall_deadline - time.monotonic())
+        if remaining <= 0:
+            raise VisualError('查找普通招募标签超时，未继续滑动或点击')
+        LOGGER.info('[查找普通招募 第%d轮] 重新识别左侧标签；已小幅滑动 %d/%d 次',
+                    swipes + 1, swipes, ORDINARY_MAX_SWIPES)
+        center, score = images.find(target, deadline=images.elapsed + remaining)
+        remaining = min(deadline - images.elapsed, wall_deadline - time.monotonic())
+        if remaining <= 0:
+            raise VisualError('查找普通招募标签超时，未继续滑动或点击')
+        if center is not None:
+            # 随标签实际位置收紧两个区域，防止将活动标签的红点当成普通招募红点。
+            y = center[1]
+            tab = dict(target, top=max(200, y - 55), bottom=min(target['bottom'], y + 55))
+            guard = dict(action['ordinary_red_dot'], top=max(200, y - 70), bottom=y - 10)
+            LOGGER.info('找到普通招募标签，相似度 %.3f，坐标 (%d, %d)，只检查该标签旁红点',
+                        score, *center)
+            return tab, guard
+        if swipes >= ORDINARY_MAX_SWIPES:
+            raise VisualError(f'小幅滑动{swipes}次仍未找到普通招募标签，已停止')
+        # 手指短距离上移，使列表向下展示后续活动；每次都等页面停稳再截图。
+        wait = max(1.0, float(action['poll_seconds']))
+        if remaining <= ORDINARY_SCROLL[-1] / 1000 + wait:
+            raise VisualError('查找普通招募标签剩余时间不足，未继续滑动')
+        swipes += 1
+        LOGGER.info('普通招募尚未显示，手指向上短滑120像素，让列表向下滚，第%d/%d次；停稳后重新识别',
+                    swipes, ORDINARY_MAX_SWIPES)
+        images.client.swipe(*ORDINARY_SCROLL)
+        if current_execution() is None:
+            images.elapsed += ORDINARY_SCROLL[-1] / 1000
+        images.sleep(wait)
 
 
 @dataclass(frozen=True)
@@ -79,9 +122,11 @@ def handle_free_recruit(
     clicks = {"advanced": 0, "ordinary": 0}
     model = None
     for round_number, (key, name) in enumerate((("advanced", "高级招募"), ("ordinary", "普通招募")), 1):
+        tab, guard = action[key + '_tab'], action[key + '_red_dot']
+        if key == 'ordinary':
+            tab, guard = _find_ordinary_targets(images, action)
         LOGGER.info('[免费招募 第%d/2轮：%s] 检查红点；有红点则切换标签→模型确认免费按钮→招募→关闭结果，未确认红点则跳过本项',
                     round_number, name)
-        guard = action[key + "_red_dot"]
         center, score = images.find(guard)
         if center is None:
             LOGGER.info("未识别到%s红点，跳过本项；相似度 %.3f，阈值 %.3f，搜索区域 (%d, %d)-(%d, %d)",
@@ -96,7 +141,7 @@ def handle_free_recruit(
         LOGGER.info("再次确认%s红点，相似度 %.3f", name, score)
         options = dict(images=images, timeout_seconds=timeout, poll_seconds=poll,
                        pre_click_wait=pre_wait, post_click_wait=post_wait)
-        if not _click_confirmed_target(client, action[key + "_tab"], guard_target=guard, **options):
+        if not _click_confirmed_target(client, tab, guard_target=guard, guard_name=name, **options):
             continue
         center, score = images.find(guard)
         if center is None:

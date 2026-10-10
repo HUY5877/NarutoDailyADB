@@ -11,6 +11,18 @@ from naruto_daily.common.visual import VisualError, find_template_in_png
 
 
 LOGGER = logging.getLogger("naruto_daily")
+# 1920×1080 奖励页统一参数，所有任务的常规查找和卡片补齐共用。
+REWARD_CARD_SWIPE = (1450, 550, 1000, 550, 600)
+REWARD_CARD_WAIT_SECONDS = 2
+REWARD_CARD_MAX_SWIPES = 10
+
+
+def _swipe_reward_cards(client, sleep):
+    x1, y1, x2, y2, duration = REWARD_CARD_SWIPE
+    LOGGER.info('奖励卡片统一左滑：(%d, %d)→(%d, %d)，持续%d毫秒，滑后等待%d秒',
+                x1, y1, x2, y2, duration, REWARD_CARD_WAIT_SECONDS)
+    client.swipe(*REWARD_CARD_SWIPE)
+    sleep(REWARD_CARD_WAIT_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -33,7 +45,7 @@ def navigate_to_card(
 
     name = action["name"]
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
-    max_swipes = action["max_swipes"]
+    max_swipes = action.get("max_swipes", REWARD_CARD_MAX_SWIPES)
 
     def scan_card(png):
         center, score = images.match(png, action)
@@ -87,16 +99,9 @@ def navigate_to_card(
                         "找到%s文字，但按钮和已完成标记都不完整，额外左滑一次后重新判断",
                         name,
                     )
-                    client.swipe(
-                        action["swipe_x1"],
-                        action["swipe_y1"],
-                        action["swipe_x2"],
-                        action["swipe_y2"],
-                        action["swipe_duration_ms"],
-                    )
+                    _swipe_reward_cards(client, sleep)
                     swipe_count += 1
                     alignment_swipe_used = True
-                    sleep(float(action["wait_seconds"]))
                     continue
                 if action.get("completed_skip_type"):
                     LOGGER.info(
@@ -162,21 +167,17 @@ def navigate_to_card(
             swipe_count + 1,
             max_swipes,
         )
-        client.swipe(
-            action["swipe_x1"],
-            action["swipe_y1"],
-            action["swipe_x2"],
-            action["swipe_y2"],
-            action["swipe_duration_ms"],
-        )
+        _swipe_reward_cards(client, sleep)
         swipe_count += 1
-        sleep(float(action["wait_seconds"]))
 
 
 def required_template_tap(client, action, *, template_matcher=find_template_in_png,
                           asset_root=Path("."), sleep=time.sleep):
-    """等待、复查并点击必需按钮，供任务执行器和入口流程共用。"""
+    """等待、复查并点击必需按钮；主界面目标通过 ImageRecognition 使用模型。"""
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
+    is_main = 'main_menu' in action
+    if is_main:
+        images.main_call_limit = action['multimodal']['max_calls']
     timeout_seconds = float(action["timeout_seconds"])
     poll_seconds = float(action["poll_seconds"])
     pre_click_wait_seconds = float(action.get("pre_click_wait_seconds", 1))
@@ -187,24 +188,27 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
         round_number += 1
         LOGGER.info('[等待点击%s 第%d轮] 查找按钮→等待后复查→点击后结束；未确认则轮询，超时停止；剩余等待 %.2f 秒',
                     action['name'], round_number, max(0, deadline - images.elapsed))
+        if is_main:
+            images.main_call_phase = '查找'
         center, score = images.find(action, deadline=deadline)
         if center is not None:
-            LOGGER.info(
-                "发现%s，相似度 %.3f，点击前等待 %.2f 秒",
-                action["name"], score, pre_click_wait_seconds,
-            )
+            if is_main:
+                LOGGER.info('模型已确认%s，点击前等待 %.2f 秒', action['name'], pre_click_wait_seconds)
+            else:
+                LOGGER.info("发现%s，相似度 %.3f，点击前等待 %.2f 秒",
+                            action["name"], score, pre_click_wait_seconds)
             images.sleep(pre_click_wait_seconds)
+            if is_main:
+                images.main_call_phase = '点击前复查'
             confirmed_center, confirmed_score = images.find(action, deadline=deadline)
             if confirmed_center is None:
-                LOGGER.info(
-                    "等待后%s已消失，相似度 %.3f，继续识别",
-                    action["name"], confirmed_score,
-                )
+                LOGGER.info('等待后未确认%s，本轮不点击旧坐标', action['name'])
             else:
-                LOGGER.info(
-                    "再次确认%s，相似度 %.3f，点击坐标 (%d, %d)",
-                    action["name"], confirmed_score, confirmed_center[0], confirmed_center[1],
-                )
+                if is_main:
+                    LOGGER.info('模型复查确认%s，点击坐标 %s', action['name'], confirmed_center)
+                else:
+                    LOGGER.info("再次确认%s，相似度 %.3f，点击坐标 (%d, %d)",
+                                action["name"], confirmed_score, confirmed_center[0], confirmed_center[1])
                 client.tap(*confirmed_center)
                 LOGGER.info(
                     "点击完成，等待 %.2f 秒让页面响应",
@@ -213,10 +217,12 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
                 images.sleep(post_click_wait_seconds)
                 break
         if images.elapsed >= deadline:
+            if is_main:
+                raise VisualError(f"等待模型确认{action['name']}超时，未继续点击")
             raise VisualError(f"等待{action['name']}超时，最后相似度 {score:.3f}")
         delay = min(poll_seconds, deadline - images.elapsed)
-        LOGGER.info(
-            "等待%s，当前相似度 %.3f，%.2f 秒后重试",
-            action["name"], score, delay,
-        )
+        if is_main:
+            LOGGER.info('模型尚未确认%s，%.2f 秒后重试', action['name'], delay)
+        else:
+            LOGGER.info("等待%s，当前相似度 %.3f，%.2f 秒后重试", action["name"], score, delay)
         images.sleep(delay)

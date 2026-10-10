@@ -1,12 +1,13 @@
-"""视觉导航公共类型；生产会话由 Claude Agent SDK 驱动。"""
+"""通过 OpenAI 兼容 SDK 直连模型网关的视觉导航。"""
 import asyncio
+import base64
+import json
 import logging
 import math
 import time
 from dataclasses import dataclass, replace
 from typing import Annotated, Callable, Literal
 
-from httpx2 import AsyncClient
 from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_ai import Agent, BinaryContent, ModelRetry, ToolOutput, ToolReturn
@@ -19,6 +20,10 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
 
 from naruto_daily.common.visual import VisualError
+from naruto_daily.common.execution import check_execution, current_execution, execution_sleep, DailyDeadlineExceeded
+from naruto_daily.multimodal.diagnostics import model_request_context, safe_exception_details
+from naruto_daily.multimodal.transport import ModelAsyncClient, MultimodalRequestError, httpx
+from .completion_watch import CompletionDetected, CompletionWatch
 
 LOGGER = logging.getLogger('naruto_daily')
 Observation = Annotated[str, Field(strict=True, min_length=1, max_length=2000, pattern=r'\S')]
@@ -109,7 +114,7 @@ class GoalEvidence(NavigationEvidence):
         return self.status
 
 
-def _latest_image_only(messages):
+def _latest_image_only(messages, latest_png=None):
     """保留 SDK 的文字和工具历史，每次请求只发送最新截图。"""
     latest = None
     for message in messages:
@@ -125,14 +130,39 @@ def _latest_image_only(messages):
                      if isinstance(part, UserPromptPart) and part is not latest
                      and not isinstance(part.content, str) else part for part in message.parts]
             message = replace(message, parts=parts)
+        if latest_png is not None and isinstance(message, ModelRequest):
+            message = replace(message, parts=[
+                replace(part, content=[BinaryContent(data=latest_png, media_type='image/png')
+                                      if isinstance(item, BinaryContent) else item for item in part.content])
+                if part is latest else part for part in message.parts
+            ])
         result.append(message)
     return result
+
+
+async def _refresh_navigation_request(request, png):
+    """Replace the latest image while preserving all tool and message history."""
+    payload = json.loads(await request.aread())
+    image_part = None
+    for message in payload.get('messages', []):
+        content = message.get('content')
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get('type') == 'image_url':
+                    image_part = part
+    if image_part is None:
+        raise AgentError('导航重试请求没有可刷新的截图，已停止')
+    image_part['image_url']['url'] = 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
+    headers = [(key, value) for key, value in request.headers.multi_items() if key.lower() != 'content-length']
+    return httpx.Request(request.method, request.url, headers=headers,
+                         content=json.dumps(payload).encode('utf-8'), extensions=dict(request.extensions))
 
 
 def run_agent(
     client, model, goal: str, *, joystick: Joystick, max_steps: int = 50,
     settle_seconds: float = 0.5, sleep: Callable[[float], None] = time.sleep,
     evidence_type: type[NavigationEvidence] = GoalEvidence, instructions: str = '',
+    completion_probe: Callable[[bytes], str | None] | None = None,
 ) -> AgentResult:
     """业务模块直接调用；最多 50 次移动及最后一次截图确认，无子进程。"""
     if not isinstance(goal, str) or not goal.strip():
@@ -158,17 +188,21 @@ def run_agent(
     timeout = connection['timeout_seconds']
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError('模型请求超时必须是正数')
+    watch = CompletionWatch(client, completion_probe)
     initial_png = client.screenshot()
+    latest_png = initial_png
     history: list[AgentStep] = []
     hooks = Hooks()
 
     @hooks.on.before_model_request
     async def latest_frame(ctx, request_context):
-        request_context.messages = _latest_image_only(request_context.messages)
+        watch.raise_if_complete()
+        request_context.messages = _latest_image_only(request_context.messages, latest_png)
         return request_context
 
     @hooks.on.after_model_request
     async def single_action(ctx, *, request_context, response):
+        watch.check_fresh()
         calls = [part for part in response.parts if isinstance(part, ToolCallPart)]
         if response.finish_reason != 'tool_call' or len(calls) != 1:
             raise AgentError('模型每轮必须完整返回一个导航工具调用，已停止')
@@ -187,6 +221,9 @@ def run_agent(
         state = evidence.state()
         LOGGER.info('[导航观察 %d/%d] 状态=%s，证据=%s', len(history), max_steps,
                     state, evidence.model_dump_json())
+        if state == 'finished':
+            raise _NavigationDone(AgentResult(False, len(history), 'finished',
+                                               evidence.observation, tuple(history)))
         if state == 'blocked':
             raise AgentError(f'当前画面不可导航，停止且不进入战斗：{evidence.observation}')
         if state not in ('pending', 'reached'):
@@ -196,6 +233,7 @@ def run_agent(
     # 注解使用调用方传入的 Pydantic 类型；SDK 直接把其字段生成原生工具 schema。
     async def finish(evidence: evidence_type) -> AgentResult:
         """依据本轮截图事实结束导航；不接受独立的 reached 声明。"""
+        watch.raise_if_complete()
         state = state_of(evidence)
         if state == 'pending' and len(history) < max_steps:
             raise ModelRetry(f'本轮事实尚不满足目标完成条件；本轮证据：{evidence.model_dump_json()}。'
@@ -203,8 +241,16 @@ def run_agent(
         return result(state == 'reached', evidence.observation)
 
     async def navigate():
+        async def refresh_request(request):
+            nonlocal latest_png
+            check_execution()
+            latest_png = client.screenshot()
+            watch.check(latest_png)
+            return await _refresh_navigation_request(request, latest_png)
+
         # HTTP 客户端与 SDK 同进程运行；退出、异常和取消均关闭连接。
-        async with AsyncClient(follow_redirects=False) as http:
+        async with ModelAsyncClient(request_timeout=timeout, refresh_request=refresh_request,
+                                    route_request=connection.get('route_request')) as http:
             async with AsyncOpenAI(base_url=connection['base_url'], api_key=connection['api_key'],
                                    timeout=timeout, max_retries=0, http_client=http) as api:
                 agent = Agent(
@@ -220,6 +266,8 @@ def run_agent(
                 @agent.tool_plain(sequential=True, retries=0)
                 async def move(evidence: move_evidence_type) -> ToolReturn:
                     """沿一个方向短距离移动一次，并获取移动后的新截图。"""
+                    nonlocal latest_png
+                    watch.check_fresh()
                     state = state_of(evidence)
                     if state == 'reached':
                         raise _NavigationDone(result(True, evidence.observation))
@@ -229,11 +277,14 @@ def run_agent(
                     joystick.move(client, direction)
                     history.append(AgentStep(evidence.observation, direction))
                     LOGGER.info('[导航 %d/%d] 方向=%s；移动后重新截图', len(history), max_steps, direction)
-                    sleep(settle_seconds)
+                    execution_sleep(settle_seconds, sleep)
+                    png = client.screenshot()
+                    latest_png = png
+                    watch.check(png)
                     return ToolReturn(
                         return_value=f'已移动 {len(history)}/{max_steps} 步，剩余 {max_steps - len(history)} 步。',
                         content=['请观察移动后的新截图，再判断是否到达。',
-                                 BinaryContent(data=client.screenshot(), media_type='image/png')],
+                                 BinaryContent(data=png, media_type='image/png')],
                     )
 
                 run = await agent.run(
@@ -245,15 +296,34 @@ def run_agent(
                 return run.output
 
     try:
-        return asyncio.run(navigate())
+        with model_request_context('导航/兼容SDK'):
+            watch.check(initial_png)
+            return asyncio.run(watch.run(navigate()))
+    except CompletionDetected as exc:
+        return result(True, exc.reason)
     except _NavigationDone as exc:
         return exc.result
-    except (AgentRunError, OpenAIError):
+    except (AgentRunError, OpenAIError, MultimodalRequestError) as exc:
+        if isinstance(exc, MultimodalRequestError) and current_execution() is not None:
+            raise
+        # OpenAI wraps exceptions from custom HTTP transports. Keep our stop
+        # signals (and HTTP status diagnostics) instead of losing their type.
+        cause = exc.__cause__
+        seen = set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            if isinstance(cause, CompletionDetected):
+                return result(True, cause.reason)
+            if isinstance(cause, (DailyDeadlineExceeded, MultimodalRequestError)):
+                raise cause from None
+            cause = cause.__cause__
+        check_execution()
         # 供应商错误可能含请求信息，面向任务只暴露错误类别，不输出密钥或响应正文。
+        LOGGER.error('导航模型调用失败：场景=导航/兼容SDK；%s', safe_exception_details(exc))
         raise AgentError('导航模型请求或工具参数异常，已停止') from None
 
 
-# Test-only OpenAI-compatible protocol adapter. Production dispatch never imports it.
+# 与统一导航入口共享公共类型。
 from .runner import AgentError as AgentError
 from .runner import AgentResult as AgentResult
 from .runner import AgentStep as AgentStep

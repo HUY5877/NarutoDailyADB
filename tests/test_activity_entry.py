@@ -10,11 +10,9 @@ ROOT = Path(__file__).parents[1]
 
 
 def activity_target():
-    return next(
-        action
-        for action in load_settings(ROOT / "config.example.json").tasks["ichiraku_takeout"]
-        if action.get("template") == "assets/activities_entry.png"
-    )
+    # 保留旧配置的模板兼容性回归；默认入口的模型路径在 test_main_screen 中覆盖。
+    return dict(name='活动入口', template='assets/activities_entry.png',
+                left=1720, top=0, right=1920, bottom=220, threshold=.9)
 
 
 @pytest.mark.parametrize("fixture", [

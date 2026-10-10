@@ -5,6 +5,7 @@ import logging
 import time
 
 from naruto_daily.common.visual import VisualError
+from naruto_daily.common.execution import check_execution, current_execution
 
 
 LOGGER = logging.getLogger('naruto_daily')
@@ -20,16 +21,19 @@ def wait_after_deploy(images, action, *, confirmed_tickets, clock=time.monotonic
         raise VisualError('本次出战未确认挑战券大于0，不能确认继续挑战')
     started, waited = clock(), images.elapsed
     load_wait = float(action['load_wait_seconds'])
+    execution = current_execution()
     clicked = False
 
     def remaining():
         return load_wait - max(clock()-started, images.elapsed-waited)
 
     def inspect():
+        check_execution()
         png = images.client.screenshot()
-        if images.match(png, WARNING)[0] is None:
-            return False, None
-        return True, images.match(png, CONFIRM)[0]
+        visible = images.match(png, WARNING)[0] is not None
+        center = images.match(png, CONFIRM)[0] if visible else None
+        check_execution()
+        return visible, center
 
     while True:
         visible, center = inspect()
@@ -46,6 +50,10 @@ def wait_after_deploy(images, action, *, confirmed_tickets, clock=time.monotonic
         left = remaining()
         if left <= 0:
             if visible:
-                raise VisualError('继续挑战提示确认超时，未重复点击或开始攻击')
-            return clicked
+                if execution is None:
+                    raise VisualError('继续挑战提示确认超时，未重复点击或开始攻击')
+                # 固定加载等待结束后，提示仍在前景就继续确认，直到共享总时限。
+                left = execution.remaining()
+            else:
+                return clicked
         images.sleep(min(float(action['poll_seconds']), left))

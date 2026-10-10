@@ -1,18 +1,21 @@
 """走真实秘境 handler 和 SDK；设备、模型 HTTP 服务与图像匹配为离线边界。"""
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent_fakes import tool_call
 from naruto_daily.common.visual import VisualError
 from naruto_daily.config import load_settings
-from naruto_daily.secret_realm import handler
+from naruto_daily.secret_realm import handler, navigation, pre_battle
 
 ROOT = Path(__file__).parents[1]
 
 
 @pytest.fixture(autouse=True)
 def model_connection(monkeypatch, agent_server):
+    # 显式恢复毒风导航，继续验证暂时跳过名单后保留的 agent 路径。
+    monkeypatch.setattr(pre_battle, 'SKIPPED_REALMS', pre_battle.SKIPPED_REALMS - {'毒风秘境'})
     monkeypatch.setattr(Scenario, 'agent_connection',
                         lambda self: agent_server.connection(self.agent_reply), raising=False)
 
@@ -43,6 +46,11 @@ class Scenario:
         return frame
 
     def tap(self, x, y):
+        if (x, y) == (960, 900):
+            assert self.state == 'result', '仅明确结算页可以点击空白关闭'
+            self.events.append(('dismiss',))
+            self.state = 'room'
+            return
         transitions = {(1787, 920): ('deploy', 'battle'), (1860, 50): ('pause', 'pause'),
                        (780, 680): ('exit', 'confirm'), (790, 690): ('confirm', 'room')}
         event, state = transitions[(x, y)]
@@ -78,6 +86,8 @@ class Scenario:
                     'visible_text': '' if ready else '解开「封印」，召唤BOSS',
                     'observation': '封印提示消失，BOSS 已出现' if ready else '中央仍显示待解封提示'}
         evidence.update(self.evidence_override)
+        if evidence['page'] == 'result' or '点击任意位置关闭' in evidence['visible_text']:
+            self.state = 'result'
         finish_now = self.always_finish or self.moves in self.finish_steps
         self.finish_steps.discard(self.moves)
         name = 'finish' if finish_now else self.reached_tool if ready else 'move'
@@ -110,7 +120,8 @@ def execute(monkeypatch, scenario):
     def battle(*args, **kwargs):
         if scenario.realm == '毒风秘境':
             assert scenario.reach_after is not None and scenario.moves >= scenario.reach_after, '解封前不能攻击'
-            assert scenario.events[-1] == ('navigation', True), '同一次导航事实确认后直接进入战斗'
+            assert [e for e in scenario.events if e[0] != 'screenshot'][-1] == ('navigation', True), \
+                '同一次导航事实确认后直接进入战斗，本地只读截图不得额外导航或调用模型'
         scenario.events.append(('battle',))
         scenario.state = 'room'
     monkeypatch.setattr(handler, 'run_battle', battle)
@@ -123,10 +134,11 @@ def test_poison_realm_navigates_then_battles_only_after_fresh_confirmation(monke
     events = [e[0] for e in scenario.events]
     assert scenario.nav_frames == [b'battle:0', b'battle:1', b'battle:2']
     assert events.index('classify') < events.index('move') < events.index('battle')
-    assert scenario.events[events.index('battle') - 1] == ('navigation', True)
+    before_battle = scenario.events[:events.index('battle')]
+    assert [e for e in before_battle if e[0] != 'screenshot'][-1] == ('navigation', True)
     assert 'pause' not in events and scenario.moves == 2
     assert [e[1] for e in scenario.events if e[0] == 'move'] == [
-        (320, 840, 400, 840, 300), (320, 840, 400, 840, 300)]
+        (327, 825, 407, 825, 300), (327, 825, 407, 825, 300)]
 
 
 @pytest.mark.parametrize('final_tool', ['move', 'finish'])
@@ -177,7 +189,8 @@ def test_poison_pending_finish_retries_same_image_without_extra_visual_request(m
     assert scenario.moves == 2
     assert scenario.nav_frames == [b'battle:0', b'battle:0', b'battle:1', b'battle:2']
     first = scenario.events.index(('navigation', False))
-    assert scenario.events[first + 1] == ('navigation', False), 'SDK重试应复用截图，不另拍或独立复核'
+    assert [e for e in scenario.events[first + 1:] if e[0] != 'screenshot'][0] == ('navigation', False), \
+        'SDK重试应复用请求截图；本地完成检测不应产生额外模型请求或移动'
 
 
 def test_poison_repeated_pending_finish_stops_after_three_sdk_retries(monkeypatch):
@@ -195,7 +208,7 @@ def test_poison_three_retries_still_allow_fiftieth_move_and_final_check(monkeypa
     assert ('battle',) in scenario.events and ('pause',) not in scenario.events
 
 
-@pytest.mark.parametrize('page', ['result', 'other', 'unknown'])
+@pytest.mark.parametrize('page', ['other', 'unknown'])
 @pytest.mark.parametrize('tool', ['move', 'finish'])
 def test_poison_nonbattle_evidence_stops_before_move_or_attack(monkeypatch, page, tool):
     scenario = Scenario(reach_after=None, evidence_page=page, always_finish=tool == 'finish')
@@ -206,14 +219,30 @@ def test_poison_nonbattle_evidence_stops_before_move_or_attack(monkeypatch, page
     assert scenario.events.count(('deploy',)) == 1
 
 
+@pytest.mark.parametrize('steps', [0, 50])
 @pytest.mark.parametrize('final_tool', ['move', 'finish'])
-def test_poison_nonbattle_on_fiftieth_move_does_not_attempt_exit(monkeypatch, final_tool):
-    scenario = Scenario(reach_after=None, result_after=50,
-                        finish_steps=(50,) if final_tool == 'finish' else ())
-    with pytest.raises(VisualError):
-        execute(monkeypatch, scenario)
-    assert scenario.moves == 50 and len(scenario.nav_frames) == 51
+def test_poison_result_returns_to_room_without_moving_or_pausing_again(monkeypatch, steps, final_tool):
+    scenario = Scenario(reach_after=None, result_after=steps,
+                        finish_steps=(steps,) if final_tool == 'finish' else ())
+    assert execute(monkeypatch, scenario) == 1
+    assert scenario.moves == steps and len(scenario.nav_frames) == steps + 1
     assert all(event[0] not in ('battle', 'pause', 'exit') for event in scenario.events)
+    assert [e[0] for e in scenario.events if e[0] != 'screenshot'][-2:] == ['dismiss', 'tickets']
+    assert scenario.events.count(('deploy',)) == 1 and scenario.state == 'room'
+
+
+@pytest.mark.parametrize('ending', ['失败', '胜利'])
+def test_poison_ending_text_returns_to_room_and_redeploys_after_ticket_recheck(monkeypatch, ending):
+    # 模型仍填battle时，明确结束文字优先；不把战场背景或残留封印提示当作可移动。
+    scenario = Scenario(reach_after=None, evidence_override={
+        'visible_text': f'{ending} 点击任意位置关闭界面 解开封印召唤BOSS',
+    })
+    scenario.ticket_counts = iter([1, 1, 1, 1, 0])
+    assert execute(monkeypatch, scenario) == 2
+    assert scenario.moves == 0 and scenario.state == 'room'
+    events = [e[0] for e in scenario.events if e[0] != 'screenshot']
+    assert events == ['tickets', 'tickets', 'deploy', 'classify', 'navigation', 'dismiss',
+                      'tickets', 'tickets', 'deploy', 'classify', 'navigation', 'dismiss', 'tickets']
 
 
 @pytest.mark.parametrize('seal', ['yes', 'unknown'])
@@ -253,3 +282,15 @@ def test_poison_native_tool_schemas_use_required_flat_facts(monkeypatch, agent_s
             for field in ('seal_prompt_visible', 'boss_visible', 'battle_started'):
                 assert schema['properties'][field]['type'] == 'string'
                 assert set(schema['properties'][field]['enum']) == {'yes', 'no', 'unknown'}
+
+
+def test_poison_local_completion_after_move_skips_next_real_sdk_request(monkeypatch, agent_server):
+    scenario = Scenario(reach_after=1)
+    scenario.state = 'battle'
+    monkeypatch.setattr(navigation, 'poison_boss_visible', lambda png: png == b'battle:1')
+    images = SimpleNamespace(client=scenario, sleep=lambda _: None)
+    result = navigation.navigate_to_poison_seal(images, scenario)
+    assert result.reached and result.steps == scenario.moves == 1
+    assert [step.action for step in result.history] == ['d']
+    assert len(agent_server.payloads) == 1
+    assert scenario.nav_frames == [b'battle:0']

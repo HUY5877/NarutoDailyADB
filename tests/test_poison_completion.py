@@ -14,9 +14,13 @@ def evidence(**changes):
     return navigation.PoisonEvidence.model_validate(reply)
 
 
-@pytest.mark.parametrize('page', ['result', 'other', 'unknown'])
+@pytest.mark.parametrize('page', ['other', 'unknown'])
 def test_non_battle_page_blocks_even_when_other_fields_claim_success(page):
     assert evidence(page=page, battle_started='yes').state() == 'blocked'
+
+
+def test_result_page_finishes_navigation_without_claiming_boss_success():
+    assert evidence(page='result', battle_started='yes').state() == 'finished'
 
 
 @pytest.mark.parametrize('visible', ['yes', 'unknown'])
@@ -46,21 +50,21 @@ def test_transcribed_pending_instruction_overrides_conflicting_no_flag(visible_t
 
 @pytest.mark.parametrize('visible_text', ['失败', '胜利', '点击任意位置关闭界面', '战斗结算', '结算奖励'])
 @pytest.mark.parametrize('seal_prompt_visible', ['no', 'yes'])
-def test_transcribed_ending_text_blocks_a_conflicting_battle_page(visible_text, seal_prompt_visible):
+def test_transcribed_ending_text_finishes_a_conflicting_battle_page(visible_text, seal_prompt_visible):
     assert evidence(visible_text=visible_text, seal_prompt_visible=seal_prompt_visible,
-                    battle_started='yes').state() == 'blocked'
+                    battle_started='yes').state() == 'finished'
 
 
 def test_reward_preview_text_alone_does_not_block_an_active_battle():
     assert evidence(visible_text='奖励预览').state() == 'reached'
 
 
-def test_manually_transcribed_user_failure_frame_is_blocked():
+def test_manually_transcribed_user_failure_frame_finishes_navigation():
     # 对应保留的 secret_poison_unreleased_failure.png；这里只测试人工抄写事实的处理。
     result = evidence(page='result', seal_prompt_visible='yes', boss_visible='no',
                       visible_text='毒风秘境 解开「封印」，召唤BOSS 失败 点击任意位置关闭界面',
                       observation='失败弹层覆盖战场，待解封提示仍在。')
-    assert result.state() == 'blocked'
+    assert result.state() == 'finished'
 
 
 def test_empty_visible_text_is_allowed_but_does_not_imply_completion():
@@ -116,12 +120,14 @@ def test_poison_navigation_passes_native_evidence_rules_without_preflight_calls(
     model = SimpleNamespace(complete_json=forbidden)
     result = SimpleNamespace(reached=True, steps=3)
     calls = []
-    def run(client, actual_model, goal, *, joystick, max_steps, sleep, evidence_type, instructions):
+    def run(client, actual_model, goal, *, joystick, max_steps, sleep, evidence_type, instructions,
+            completion_probe):
         assert client is images.client and actual_model is model
         assert max_steps == 50 and sleep is images.sleep
-        assert (joystick.x, joystick.y, joystick.radius, joystick.duration_ms) == (320, 840, 80, 300)
+        assert (joystick.x, joystick.y, joystick.radius, joystick.duration_ms) == (327, 825, 80, 300)
         assert evidence_type is navigation.PoisonEvidence
         assert instructions == navigation.POISON_SEAL_INSTRUCTIONS
+        assert completion_probe is navigation._poison_completion_probe
         assert goal == navigation.POISON_SEAL_GOAL
         calls.append('run')
         return result

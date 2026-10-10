@@ -71,7 +71,13 @@ def test_card_becoming_completed_during_retry_does_not_click():
     assert waits == [1, 1]
 
 
-def test_main_page_appears_during_close_retry_cancels_click():
+def test_main_page_appears_during_close_retry_cancels_click(monkeypatch):
+    from naruto_daily.common import main_screen
+    class Model:
+        def __init__(self, *a): pass
+        def match(self, png, target, timeout):
+            return ((1800, 500), 1) if int(png) == 3 else (None, 0)
+    monkeypatch.setattr(main_screen, 'MainScreenRecognition', Model)
     client, waits = ScreenClient(), []
     def matcher(png, path, roi, threshold):
         frame = int(png)
@@ -93,6 +99,8 @@ def test_recruit_retry_never_combines_button_and_guard_from_different_frames(mon
     def matcher(png, path, roi, threshold):
         if path.name == "advanced_recruit_tab.png":
             return (120, 250), .99
+        if path.name == "ordinary_recruit_tab.png":
+            return (120, 900), .99
         if path.name == "recruit_red_dot.png":
             return ((218, 230), .99) if roi[1] < 400 and int(png) < 9 else (None, .4)
         raise AssertionError("免费按钮不应调用 OpenCV")

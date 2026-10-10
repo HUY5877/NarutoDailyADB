@@ -42,7 +42,8 @@ class Client:
 
 def matcher(frame, path, roi, threshold):
     points = {'secret_deploy': (1787, 920), 'secret_create_room': (1443, 791),
-              'secret_result_marker': (537, 837), 'secret_result_return': (209, 1010)}
+              'secret_result_marker': (537, 837), 'secret_result_return': (209, 1010),
+              'secret_reward_overlay': (960, 260)}
     return (points[path.stem], 1) if path.stem in frame else (None, .1)
 
 
@@ -75,6 +76,54 @@ def test_return_button_without_result_page_does_not_click():
     with pytest.raises(VisualError, match='结算'):
         finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None), config)
     assert client.taps == []
+
+
+@pytest.mark.parametrize('frame', [
+    {'secret_result_return'},
+    {'secret_result_return', 'secret_reward_overlay'},
+    RESULT | {'secret_reward_overlay'},
+], ids=['return-only', 'return-with-reward-title', 'all-result-markers'])
+def test_confirmed_result_prefers_rechecked_return_over_blank_tap(frame):
+    from naruto_daily.secret_realm.handler import finish_secret_result
+    client = Client([frame, frame, ROOM])
+    sleeps = []
+    config = action()
+    finish_secret_result(client, ImageRecognition(client, matcher, sleep=sleeps.append),
+                         config, result_confirmed=True)
+    assert client.taps == [(209, 1010)]
+    assert sleeps[0] == config['pre_click_wait_seconds']
+
+
+def test_confirmed_return_disappears_into_room_during_recheck_without_click():
+    from naruto_daily.secret_realm.handler import finish_secret_result
+    client = Client([{'secret_result_return'}, ROOM])
+    finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                         action(), result_confirmed=True)
+    assert client.taps == []
+
+
+@pytest.mark.parametrize('page, expected_taps', [
+    ('secret_deploy', []),
+    ('secret_create_room', [(1443, 791)]),
+])
+def test_confirmed_result_checks_room_or_lobby_before_visible_return(page, expected_taps):
+    from naruto_daily.secret_realm.handler import finish_secret_result
+    frame = {page, 'secret_result_return', 'secret_reward_overlay'}
+    client = Client([frame, frame, frame, ROOM])
+    finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                         action(), result_confirmed=True)
+    assert client.taps == expected_taps
+
+
+def test_confirmed_result_checks_ninja_selection_before_visible_return(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    ninja = {'ninja', 'secret_result_return', 'secret_reward_overlay'}
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == ninja else None)
+    client = Client([ninja, ninja, ROOM])
+    handler.finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                                 action(), result_confirmed=True)
+    assert client.taps == [(150, 1000)]
 
 
 def test_marker_and_return_button_from_different_frames_never_combine():
@@ -177,3 +226,151 @@ def test_reward_overlay_after_card_result_closes_without_second_return():
         return matcher(frame, path, roi, threshold)
     finish_secret_result(client, ImageRecognition(client, detect, sleep=lambda _: None), action())
     assert client.taps == [(209, 1010), (960, 900)]
+
+
+@pytest.mark.parametrize('fixture', ['secret_poison_unreleased_failure.png', 'secret_yinyang_battle.png'])
+def test_local_failure_recognizes_real_settlements(fixture):
+    from naruto_daily.secret_realm.result_detection import secret_failure_visible
+    # 历史阴阳 fixture 虽以 battle 命名，画面实际显示失败和点击任意位置关闭。
+    assert secret_failure_visible((ROOT / 'tests/fixtures' / fixture).read_bytes())
+
+
+@pytest.mark.parametrize('fixture', [
+    'secret_poison_boss_active.png', 'secret_flame_battle.png', 'secret_result.png',
+    'secret_reward_overlay.png', 'secret_reward_room.png', 'secret_pause_menu.png',
+    'secret_exit_dialog.png', 'secret_deploy_warning.png',
+])
+def test_local_failure_does_not_authorize_dismissal_on_other_pages(fixture):
+    from naruto_daily.secret_realm.result_detection import secret_failure_visible
+    assert not secret_failure_visible((ROOT / 'tests/fixtures' / fixture).read_bytes())
+
+
+@pytest.mark.parametrize('png', [b'', b'invalid screenshot', None, set()])
+def test_local_failure_rejects_unreadable_images(png):
+    from naruto_daily.secret_realm.result_detection import secret_failure_visible
+    assert not secret_failure_visible(png)
+
+
+def test_confirmed_navigation_result_taps_blank_until_room():
+    from naruto_daily.secret_realm.handler import finish_secret_result
+    client = Client([set(), set(), ROOM])
+    finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                         action(), result_confirmed=True)
+    assert client.taps == [(960, 900)]
+
+
+def test_confirmed_result_already_returned_to_room_does_not_tap():
+    from naruto_daily.secret_realm.handler import finish_secret_result
+    client = Client([ROOM])
+    finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                         action(), result_confirmed=True)
+    assert client.taps == []
+
+
+@pytest.mark.parametrize('confirmed', [False, True])
+def test_ninja_selection_rechecks_and_clicks_latest_back_position(monkeypatch, confirmed):
+    from naruto_daily.secret_realm import handler
+    first, latest = {'ninja_old'}, {'ninja_new'}
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == first else (160, 1010) if png == latest else None)
+    client = Client([first, latest, ROOM])
+    handler.finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                                 action(), result_confirmed=confirmed)
+    assert client.taps == [(160, 1010)]
+
+
+def test_ninja_selection_disappears_before_click_without_tapping_room_back(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    ninja = {'ninja'}
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == ninja else None)
+    client = Client([ninja, ROOM])
+    handler.finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None), action())
+    assert client.taps == []
+
+
+def test_ninja_selection_does_not_inherit_blank_taps_after_return(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    ninja = {'ninja'}
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == ninja else None)
+    client = Client([ninja, ninja, set(), set(), ROOM])
+    handler.finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                                 action(), result_confirmed=True)
+    assert client.taps == [(150, 1000)]
+
+
+def test_result_recheck_switching_to_ninja_selection_never_taps_blank(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    ninja = {'ninja'}
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == ninja else None)
+    client = Client([RESULT, ninja, ninja, ninja, ROOM])
+    handler.finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                                 action(), result_confirmed=True)
+    assert client.taps == [(150, 1000)]
+
+
+def test_unconfirmed_unknown_page_never_taps_blank():
+    from naruto_daily.secret_realm.handler import finish_secret_result
+    client = Client([set()])
+    config = action()
+    config['timeout_seconds'] = 4
+    with pytest.raises(VisualError, match='结算返回房间超时'):
+        finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None), config)
+    assert client.taps == []
+
+
+def test_regular_battle_failure_stops_then_dismisses_to_room_without_another_model_call():
+    from types import SimpleNamespace
+    from naruto_daily.battle import run_battle
+    from naruto_daily.secret_realm.handler import finish_secret_result
+
+    failure = (ROOT / 'tests/fixtures/secret_yinyang_battle.png').read_bytes()
+    room = (ROOT / 'tests/fixtures/secret_reward_room.png').read_bytes()
+
+    class FailureClient(Client):
+        def screenshot(self):
+            return room if self.taps else failure
+
+    calls = []
+
+    def complete(*args, **kwargs):
+        calls.append(True)
+        return {'finished': True, 'page': 'finished', 'reason': '失败，点击任意位置关闭界面'}
+
+    config = action()
+    client = FailureClient([])
+    summary = run_battle(client, config['battle'], asset_root=ROOT, sleep=lambda _: None,
+                         model=SimpleNamespace(complete_json=complete))
+    assert summary.taps == 0 and client.taps == []
+    finish_secret_result(client, ImageRecognition(client, asset_root=ROOT, sleep=lambda _: None), config)
+    assert client.taps == [(960, 900)] and calls == [True]
+
+
+@pytest.mark.parametrize('fixture', ['secret_ninja_selected.png', 'secret_ninja_loading.png'])
+def test_real_ninja_selection_stops_battle_and_returns_to_room_without_model(fixture):
+    from types import SimpleNamespace
+    from naruto_daily.battle import run_battle
+    from naruto_daily.secret_realm import handler
+
+    selection = (ROOT / 'tests/fixtures' / fixture).read_bytes()
+    room = (ROOT / 'tests/fixtures/secret_reward_room.png').read_bytes()
+    back = handler.find_ninja_selection_return(selection)
+    assert back is not None
+
+    class NinjaClient(Client):
+        def screenshot(self):
+            return room if self.taps else selection
+
+    def unexpected_model(*args, **kwargs):
+        raise AssertionError('更换忍者页应通过本地图片识别，不调用模型')
+
+    config = action()
+    client = NinjaClient([])
+    summary = run_battle(client, config['battle'], asset_root=ROOT, sleep=lambda _: None,
+                         model=SimpleNamespace(complete_json=unexpected_model),
+                         end_detector=handler._ninja_selection_end)
+    assert summary.taps == 0 and summary.end_target == '秘境更换忍者页' and client.taps == []
+    handler.finish_secret_result(client, ImageRecognition(client, asset_root=ROOT, sleep=lambda _: None), config)
+    assert client.taps == [back]

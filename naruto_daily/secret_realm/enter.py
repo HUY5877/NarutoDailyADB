@@ -11,6 +11,7 @@ import numpy as np
 from naruto_daily.common.navigation import navigate_to_card, required_template_tap
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
+from naruto_daily.common.execution import current_execution, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient, MultimodalError
 from naruto_daily.multimodal.prompts import secret_entry_prompt
 from naruto_daily.return_to_main import return_to_main
@@ -66,7 +67,7 @@ def parse_entry_center(result, page, name, centers):
 
 
 def _locate_and_tap(images, model, action, page, name, *, clock=time.monotonic):
-    deadline = images.elapsed + action['timeout_seconds']
+    deadline = images.elapsed + stage_timeout(action['timeout_seconds'])
     calls = 0
 
     def probe(png):
@@ -78,13 +79,14 @@ def _locate_and_tap(images, model, action, page, name, *, clock=time.monotonic):
         preview, centers = entry_candidates(png)
         if not centers:
             return None
-        calls += 1
         start = clock()
         try:
             result = model.complete_json(preview, secret_entry_prompt(page, name),
-                                         timeout_seconds=deadline-images.elapsed)
+                                         timeout_seconds=stage_timeout(deadline-images.elapsed))
+            calls += 1
         finally:
-            images.elapsed += max(0, clock()-start)
+            if current_execution() is None:
+                images.elapsed += max(0, clock()-start)
         if images.elapsed >= deadline:
             raise MultimodalError(f'{name}定位超时，忽略迟到结果')
         center = parse_entry_center(result, page, name, centers)
