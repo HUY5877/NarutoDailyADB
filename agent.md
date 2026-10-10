@@ -4,6 +4,8 @@
 
 基于 2026-10-10 的仓库现状编写。执行前复核 `README.md`、`.env.example`、`config.example.json`、`pyproject.toml` 和相关代码；发生差异时以当前实现为准。
 
+本指南面向公开安装场景，只记录下文列出的配置项。参考仓库文件时，不补充公司内部服务的名称、地址或专用变量。
+
 ## 1. 执行范围与配置入口
 
 安装目标是 Windows、Python 3.11+、**雷电模拟器 9**。先检查已有安装和配置，能复用就复用。本文中的安装路径、实例索引和设备号均为示例，不能直接当成用户电脑的实际值。
@@ -16,7 +18,7 @@
 | 配置位置 | 当前用途 |
 | --- | --- |
 | 根目录 `config.local.json` | 本地 ADB 路径、设备 serial、屏幕尺寸及完整任务配置；从 `config.example.json` 复制后修改 |
-| 根目录 `.env` | Cloudflare 连接凭据、可选鱼玩渠道、保存账号昵称、雷电和 worker 的机器参数 |
+| 根目录 `.env` | Cloudflare 连接凭据、保存账号昵称、雷电和 worker 的机器参数 |
 | Cloudflare KV | DeepSeek 渠道、Redis、OSS 等运行配置；启动时读取 |
 | 雷电每个实例的设置 | 安卓分辨率、DPI、ADB 调试；实例池中的每个实例都必须一致 |
 
@@ -190,10 +192,6 @@ CLOUDFLARE_API_TOKEN=用户提供的只读Token
 CLOUDFLARE_ACCOUNT_ID=用户的32位十六进制账户ID
 CLOUDFLARE_KV_NAMESPACE_ID=用户的32位十六进制命名空间ID
 
-# 可选鱼玩渠道：本地 key 非空时，key 和 model 一起优先于 KV。
-YUWAN_API_KEY=
-YUWAN_MODEL=deepseek-v4.1-flash
-
 # 仅保存账号登录需要；填写授权页显示的完整昵称。
 LOGIN_ACCOUNT_NAME="用户的完整昵称"
 ```
@@ -206,24 +204,22 @@ Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限。
 
 | KV key | 用途 |
 | --- | --- |
-| `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` | 启用 DeepSeek 渠道时必填；也可只启用已正确配置的鱼玩渠道 |
-| `YUWAN_API_KEY`、`YUWAN_MODEL` | 可选鱼玩渠道；本地鱼玩 key 非空时使用本地这一组 |
+| `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` | 本指南使用 DeepSeek，key 和 model 必填 |
 | `REDIS_URL` | 所有实际执行的模型路由需要，含本地日常和本地扫码秘境；地址须为 `redis://` 或 `rediss://` |
 | `REDIS_QUEUE_KEY` | 扫码队列名，默认 `naruto:login:tasks` |
 | `OSS_REGION`、`OSS_BUCKET`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET` | 扫码 worker 必填；普通本地任务和本地扫码秘境无需 OSS |
 | `OSS_STS_TOKEN` | 使用临时 OSS 凭据时填写 |
 | `OSS_KEY_PREFIX` | OSS 对象前缀，默认 `login` |
 
-至少启用一个有效模型渠道，启用渠道的 key 和 model 必须成对且非空。模型与图片请求兼容性按当前网关验证，不要自行添加 API 地址变量；渠道地址固定在 `naruto_daily/multimodal/channels.py`。
+按本指南配置 DeepSeek，key 和 model 必须成对且非空。模型与图片请求兼容性按当前网关验证，不要自行添加 API 地址变量。
 
 **配置加载规则必须遵守：**
 
 1. `naruto_daily/common/environment.py` 在启动时读取 Cloudflare KV；读取失败则停止，不提供离线回退。`check`、`--dry-run` 也会进入这个加载过程，不过不会点击或请求模型。
 2. DeepSeek、Redis、OSS 不从本地 `.env` 回退，写入这些本地变量不能替代 KV；旧的同名进程变量也不会被保留作为兜底。
-3. 鱼玩允许本地配置；`.env` 的 `YUWAN_API_KEY` 非空时，本地 `YUWAN_MODEL` 也必须非空，两者共同覆盖 KV 中的鱼玩配置。
-4. 普通机器参数优先使用已有进程环境，再读本地 `.env`；KV 若包含同名机器参数，加载后会覆盖它们。建议不同机器的雷电路径和实例索引保留在各自 `.env`。
-5. 当前代码枚举命名空间全部 key。key 名需符合大写环境变量格式，值需可读取为文本；不要将 Cloudflare 连接凭据或内部 `_NARUTO_CLOUD_CONFIG_LOADED` 标记存入该命名空间。
-6. 修改配置后重启对应进程。不要在验收输出中打印 `.env` 全文、KV 值、Redis 含密码的地址或 OSS 密钥。
+3. 普通机器参数优先使用已有进程环境，再读本地 `.env`；KV 若包含同名机器参数，加载后会覆盖它们。建议不同机器的雷电路径和实例索引保留在各自 `.env`。
+4. 当前代码枚举命名空间全部 key。key 名需符合大写环境变量格式，值需可读取为文本；不要将 Cloudflare 连接凭据或内部 `_NARUTO_CLOUD_CONFIG_LOADED` 标记存入该命名空间。
+5. 修改配置后重启对应进程。不要在验收输出中打印 `.env` 全文、KV 值、Redis 含密码的地址或 OSS 密钥。
 
 本地扫码秘境不消费登录任务队列、不上传二维码，但**模型路由仍需要 Redis**，不能把“不连接扫码队列”理解成完全不需要 Redis。
 
@@ -312,7 +308,7 @@ New-Item -ItemType Directory -Force .\artifacts | Out-Null
 | 多个在线设备 | 将核对过的 serial 写入 JSON；`run` 也可用 `--serial` 指定 |
 | 分辨率错误或点击偏移 | 每个实例的 1920×1080、DPI 240、方向、尺寸/密度覆盖及原始截图 |
 | 缺少 Cloudflare 凭据或 KV 读取失败 | 三个本地连接变量、32 位 ID、Token 权限、网络和命名空间全部 key 的格式 |
-| 没有有效模型渠道或缺少 Redis | KV 中的渠道 key/model 和 `REDIS_URL`；本地鱼玩需成对配置 |
+| 没有有效模型渠道或缺少 Redis | KV 中的 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `REDIS_URL` |
 | 扫码显示模拟二维码 | `EMULATOR_DRIVER` 是否实际设为 `ldplayer`；是否被进程环境或 KV 覆盖 |
 | worker 找不到游戏或池实例 | 实际包名、`list2` 索引、每个实例的安装状态和显示配置 |
 | worker 启动后没有任务 | 客户端与 worker 是否使用相同 Redis 数据库和队列；不要盲目重建实例或删除状态 |
