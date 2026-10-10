@@ -158,7 +158,7 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
             reporter.emit(record, status="running_daily")
             await drain(reporter)
             assert 0 < await client.pttl(session_key) <= before
-            assert 718 <= await client.ttl(run_key) <= 720
+            assert 605398 <= await client.ttl(run_key) <= 605400
             assert 718 <= await client.ttl(stream_key) <= 720
             await client.delete(session_key)  # Simulate QR-session expiration while daily work continues.
             reporter.emit(record, message="daily after QR expiration")
@@ -170,7 +170,7 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
             assert state["authorizedAt"] == iso_time(record.authorized_at)
             assert state["startedAt"] == iso_time(record.daily_started_at)
             assert state["finishedAt"] is not None
-            assert 118 <= await client.ttl(run_key) <= 120
+            assert 604798 <= await client.ttl(run_key) <= 604800
             assert 118 <= await client.ttl(stream_key) <= 120
             assert await client.exists(session_key) == 0
             assert record.id not in reporter._states
@@ -617,3 +617,7 @@ def test_parent_rejects_invalid_log_metadata_before_publication(changes):
 def test_run_log_config_rejects_unbounded_or_too_short_retention(env):
     with pytest.raises(ValueError):
         load_config({**OSS_ENV, **env})
+
+def test_execution_history_defaults_to_seven_days():
+    assert ServiceConfig().run_log_retention_seconds == 604_800
+    assert load_config({**OSS_ENV}).run_log_retention_seconds == 604_800

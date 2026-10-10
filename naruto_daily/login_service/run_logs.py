@@ -72,7 +72,7 @@ if (not old or old.workerId ~= ARGV[1])
     and (not session or session.workerId ~= ARGV[1]) then return 0 end
 if old and old.workerId == ARGV[1] and tonumber(old.sequence or 0) >= tonumber(ARGV[2]) then return 1 end
 redis.call('XADD', KEYS[2], 'MAXLEN', ARGV[6], '*', 'json', ARGV[4])
-redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[5])
+redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[7])
 redis.call('EXPIRE', KEYS[2], ARGV[5])
 return 1
 """
@@ -94,12 +94,13 @@ class RedisRunReporter:
     """Queue in memory; a slow/unavailable Redis must never block the game loop.
 
     Keep the newest 256 updates per task and at most the configured task capacity.
-    Redis retains the newest 2,000 entries; both keys expire 24 hours after their
-    last write. This exceeds the maximum daily execution budget (also 24 hours)
-    by using that budget plus the retention period while a task is running.
+    Redis retains the newest 2,000 entries, by default for seven days. Run
+    summaries always last at least seven days, even with a shorter log setting,
+    so the website's recent-history view retains scan and completion times.
+    Active runs also reserve their full daily execution budget.
     """
 
-    def __init__(self, config, queue, *, retention_seconds: int = 86_400,
+    def __init__(self, config, queue, *, retention_seconds: int = 604_800,
                  stream_limit: int = 2_000, buffer_limit: int = 256) -> None:
         self.config = config
         self.queue = queue
@@ -191,8 +192,10 @@ class RedisRunReporter:
     async def _write(self, task_id: str, update: _Update) -> None:
         prefix = self.config.redis_queue_key
         ttl = self.retention_seconds
+        run_ttl = max(self.retention_seconds, 604_800)
         if update.snapshot["status"] not in TERMINAL:
             ttl += self.config.daily_timeout_seconds
+            run_ttl += self.config.daily_timeout_seconds
         event = update.event
         dropped = self._dropped.get(task_id, 0)
         if dropped:
@@ -203,7 +206,7 @@ class RedisRunReporter:
             "eval", _PUBLISH, 3, f"{prefix}:runs:{task_id}", f"{prefix}:logs:{task_id}",
             f"{prefix}:sessions:{task_id}", self.queue.owner, str(update.snapshot["sequence"]),
             json.dumps(update.snapshot, ensure_ascii=False), json.dumps(event, ensure_ascii=False),
-            str(ttl), str(self.stream_limit),
+            str(ttl), str(self.stream_limit), str(run_ttl),
         )
         if accepted:
             self._dropped[task_id] = max(0, self._dropped.get(task_id, 0) - dropped)
