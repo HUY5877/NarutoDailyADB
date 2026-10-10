@@ -79,6 +79,7 @@ class LoginRuntime:
             )
         self._children: dict[str, subprocess.Popen[bytes]] = {}
         self._pending_deletes: set[str] = set()
+        self._pending_session_failures: dict[str, TaskRecord] = {}
         self._workers: list[asyncio.Task[None]] = []
         self._admission_lock = asyncio.Lock()
         self._manager = None
@@ -176,6 +177,24 @@ class LoginRuntime:
                 logger.info("Task %s: returned to Redis for the next worker", record.id)
         except RedisQueueError:
             logger.warning("Could not return task %s to Redis; create a new request if it expires", record.id)
+
+    async def _finish_failed_session(self, record: TaskRecord) -> None:
+        """Retry a cleanup-confirmed failure without replaying the emulator task."""
+        if record.expires_at_ms <= time.time() * 1000:
+            self._pending_session_failures.pop(record.id, None)
+            return
+        if self._redis_queue is None:
+            record.status = 'failed'
+            record.error = SAFE_DRIVER_ERRORS.get(record.daily_error_code, SAFE_TASK_ERROR)
+            return
+        try:
+            # A false result means the lease/owner is gone; never recreate it.
+            await self._redis_queue.finish_failed(record)
+            self._pending_session_failures.pop(record.id, None)
+        except RedisQueueError:
+            if record.id not in self._pending_session_failures:
+                logger.warning('Could not finish failed login session %s; will retry', record.id)
+            self._pending_session_failures[record.id] = record
 
     @staticmethod
     def _kill(child: subprocess.Popen[bytes]) -> None:
@@ -740,9 +759,8 @@ class LoginRuntime:
                     status = "failed"
                     code = error.code if isinstance(error, _WorkerError) else "protocol_error"
                 self._set_daily_status(record, status, error_code=code)
-                # qr_ready is terminal in the existing browser/Redis protocol.
-                # Record execution failures locally, never rewrite that session
-                # or automatically replay an already published login task.
+                # Keep the account occupied until the failed instance is closed.
+                # Finally will publish failure so an explicit new request can run.
                 self._pending_deletes.add(task_id)
                 if record.expires_at_ms <= time.time() * 1000:
                     self._expire(record)
@@ -791,6 +809,8 @@ class LoginRuntime:
                     released = await self._cleanup_ldplayer(task_id)
                     if record.qr_published and not released:
                         self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
+                    elif record.qr_published and record.daily_status in {'failed', 'interrupted'}:
+                        await self._finish_failed_session(record)
             if self._run_reporter is not None:
                 final_status = record.daily_status
                 if final_status not in RUN_TERMINAL_STATUSES:
@@ -817,6 +837,8 @@ class LoginRuntime:
 
     async def _sweep(self) -> None:
         now = time.time() * 1000
+        for record in list(self._pending_session_failures.values()):
+            await self._finish_failed_session(record)
         for task_id, record in list(self._tasks.items()):
             if record.expires_at_ms <= now:
                 self._expire(record)
@@ -846,6 +868,8 @@ class LoginRuntime:
         for child in list(self._children.values()):
             self._kill(child)
         await asyncio.gather(*self._workers, return_exceptions=True)
+        for record in list(self._pending_session_failures.values()):
+            await self._finish_failed_session(record)
         if self._run_reporter is not None:
             await self._run_reporter.close()
         if self._sweep_task is not None:
@@ -860,3 +884,4 @@ class LoginRuntime:
             await self._redis_queue.close()
         self._tasks.clear()
         self._pending_deletes.clear()
+        self._pending_session_failures.clear()

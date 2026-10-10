@@ -184,6 +184,33 @@ return 1
 """
 
 
+# QR publication ends preparation, not the emulator lifecycle. Only after the
+# runtime has closed the instance may its owner end an already published login.
+_FINISH_FAILED_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
+if session.status ~= 'starting_emulator' and session.status ~= 'opening_game'
+    and session.status ~= 'preparing_qr' and session.status ~= 'qr_ready'
+    and session.status ~= 'failed' then return 0 end
+local activeKey = nil
+if type(session.userId) == 'string' and session.userId ~= '' then
+    activeKey = KEYS[3] .. ':users:' .. session.userId .. ':active'
+    local kind = redis.call('TYPE', activeKey).ok
+    if kind ~= 'none' and kind ~= 'string' then return 0 end
+end
+session.status = 'failed'
+session.errorCode = ARGV[6]
+session.error = ARGV[7]
+session.loginAuthorized = nil
+session.refreshRequestId = nil
+redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+redis.call('DEL', KEYS[2])
+-- A late cleanup or lost reply must never remove a newer task's account lock.
+if activeKey and redis.call('GET', activeKey) == session.id then
+    redis.call('DEL', activeKey)
+end
+return 1
+"""
+
+
 # A popped envelope has not acquired an owner. Only an exact, still queued
 # session can authorize a rejection; neither a claimed session nor an expired
 # bearer credential can be recreated or overwritten by malformed queue data.
@@ -410,6 +437,20 @@ class RedisTaskQueue:
     async def mark_authorized(self, record: TaskRecord) -> bool:
         return bool(await self._call('eval', _AUTHORIZE_SCRIPT, 2, self._session_key(record),
                                     f'{self.config.redis_queue_key}:refresh:{record.id}', *self._session_args(record)))
+
+    async def finish_failed(self, record: TaskRecord) -> bool:
+        """End an owned failed login after instance cleanup, retaining its TTL and history."""
+        code = record.daily_error_code if record.daily_error_code in SAFE_DRIVER_ERRORS else 'unexpected_error'
+        changed = await self._call(
+            'eval', _FINISH_FAILED_SCRIPT, 3, self._session_key(record),
+            f'{self.config.redis_queue_key}:refresh:{record.id}', self.config.redis_queue_key,
+            *self._session_args(record), code, SAFE_DRIVER_ERRORS[code],
+        )
+        if changed:
+            record.status = 'failed'
+            record.error = SAFE_DRIVER_ERRORS[code]
+            record._queue_payload = None
+        return bool(changed)
 
     async def set_status(self, record: TaskRecord, status: str, error: str | None = None) -> bool:
         if status not in STATUSES or status == "queued":

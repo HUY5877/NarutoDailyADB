@@ -64,6 +64,88 @@ def test_queue_schema_is_tokenless_and_path_is_exact():
     assert parse_queue_task(nested, "login/test").id == body["id"]
 
 
+@pytest.mark.parametrize('lease', [False, True])
+def test_failed_login_cleanup_releases_only_its_lock_and_preserves_history(lease):
+    async def scenario():
+        client = fake_client()
+        try:
+            queue = RedisTaskQueue(config(), client=client)
+            body = task_body() | ({'loginTimeoutSeconds': 600} if lease else {})
+            session = session_body(body) | {'userId': str(uuid4()), 'userOptions': {'equipmentStamina': False}}
+            prefix = config().redis_queue_key
+            active = f"{prefix}:users:{session['userId']}:active"
+            await client.set(active, body['id'], ex=60)
+            key, _ = await enqueue(client, body, session=session)
+            record = await queue.pop()
+            assert await queue.set_status(record, 'qr_ready')
+            assert await queue.mark_authorized(record)
+            saved = json.loads(await client.get(key))
+            saved['refreshRequestId'] = str(uuid4())
+            await client.set(key, json.dumps(saved), keepttl=True)
+            refresh = f'{prefix}:refresh:{record.id}'
+            other_refresh = f'{prefix}:refresh:{uuid4()}'
+            run, log = f'{prefix}:runs:{record.id}', f'{prefix}:logs:{record.id}'
+            await client.set(refresh, 'pending command', ex=600)
+            await client.set(other_refresh, 'another task', ex=600)
+            await client.set(run, 'execution failure history', ex=86400)
+            await client.xadd(log, {'json': 'original execution log'})
+            before = await client.pttl(key)
+            record.daily_error_code = 'login_finish_failed'
+            intruder = RedisTaskQueue(config(), client=client)
+            assert not await intruder.finish_failed(record)
+            assert await client.get(active) == record.id
+            assert await queue.finish_failed(record)
+            ended = json.loads(await client.get(key))
+            assert ended['status'] == 'failed' and ended['errorCode'] == 'login_finish_failed'
+            assert 'loginAuthorized' not in ended and 'refreshRequestId' not in ended
+            for field in ['tokenHash', 'createdAt', 'expiresAt', 'userOptions', 'loginExpiresAt']:
+                assert ended.get(field) == saved.get(field)
+            assert 0 < await client.pttl(key) <= before
+            assert await client.get(active) is None
+            assert await client.get(refresh) is None
+            assert await client.get(other_refresh) == 'another task'
+            assert await client.get(run) == 'execution failure history' and await client.xlen(log) == 1
+            assert await client.llen(prefix) == 0, 'failure must not automatically replay the task'
+            newer = str(uuid4())
+            await client.set(active, newer, ex=600)
+            assert await queue.finish_failed(record), 'lost acknowledgement can be retried'
+            assert await client.get(active) == newer, 'late cleanup cannot delete a newer account lock'
+        finally:
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('damage', ['missing', 'no_ttl', 'expired', 'owner', 'identity', 'queued'])
+def test_failed_login_cleanup_never_recreates_or_overwrites_unowned_sessions(damage):
+    async def scenario():
+        client = fake_client()
+        try:
+            queue = RedisTaskQueue(config(), client=client)
+            body = task_body()
+            session = session_body(body) | {'userId': str(uuid4())}
+            prefix = config().redis_queue_key
+            active = f"{prefix}:users:{session['userId']}:active"
+            await client.set(active, body['id'], ex=60)
+            key, _ = await enqueue(client, body, session=session)
+            record = await queue.pop()
+            assert await queue.set_status(record, 'qr_ready')
+            saved = json.loads(await client.get(key))
+            if damage == 'owner': saved['workerId'] = 'new-owner'
+            if damage == 'identity': saved['createdAt'] = 'different-envelope'
+            if damage == 'queued': saved['status'] = 'queued'
+            await client.set(key, json.dumps(saved), keepttl=True)
+            if damage == 'missing': await client.delete(key)
+            if damage == 'no_ttl': await client.persist(key)
+            if damage == 'expired': record.expires_at_ms = 1
+            before = await client.get(key)
+            assert not await queue.finish_failed(record)
+            assert await client.get(key) == before
+            assert await client.get(active) == record.id
+        finally:
+            await client.aclose()
+    asyncio.run(scenario())
+
+
 def test_claim_starts_fixed_occupancy_and_refresh_ack_is_scoped_idempotent():
     async def scenario():
         client = fake_client()

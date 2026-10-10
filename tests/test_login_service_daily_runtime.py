@@ -19,6 +19,7 @@ from naruto_daily.login_service.ldplayer import LDPlayerPoolFull
 from naruto_daily.login_service.models import parse_submission
 from naruto_daily.login_service import runtime as runtime_module
 from naruto_daily.login_service.runtime import LoginRuntime
+from naruto_daily.login_service.queue import RedisQueueError
 
 
 PNG = b"\x89PNG\r\n\x1a\nfixture"
@@ -78,6 +79,7 @@ class RecordingRedis:
     def __init__(self):
         self.statuses = []
         self.requeued = []
+        self.failed_sessions = []
 
     async def set_status(self, record, status, error=None):
         self.statuses.append((record.id, status, error))
@@ -85,6 +87,11 @@ class RecordingRedis:
 
     async def requeue(self, record):
         self.requeued.append(record.id)
+        return True
+
+    async def finish_failed(self, record):
+        self.failed_sessions.append(record.id)
+        record.status = 'failed'
         return True
 
     async def close(self):
@@ -646,6 +653,74 @@ def test_authorized_login_failure_keeps_safe_child_reason(monkeypatch, tmp_path)
             assert "private" not in json.dumps(run_report(runtime, record))
         finally:
             await runtime.stop()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('authorized', [False, True])
+def test_failed_published_session_ends_only_after_instance_cleanup(monkeypatch, tmp_path, authorized):
+    async def scenario():
+        record = record_with_ttl()
+        plan = [emit(QR)] + ([emit(AUTHORIZED)] if authorized else [])
+        plan += [emit({'type': 'error', 'code': 'login_finish_failed' if authorized else 'login_failed'})]
+        runtime, _, queue, pool = make_runtime(tmp_path, monkeypatch, record, plan)
+        released = queue.finish_failed
+
+        async def finish(current):
+            assert pool.closed == [record.id] and pool.has_capacity()
+            assert current.id not in runtime._children
+            return await released(current)
+
+        queue.finish_failed = finish
+        await runtime._process_record(record)
+        assert queue.failed_sessions == [record.id]
+        assert record.status == 'failed'
+        assert not queue.requeued
+        assert run_report(runtime, record)['status'] == 'failed'
+    asyncio.run(scenario())
+
+
+def test_failed_cleanup_does_not_release_login_session(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl()
+        runtime, _, queue, pool = make_runtime(tmp_path, monkeypatch, record,
+            [emit(QR), emit(AUTHORIZED), emit({'type': 'error', 'code': 'login_finish_failed'})])
+
+        def cannot_close(task_id):
+            raise RuntimeError('private driver exception')
+
+        monkeypatch.setattr(pool, 'close', cannot_close)
+        await runtime._process_record(record)
+        assert queue.failed_sessions == []
+        assert record.daily_error_code == 'instance_cleanup_failed'
+        assert not runtime._pending_session_failures
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('expires_before_retry', [False, True])
+def test_redis_failure_after_cleanup_is_retried_without_replaying_emulator(monkeypatch, tmp_path, expires_before_retry):
+    async def scenario():
+        record = record_with_ttl()
+        runtime, _, queue, pool = make_runtime(tmp_path, monkeypatch, record,
+            [emit(QR), emit(AUTHORIZED), emit({'type': 'error', 'code': 'login_finish_failed'})])
+        finish, calls = queue.finish_failed, []
+
+        async def unavailable(current):
+            calls.append(current.id)
+            if len(calls) == 1:
+                raise RedisQueueError('transport unavailable')
+            return await finish(current)
+
+        queue.finish_failed = unavailable
+        await runtime._process_record(record)
+        assert record.id in runtime._pending_session_failures
+        assert pool.closed == [record.id]
+        if expires_before_retry:
+            record.expires_at_ms = time.time() * 1000 - 1
+        await runtime._sweep()
+        assert not runtime._pending_session_failures
+        assert len(calls) == (1 if expires_before_retry else 2)
+        assert queue.failed_sessions == ([] if expires_before_retry else [record.id])
+        assert pool.closed == [record.id] and not queue.requeued
     asyncio.run(scenario())
 
 
