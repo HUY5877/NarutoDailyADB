@@ -262,6 +262,7 @@ class LoginRuntime:
         )
         png: bytes | None = None
         action_count: int | None = None
+        refresh_id: str | None = None
         try:
             child.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
             child.stdin.close()
@@ -288,14 +289,26 @@ class LoginRuntime:
                             self._expire(record)
                         if record.status != "expired" and not self._stopping:
                             await self._set_status(record, event["status"])
+                    elif daily and event.get('type') == 'refreshing':
+                        request_id = event.get('requestId')
+                        if (not record.qr_published or record.authorized_at is not None or record.daily_started_at is not None or refresh_id is not None
+                                or not isinstance(request_id, str) or not UUID_PATTERN.fullmatch(request_id)
+                                or self._redis_queue is None
+                                or not await self._redis_queue.pending_refresh(record, request_id)):
+                            raise ValueError('Unexpected QR refresh command')
+                        refresh_id = request_id
+                        await self._set_status(record, 'preparing_qr')
                     elif event.get("type") == "qr" and isinstance(event.get("png"), str):
-                        if daily and png is not None:
+                        if daily and png is not None and (refresh_id is None or event.get('requestId') != refresh_id):
                             raise ValueError("Duplicate QR output")
+                        if record.authorized_at is not None or record.daily_started_at is not None:
+                            raise ValueError('QR output after authorization')
                         candidate = base64.b64decode(event["png"], validate=True)
                         if candidate.startswith(b"\x89PNG\r\n\x1a\n") and len(candidate) <= 700_000:
                             png = candidate
                             if daily:
-                                await self._publish_qr(record, png)
+                                await self._publish_qr(record, png, refresh_request_id=refresh_id)
+                                refresh_id = None
                                 self._set_daily_status(record, "waiting_scan")
                         elif daily:
                             raise ValueError("Invalid QR image")
@@ -309,6 +322,14 @@ class LoginRuntime:
                         record.authorized_at = record.execution_deadline - self.config.daily_timeout_seconds
                         timeout.reschedule(asyncio.get_running_loop().time()
                                            + max(0, record.execution_deadline - time.time()))
+                        if record.login_timeout_seconds and self._redis_queue is not None:
+                            # Success wins a race with a refresh click. The uploader
+                            # owns command deletion, also when no new QR is needed.
+                            try:
+                                await self._redis_queue.mark_authorized(record)
+                            except RedisQueueError:
+                                logger.warning('Task %s: authorization command cleanup unavailable', record.id)
+                        refresh_id = None
                         self._set_daily_status(record, "finishing_login")
                     elif daily and event.get("type") == "logged_in":
                         if (not record.qr_published or record.daily_started_at is not None
@@ -432,18 +453,34 @@ class LoginRuntime:
             "dailyConfigPath": str(self.config.daily_config_path),
             "dailyTimeoutSeconds": self.config.daily_timeout_seconds,
             "userOptions": record.user_options,
+            **({'refreshQueueKey': self.config.redis_queue_key} if record.login_timeout_seconds else {}),
         }
         return await self._run_child(
             record, [sys.executable, "-u", "-m", "naruto_daily.login_service.ldplayer_worker"], message,
             daily=True,
         )
 
-    async def _publish_qr(self, record: TaskRecord, png: bytes) -> None:
+    async def _publish_qr(self, record: TaskRecord, png: bytes, *, refresh_request_id: str | None = None) -> None:
         if record.expires_at_ms <= time.time() * 1000:
             raise _TaskExpired
         try:
             await self.storage.put(record.id, png, record.expires_at)
-            await self._set_status(record, "qr_ready")
+            if refresh_request_id is None:
+                await self._set_status(record, "qr_ready")
+            else:
+                assert self._redis_queue is not None
+                while True:
+                    if record.expires_at_ms <= time.time() * 1000:
+                        raise _TaskExpired
+                    try:
+                        if not await self._redis_queue.complete_refresh(record, refresh_request_id):
+                            raise _TaskExpired
+                        break
+                    except RedisQueueError:
+                        if self._stopping:
+                            raise _WorkerStopping from None
+                        await self._retry_pause()
+                record.status = 'qr_ready'
         except BaseException:
             self._pending_deletes.add(record.id)
             raise
@@ -536,12 +573,17 @@ class LoginRuntime:
             self._run_reporter.emit(
                 record, status="failed", error_code=record.daily_error_code, level="ERROR",
             )
+        hold_seconds = FAILED_INSTANCE_HOLD_SECONDS
+        if record.authorized_at is None and record.daily_started_at is None:
+            hold_seconds = min(hold_seconds, max(0, record.expires_at_ms / 1000 - time.time()))
+        if hold_seconds <= 0:
+            return
         logger.warning(
             "Task %s: 执行失败，保留模拟器 %g 秒供排查，期间实例保持占用；到时自动关闭",
-            record.id, FAILED_INSTANCE_HOLD_SECONDS,
+            record.id, hold_seconds,
         )
         try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=FAILED_INSTANCE_HOLD_SECONDS)
+            await asyncio.wait_for(self._stop_event.wait(), timeout=hold_seconds)
         except TimeoutError:
             logger.info("Task %s: 失败现场保留时间已到，开始关闭模拟器", record.id)
 

@@ -211,6 +211,20 @@ def test_authorized_login_cleanup_can_outlive_qr_deadline(tmp_path):
                for command, _ in calls)
 
 
+def test_authorized_screen_skips_refresh_callback_and_refresh_can_handoff_authorization(tmp_path):
+    session, clock, _ = session_for(tmp_path)
+    session.wait_for_authorization(clock() + 30, on_wait=lambda _: pytest.fail('already authorized'))
+    authorized = [False]
+    def matcher(png, path, roi, threshold):
+        return ((900, 900), 1) if authorized[0] and path.name == 'start_game_button.png' else (None, 0)
+    session, clock, _ = session_for(tmp_path, matcher=matcher)
+    def refresh(check):
+        authorized[0] = True
+        assert check()
+    session.wait_for_authorization(clock() + 30, on_wait=refresh)
+    assert session._authorized
+
+
 def test_login_cleanup_cannot_start_before_authorization(tmp_path):
     session, clock, calls = session_for(tmp_path)
     with pytest.raises(RuntimeError, match="先完成扫码授权"):

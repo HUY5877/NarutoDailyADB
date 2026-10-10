@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 import os
@@ -71,6 +72,9 @@ class LoginDevice:
         if not (0 <= x < 1920 and 0 <= y < 1080):
             raise QRNavigationError("ADB tap falls outside the login screen")
         self._run("shell", "input", "tap", str(x), str(y))
+
+    def back(self) -> None:
+        self._run("shell", "input", "keyevent", "4")
 
 
 @dataclass(frozen=True)
@@ -231,10 +235,13 @@ def choose_action(frame: np.ndarray, xml: str) -> LoginAction | None:
     return None
 
 
-def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1) -> bytes:
+def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1,
+                   is_authorized: Callable[[], bool] | None = None) -> bytes | None:
     last_action, repeated = None, 0
     qr_wait_until: float | None = None
     while time.time() < device.deadline:
+        if is_authorized is not None and is_authorized():
+            return None
         if qr_wait_until is not None and time.time() >= qr_wait_until:
             raise QRNavigationError("QQ authorization QR did not load after scan login was selected")
         guard = getattr(device, "guard_authorization_surface", None)
@@ -269,3 +276,43 @@ def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1) -> bytes:
             last_action = action.name
         time.sleep(min(max(0, poll_seconds), max(0, device.deadline-time.time())))
     raise QRNavigationError("QQ authorization QR was not found before the login deadline")
+
+
+def authorization_page(frame: np.ndarray) -> bool:
+    """Headings remain visible on both valid and expired QQ authorization codes."""
+    return bool(_match(frame, 'web_qr_heading', (480, 0, 1440, 220))
+                or _match(frame, 'qr_heading', (650, 100, 1300, 370)))
+
+
+def pre_login_image(png: bytes) -> bool:
+    frame = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None or frame.shape[:2] != (1080, 1920):
+        return False
+    if authorization_page(frame):
+        return True
+    action = choose_action(frame, '')
+    return action is not None and action.name != 'game_back'
+
+
+def refresh_login_qr(device: LoginDevice, *, is_authorized: Callable[[], bool],
+                     poll_seconds: float = 0.5) -> bytes | None:
+    # Check positive authorization markers before every navigation decision.
+    # Back is sent once and only on a recognized authorization page; never tap
+    # an expired code, a remembered account's Agree button, or the game's Back.
+    returned = False
+    while time.time() < device.deadline:
+        if is_authorized():
+            return None
+        frame = device.screenshot()
+        if authorization_page(frame):
+            if not returned:
+                if is_authorized():
+                    return None
+                device.back()
+                returned = True
+        else:
+            action = choose_action(frame, '')
+            if action and action.name != 'game_back':
+                return fetch_login_qr(device, poll_seconds=poll_seconds, is_authorized=is_authorized)
+        time.sleep(min(poll_seconds, max(0, device.deadline - time.time())))
+    raise QRNavigationError('Login task deadline expired during QR refresh')

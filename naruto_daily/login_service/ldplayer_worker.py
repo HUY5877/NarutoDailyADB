@@ -176,6 +176,7 @@ def main(
 
     phase = "configuration"
     log_context = ExitStack()
+    refresh_requests = None
     try:
         # Capture ordinary prints across imports, navigation and daily execution;
         # structured logs retain the original protocol stream captured above.
@@ -229,8 +230,30 @@ def main(
         _send(output_stream, {"type": "qr", "png": base64.b64encode(png).decode("ascii")})
         if daily_session is not None:
             phase = "login"
+            on_wait = None
+            if message.get('refreshQueueKey') and os.environ.get('REDIS_URL'):
+                from .refresh import RefreshRequests
+                from .qr_navigation import refresh_login_qr
+                refresh_requests = RefreshRequests(os.environ['REDIS_URL'], message['refreshQueueKey'], task_id)
+
+                def on_wait(is_authorized):
+                    request_id = refresh_requests.poll()
+                    if request_id is None:
+                        return
+                    if is_authorized():
+                        return
+                    _send(output_stream, {'type': 'refreshing', 'requestId': request_id})
+                    logging.getLogger(__name__).info('收到本任务的刷新指令，重新获取 QQ 登录二维码')
+                    replacement = refresh_login_qr(device, is_authorized=is_authorized)
+                    if replacement is not None:
+                        _send(output_stream, {'type': 'qr', 'requestId': request_id,
+                                              'png': base64.b64encode(replacement).decode('ascii')})
+
             with redirect_stdout(sys.stderr):
-                daily_session.wait_for_authorization(deadline)
+                if on_wait is None:
+                    daily_session.wait_for_authorization(deadline)
+                else:
+                    daily_session.wait_for_authorization(deadline, on_wait=on_wait)
             if clock() >= deadline:
                 raise TimeoutError
             phase = "login_finish"
@@ -279,6 +302,8 @@ def main(
             pass
         return 1
     finally:
+        if refresh_requests is not None:
+            refresh_requests.close()
         log_context.close()
         if watchdog is not None:
             watchdog.cancel()

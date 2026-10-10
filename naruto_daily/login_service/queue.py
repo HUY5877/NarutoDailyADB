@@ -90,6 +90,17 @@ if session.workerId ~= nil and session.workerId ~= cjson.null then return 0 end
 session.status = 'starting_emulator'
 session.workerId = ARGV[5]
 session.error = nil
+if ARGV[9] ~= '' then
+    local leaseExpiry = tonumber(ARGV[10])
+    if not leaseExpiry or leaseExpiry <= now or leaseExpiry > now + 605000 then return -1 end
+    local activeKey = KEYS[2] .. ':users:' .. tostring(session.userId) .. ':active'
+    if redis.call('GET', activeKey) ~= session.id then return 0 end
+    session.loginStartedAt = ARGV[11]
+    session.loginExpiresAt = ARGV[9]
+    session.refreshSupported = true
+    redis.call('PEXPIRE', activeKey, math.floor(leaseExpiry - now))
+    redis.call('PEXPIRE', KEYS[1], math.floor(leaseExpiry - now))
+end
 redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
 return 1
 end
@@ -144,6 +155,31 @@ local encoded = cjson.encode(session)
 -- or allocation error cannot strand a queued session with no list entry.
 redis.call('LPUSH', KEYS[2], ARGV[6])
 redis.call('SET', KEYS[1], encoded, 'KEEPTTL')
+return 1
+"""
+
+_ACK_REFRESH_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
+if session.qrRevision == ARGV[6] then return 1 end
+if session.status ~= 'preparing_qr' and session.status ~= 'qr_ready' then return 0 end
+if session.loginAuthorized == true or session.refreshRequestId ~= ARGV[6] then return 0 end
+local rawCommand = redis.call('GET', KEYS[2])
+if not rawCommand then return 0 end
+local okCommand, command = pcall(cjson.decode, rawCommand)
+if not okCommand or command.taskId ~= session.id or command.requestId ~= ARGV[6] then return 0 end
+session.qrRevision = ARGV[6]
+session.refreshRequestId = nil
+session.status = 'qr_ready'
+redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+redis.call('DEL', KEYS[2])
+return 1
+"""
+
+_AUTHORIZE_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
+if session.status == 'failed' or session.status == 'expired' then return 0 end
+session.loginAuthorized = true
+session.refreshRequestId = nil
+redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+redis.call('DEL', KEYS[2])
 return 1
 """
 
@@ -218,7 +254,7 @@ class RedisTaskQueue:
 
     def _session_args(self, record: TaskRecord) -> tuple[str, ...]:
         return (
-            record.id, record.created_at, record.expires_at,
+            record.id, record.created_at, record.queue_expires_at or record.expires_at,
             str(record.expires_at_ms), self.owner,
         )
 
@@ -338,16 +374,42 @@ class RedisTaskQueue:
             logger.warning("Skipped malformed login queue message")
             await self._discard(original_payload)
             return None
+        lease_start_ms = int(models.time.time() * 1000)
+        lease_expiry_ms = lease_start_ms + 600_000
+        iso = lambda ms: datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
         claimed = await self._call('eval', _CLAIM_SCRIPT, 2, self._session_key(record), self.config.redis_queue_key,
                                    *self._session_args(record), payload, str(models.timestamp_ms(record.created_at)),
-                                   str(models.time.time() * 1000))
+                                   str(lease_start_ms),
+                                   iso(lease_expiry_ms) if record.login_timeout_seconds else '',
+                                   str(lease_expiry_ms), iso(lease_start_ms))
         if claimed == -1:
             await self._defer_timestamps(payload, body)
         if claimed != 1:
             return None
+        if record.login_timeout_seconds:
+            record.queue_expires_at = record.expires_at
+            record.expires_at = iso(lease_expiry_ms)
+            record.expires_at_ms = lease_expiry_ms
         record.status = "starting_emulator"
         record._queue_payload = payload
         return record
+
+    async def pending_refresh(self, record: TaskRecord, request_id: str) -> bool:
+        raw = await self._call('get', f'{self.config.redis_queue_key}:refresh:{record.id}')
+        try:
+            command = json.loads(raw) if raw else None
+            return isinstance(command, dict) and command.get('taskId') == record.id and command.get('requestId') == request_id
+        except (ValueError, TypeError):
+            return False
+
+    async def complete_refresh(self, record: TaskRecord, request_id: str) -> bool:
+        return bool(await self._call('eval', _ACK_REFRESH_SCRIPT, 2, self._session_key(record),
+                                    f'{self.config.redis_queue_key}:refresh:{record.id}',
+                                    *self._session_args(record), request_id))
+
+    async def mark_authorized(self, record: TaskRecord) -> bool:
+        return bool(await self._call('eval', _AUTHORIZE_SCRIPT, 2, self._session_key(record),
+                                    f'{self.config.redis_queue_key}:refresh:{record.id}', *self._session_args(record)))
 
     async def set_status(self, record: TaskRecord, status: str, error: str | None = None) -> bool:
         if status not in STATUSES or status == "queued":

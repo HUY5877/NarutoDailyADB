@@ -57,6 +57,8 @@ class TaskRecord:
     authorized_at: float | None = None
     execution_deadline: float | None = None
     user_options: UserOptions = field(default_factory=parse_user_options)
+    login_timeout_seconds: int | None = None
+    queue_expires_at: str | None = None
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {
@@ -119,5 +121,8 @@ def parse_queue_task(body: object, key_prefix: str) -> TaskRecord:
         raise TaskValidationError("invalid_task_payload", "Invalid queue task")
     created_at, expires_at = body.get("createdAt"), body.get("expiresAt")
     expires = _validate_timestamps(created_at, expires_at)
+    login_timeout = body.get("loginTimeoutSeconds")
+    if login_timeout is not None and (type(login_timeout) is not int or login_timeout != 600):
+        raise TaskValidationError("invalid_task_payload", "Invalid login occupancy timeout")
     return TaskRecord(task_id, "", created_at, expires_at, expires,
-                      user_options=_user_options(body))
+                      user_options=_user_options(body), login_timeout_seconds=login_timeout)

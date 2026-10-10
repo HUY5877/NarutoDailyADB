@@ -137,7 +137,7 @@ class DailySession:
         return ActionRunner(self.client, sleep=self._sleep, template_matcher=self._match,
                             asset_root=self.asset_root)
 
-    def wait_for_authorization(self, deadline: float) -> None:
+    def wait_for_authorization(self, deadline: float, *, on_wait=None) -> None:
         """观察扫码后的明确页面，立即交接；按钮操作留给登录收尾。"""
         with execution_scope(deadline, clock=self._clock, sleep=self._sleep_impl):
             self._authorized = False
@@ -150,16 +150,32 @@ class DailySession:
             targets = (action["start_game"], action["second_authorization"], self._main_marker)
             images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
             LOGGER.info("等待手机扫码确认；识别到授权后的页面即结束二维码等待")
-            while True:
+            def observed():
                 self._remaining()
                 png = self.client.screenshot()
                 for index, target in enumerate(targets):
+                    if index == 2 and on_wait is not None and target.get('main_menu'):
+                        from .qr_navigation import pre_login_image
+                        # Known QR/login pages cannot be the game home screen.
+                        # Keep Redis polling responsive instead of issuing a model
+                        # request on every observation of a waiting QR code.
+                        if pre_login_image(png):
+                            return False
                     center, _ = images.match(png, target, timeout_seconds=self._remaining())
                     if center is not None:
                         self._remaining()
                         self._authorized = True
                         self._already_in_game = index == 2
                         LOGGER.info("已确认扫码授权，识别到%s，立即结束二维码等待", target.get("name", "游戏主界面"))
+                        return True
+                return False
+
+            while True:
+                if observed():
+                    return
+                if on_wait is not None:
+                    on_wait(observed)
+                    if self._authorized:
                         return
                 # A missing QR alone is not evidence: loading, cancellation and
                 # network errors must not be mistaken for successful authorization.

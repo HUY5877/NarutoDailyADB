@@ -64,6 +64,50 @@ def test_queue_schema_is_tokenless_and_path_is_exact():
     assert parse_queue_task(nested, "login/test").id == body["id"]
 
 
+def test_claim_starts_fixed_occupancy_and_refresh_ack_is_scoped_idempotent():
+    async def scenario():
+        client = fake_client()
+        queue = RedisTaskQueue(config(), client=client)
+        body = task_body(ttl=30) | {'loginTimeoutSeconds': 600}
+        session = session_body(body) | {'userId': str(uuid4())}
+        active_key = f"{config().redis_queue_key}:users:{session['userId']}:active"
+        await client.set(active_key, body['id'], px=30000)
+        key, _ = await enqueue(client, body, session=session, ttl=30000)
+        record = await queue.pop()
+        assert record is not None
+        claimed = json.loads(await client.get(key))
+        assert claimed['expiresAt'] == body['expiresAt']
+        assert claimed['loginExpiresAt'] == record.expires_at
+        assert record.queue_expires_at == body['expiresAt']
+        assert 590000 < await client.pttl(active_key) <= 600000
+        assert claimed['refreshSupported'] is True
+        deadline = record.expires_at
+        request_id = str(uuid4())
+        refresh_key = f"{config().redis_queue_key}:refresh:{record.id}"
+        other_key = f"{config().redis_queue_key}:refresh:{uuid4()}"
+        await client.set(other_key, 'another-task', ex=600)
+        command = json.dumps({'taskId': record.id, 'requestId': request_id})
+        await client.set(refresh_key, command, ex=600)
+        claimed.update(status='preparing_qr', refreshRequestId=request_id)
+        await client.set(key, json.dumps(claimed), keepttl=True)
+        assert await queue.pending_refresh(record, request_id)
+        assert not await queue.complete_refresh(record, str(uuid4()))
+        intruder = RedisTaskQueue(config(), client=client)
+        assert not await intruder.complete_refresh(record, request_id)
+        assert await client.get(refresh_key) == command
+        assert await queue.complete_refresh(record, request_id)
+        assert await queue.complete_refresh(record, request_id), 'lost acknowledgement can be retried'
+        assert await client.get(refresh_key) is None
+        assert await client.get(other_key) == 'another-task'
+        ready = json.loads(await client.get(key))
+        assert ready['qrRevision'] == request_id and 'refreshRequestId' not in ready
+        assert ready['loginExpiresAt'] == deadline and record.expires_at == deadline
+        assert await queue.mark_authorized(record)
+        assert json.loads(await client.get(key))['loginAuthorized'] is True
+        await client.aclose()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("changes", [
     {"version": 2}, {"version": True}, {"version": 1.0}, {"version": "1"},
     {"id": "../bad"}, {"id": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"},

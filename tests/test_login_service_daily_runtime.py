@@ -249,6 +249,64 @@ def start_processing(runtime, record):
     return work
 
 
+def test_refresh_upload_precedes_ack_and_authorized_refresh_proceeds_without_new_qr(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl()
+        request_id, next_id = str(uuid4()), str(uuid4())
+        replacement = QR | {'requestId': request_id}
+        plan = [emit(QR), emit({'type': 'refreshing', 'requestId': request_id}), emit(replacement),
+                emit({'type': 'refreshing', 'requestId': next_id}), emit(AUTHORIZED), emit(LOGGED_IN), emit(COMPLETED)]
+        runtime, storage, queue, pool = make_runtime(tmp_path, monkeypatch, record, plan)
+        deadline = record.expires_at_ms
+        acknowledgements = []
+        async def pending(current, command):
+            return current.id == record.id and command in {request_id, next_id}
+        async def acknowledge(current, command):
+            assert storage.put_ids == [record.id, record.id]
+            assert command == request_id
+            acknowledgements.append(command)
+            return True
+        queue.pending_refresh = pending
+        queue.complete_refresh = acknowledge
+        await runtime._process_record(record)
+        assert acknowledgements == [request_id]
+        assert record.daily_status == 'completed'
+        assert record.expires_at_ms == deadline
+        assert pool.closed == [record.id]
+    asyncio.run(scenario())
+
+
+def test_scan_deadline_never_waits_for_failure_inspection_hold(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl(.2)
+        runtime, _, _, pool = make_runtime(tmp_path, monkeypatch, record,
+            [emit(QR), gate(tmp_path / 'never-authorized')])
+        monkeypatch.setattr(runtime_module, 'FAILED_INSTANCE_HOLD_SECONDS', 60)
+        async with asyncio.timeout(3):
+            await runtime._process_record(record)
+        assert pool.closed == [record.id]
+        assert record.authorized_at is None
+    asyncio.run(scenario())
+
+
+def test_authorization_switches_deadline_before_slow_redis_ack(monkeypatch, tmp_path):
+    async def scenario():
+        record = record_with_ttl(5)
+        record.login_timeout_seconds = 600
+        runtime, _, queue, pool = make_runtime(tmp_path, monkeypatch, record,
+            [emit(QR), emit(AUTHORIZED), emit(LOGGED_IN), emit(COMPLETED)], daily_timeout=10)
+        async def slow_ack(current):
+            # Give OS process startup enough room, then deliberately cross the
+            # original login deadline inside the acknowledgement operation.
+            await asyncio.sleep(max(0, current.expires_at_ms / 1000 - time.time()) + .1)
+            return True
+        queue.mark_authorized = slow_ack
+        await runtime._process_record(record)
+        assert record.daily_status == 'completed'
+        assert pool.closed == [record.id]
+    asyncio.run(scenario())
+
+
 class RecordingReporter:
     def __init__(self):
         self.events = []
