@@ -63,12 +63,14 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
             return 'room', None
         if images.match(png, action['create_room'])[0] is not None:
             return 'lobby', None
-        if images.match(png, action['reward_overlay'])[0] is not None:
-            return 'reward', None
-        if images.match(png, action['result_marker'])[0] is not None:
+        # 战斗层已经确认结束后，返回键无需再依赖可能被倒计时遮挡的结算标题。
+        # 房间的同款返回键必须由上面的房间判断优先拦住。
+        if dismiss_enabled or images.match(png, action['result_marker'])[0] is not None:
             center, _ = images.match(png, action['result_return'])
             if center is not None:
                 return 'result', center
+        if images.match(png, action['reward_overlay'])[0] is not None:
+            return 'reward', None
         if secret_failure_visible(png):
             return 'failure', None
         return None
@@ -81,7 +83,7 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
     while images.elapsed < deadline:
         round_number += 1
         LOGGER.info('[秘境结算 第%d轮] %s；回到房间后结束，剩余 %.2f 秒', round_number,
-                    '继续检查房间、奖励弹层和结算返回；未返回则点击空白处' if dismiss_enabled else '先确认房间，否则识别奖励弹层或结算返回',
+                    '先确认房间，返回键复查后点击一次；无返回或返回后仍未回房则点击空白处' if dismiss_enabled else '先确认房间，否则识别奖励弹层或结算返回',
                     deadline-images.elapsed)
         state = check()
         if state and state[0] == 'ninja_selection':
@@ -153,14 +155,21 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
         LOGGER.info('已点击出战，等待 %g 秒加载并检查继续挑战提示；加载完成前不再点击出战', action['load_wait_seconds'])
         wait_after_deploy(images, action, confirmed_tickets=confirmed.tickets)
         preparation = prepare_secret_battle(images, model, action)
+        result_confirmed = preparation is BattlePreparation.FINISHED
         if preparation is BattlePreparation.READY:
             # 秘境结算仅停留约20秒，缩短连点窗口以便回房间前识别结束。
-            run_battle(client, action['battle'], template_matcher=template_matcher,
-                       asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18,
-                       end_detector=_ninja_selection_end)
+            battle_summary = run_battle(client, action['battle'], template_matcher=template_matcher,
+                                        asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18,
+                                        end_detector=_ninja_selection_end)
+            # 保留战斗层的结束证据；更换忍者页仍只允许识别并点击该页返回。
+            result_confirmed = (battle_summary is not None
+                                and battle_summary.end_target != '秘境更换忍者页')
+            if result_confirmed:
+                LOGGER.info('战斗层已确认结束（%s），结算优先查找返回键，未匹配则点击空白处',
+                            battle_summary.end_target)
         finish_secret_result(client, images, action,
                              exited_battle=preparation is BattlePreparation.EXITED,
-                             result_confirmed=preparation is BattlePreparation.FINISHED)
+                             result_confirmed=result_confirmed)
         if preparation is BattlePreparation.EXITED:
             LOGGER.info('已主动退出本次秘境；回房间重新读券后继续')
         else:

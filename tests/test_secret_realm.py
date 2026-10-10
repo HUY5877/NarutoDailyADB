@@ -208,6 +208,46 @@ def test_each_battle_result_returns_before_next_ticket_read(monkeypatch):
     assert client.taps == [(1443, 791), (1787, 920), (209, 1010), (1787, 920), (209, 1010)]
 
 
+def test_model_finished_battle_with_unmatched_result_templates_dismisses_then_reads_tickets(monkeypatch):
+    from types import SimpleNamespace
+    from naruto_daily.secret_realm import handler
+
+    class OverlayClient(SecretClient):
+        overlay = False
+
+        def screenshot(self):
+            return b'countdown-overlay' if self.overlay else super().screenshot()
+
+        def tap(self, x, y):
+            super().tap(x, y)
+            if (x, y) == (1787, 920):
+                self.overlay = True
+            elif (x, y) == (960, 900):
+                self.overlay = False
+
+    client, calls = OverlayClient(), []
+    counts = iter([1, 1, 0])
+
+    def complete(png, prompt, **kwargs):
+        calls.append(png)
+        if png == b'countdown-overlay':
+            return {'page': 'finished', 'finished': True, 'reason': '倒计时遮挡奖励标题，战斗已结束'}
+        assert png == b'room', '必须先回到房间，再读取挑战券'
+        return {'page': 'room', 'tickets': next(counts)}
+
+    monkeypatch.setattr(handler, 'MultimodalClient',
+                        lambda *args, **kwargs: SimpleNamespace(complete_json=complete))
+    monkeypatch.setattr(handler, 'prepare_secret_battle', lambda *args, **kwargs: BattlePreparation.READY)
+    config = secret_action()
+    config['timeout_seconds'] = 8
+
+    # 保留真实战斗检查、结算和读券链路；本地模板均不能识别倒计时遮挡的奖励弹层。
+    assert handler.handle_secret_realm(client, config, template_matcher=secret_matcher,
+                                       sleep=lambda _: None) == 1
+    assert client.taps == [(1443, 791), (1787, 920), (960, 900)]
+    assert calls == [b'room', b'room', b'countdown-overlay', b'room']
+
+
 def test_skipped_yinyang_does_not_require_ticket_decrease_or_count_as_completed(monkeypatch):
     from naruto_daily.secret_realm import handler
     client, battles = SecretClient(), []
@@ -306,6 +346,7 @@ def test_navigation_failure_returns_to_room_and_rereads_tickets_before_redeploy(
 
 @pytest.mark.parametrize('next_tickets', [0, 1])
 def test_ninja_selection_returns_to_room_and_rechecks_tickets_before_next_battle(monkeypatch, next_tickets):
+    from naruto_daily.battle.handler import BattleSummary
     from naruto_daily.secret_realm import handler
 
     class NinjaClient(SecretClient):
@@ -331,6 +372,7 @@ def test_ninja_selection_returns_to_room_and_rechecks_tickets_before_next_battle
         client.selecting = True
         assert kwargs['end_detector'](client.screenshot()) == '秘境更换忍者页'
         assert kwargs['end_detector'](b'room') is None
+        return BattleSummary(0, '秘境更换忍者页')
 
     monkeypatch.setattr(handler, 'run_battle', battle)
     assert handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher,
@@ -339,3 +381,31 @@ def test_ninja_selection_returns_to_room_and_rechecks_tickets_before_next_battle
     assert len(calls) == 3 + 2 * next_tickets
     assert client.taps == [(1443, 791), (1787, 920), (150, 1000)] + \
         ([(1787, 920), (150, 1000)] if next_tickets else [])
+
+
+def test_ninja_battle_end_does_not_authorize_blank_taps_on_unknown_transition(monkeypatch):
+    from naruto_daily.battle.handler import BattleSummary
+    from naruto_daily.secret_realm import handler
+
+    class TransitionClient(SecretClient):
+        unknown_frames = 0
+
+        def screenshot(self):
+            if self.unknown_frames:
+                self.unknown_frames -= 1
+                return b'unknown-transition'
+            return super().screenshot()
+
+    client = TransitionClient()
+    calls = fake_model(monkeypatch, [1, 1, 0])
+    monkeypatch.setattr(handler, 'prepare_secret_battle', lambda *a, **kw: BattlePreparation.READY)
+
+    def battle(*args, **kwargs):
+        client.unknown_frames = 2
+        return BattleSummary(0, '秘境更换忍者页')
+
+    monkeypatch.setattr(handler, 'run_battle', battle)
+    assert handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher,
+                                       sleep=lambda _: None) == 1
+    assert client.taps == [(1443, 791), (1787, 920)]
+    assert len(calls) == 3

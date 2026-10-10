@@ -42,7 +42,8 @@ class Client:
 
 def matcher(frame, path, roi, threshold):
     points = {'secret_deploy': (1787, 920), 'secret_create_room': (1443, 791),
-              'secret_result_marker': (537, 837), 'secret_result_return': (209, 1010)}
+              'secret_result_marker': (537, 837), 'secret_result_return': (209, 1010),
+              'secret_reward_overlay': (960, 260)}
     return (points[path.stem], 1) if path.stem in frame else (None, .1)
 
 
@@ -75,6 +76,54 @@ def test_return_button_without_result_page_does_not_click():
     with pytest.raises(VisualError, match='结算'):
         finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None), config)
     assert client.taps == []
+
+
+@pytest.mark.parametrize('frame', [
+    {'secret_result_return'},
+    {'secret_result_return', 'secret_reward_overlay'},
+    RESULT | {'secret_reward_overlay'},
+], ids=['return-only', 'return-with-reward-title', 'all-result-markers'])
+def test_confirmed_result_prefers_rechecked_return_over_blank_tap(frame):
+    from naruto_daily.secret_realm.handler import finish_secret_result
+    client = Client([frame, frame, ROOM])
+    sleeps = []
+    config = action()
+    finish_secret_result(client, ImageRecognition(client, matcher, sleep=sleeps.append),
+                         config, result_confirmed=True)
+    assert client.taps == [(209, 1010)]
+    assert sleeps[0] == config['pre_click_wait_seconds']
+
+
+def test_confirmed_return_disappears_into_room_during_recheck_without_click():
+    from naruto_daily.secret_realm.handler import finish_secret_result
+    client = Client([{'secret_result_return'}, ROOM])
+    finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                         action(), result_confirmed=True)
+    assert client.taps == []
+
+
+@pytest.mark.parametrize('page, expected_taps', [
+    ('secret_deploy', []),
+    ('secret_create_room', [(1443, 791)]),
+])
+def test_confirmed_result_checks_room_or_lobby_before_visible_return(page, expected_taps):
+    from naruto_daily.secret_realm.handler import finish_secret_result
+    frame = {page, 'secret_result_return', 'secret_reward_overlay'}
+    client = Client([frame, frame, frame, ROOM])
+    finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                         action(), result_confirmed=True)
+    assert client.taps == expected_taps
+
+
+def test_confirmed_result_checks_ninja_selection_before_visible_return(monkeypatch):
+    from naruto_daily.secret_realm import handler
+    ninja = {'ninja', 'secret_result_return', 'secret_reward_overlay'}
+    monkeypatch.setattr(handler, 'find_ninja_selection_return',
+                        lambda png: (150, 1000) if png == ninja else None)
+    client = Client([ninja, ninja, ROOM])
+    handler.finish_secret_result(client, ImageRecognition(client, matcher, sleep=lambda _: None),
+                                 action(), result_confirmed=True)
+    assert client.taps == [(150, 1000)]
 
 
 def test_marker_and_return_button_from_different_frames_never_combine():
