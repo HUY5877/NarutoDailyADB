@@ -459,7 +459,7 @@ def test_free_recruit_accepts_red_dot_and_safe_button_targets(tmp_path):
         },
         "free_button": {
             "name": "免费招募按钮",
-            "left": 900, "top": 800, "right": 1500, "bottom": 910, "click_x": 1330, "click_y": 865,
+            "left": 900, "top": 800, "right": 1500, "bottom": 910,
         },
         "result_confirm": {
             "name": "招募结果确定按钮", "template": "assets/recruit_confirm.png",
@@ -539,7 +539,7 @@ def test_free_recruit_rejects_paid_button_and_unrelated_red_dot_risk(
         },
         "free_button": {
             "name": "免费招募按钮",
-            "left": 900, "top": 800, "right": 1500, "bottom": 910, "click_x": 1330, "click_y": 865,
+            "left": 900, "top": 800, "right": 1500, "bottom": 910,
         },
         "result_confirm": {
             "name": "招募结果确定按钮", "template": "assets/recruit_confirm.png",

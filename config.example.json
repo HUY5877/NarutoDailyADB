@@ -606,9 +606,7 @@
           "left": 900,
           "top": 800,
           "right": 1500,
-          "bottom": 910,
-          "click_x": 1330,
-          "click_y": 865
+          "bottom": 910
         },
         "result_confirm": {
           "name": "招募结果确定按钮",

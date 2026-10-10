@@ -739,7 +739,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         free_button = action["free_button"]
         if not isinstance(free_button, dict):
             raise ConfigError(f"{context}.free_button 必须是按钮区域对象")
-        _require_exact_keys(free_button, {"name", "left", "top", "right", "bottom", "click_x", "click_y"}, f"{context}.free_button")
+        _require_exact_keys(free_button, {"name", "left", "top", "right", "bottom"}, f"{context}.free_button")
         if not isinstance(free_button["name"], str) or not free_button["name"].strip():
             raise ConfigError(f"{context}.free_button.name 必须是非空字符串")
         _coordinate(free_button["left"], width, context)
@@ -747,11 +747,6 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         for edge, start, limit in (("right", "left", width), ("bottom", "top", height)):
             if type(free_button[edge]) is not int or not free_button[start] < free_button[edge] <= limit:
                 raise ConfigError(f"{context}.free_button.{edge} 超出有效按钮区域")
-        _coordinate(free_button["click_x"], width, context)
-        _coordinate(free_button["click_y"], height, context)
-        if not (free_button["left"] <= free_button["click_x"] < free_button["right"]
-                and free_button["top"] <= free_button["click_y"] < free_button["bottom"]):
-            raise ConfigError(f"{context} 的免费招募点击坐标必须位于按钮区域内")
         if not (
             free_button["left"] >= 800
             and free_button["top"] >= 650

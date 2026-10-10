@@ -52,7 +52,7 @@ def recruit_action():
         },
         "free_button": {
             "name": "免费招募按钮",
-            "left": 900, "top": 800, "right": 1500, "bottom": 910, "click_x": 1330, "click_y": 865,
+            "left": 900, "top": 800, "right": 1500, "bottom": 910,
         },
         "result_confirm": {
             "name": "招募结果确定按钮", "template": "recruit_confirm.png",
@@ -102,10 +102,10 @@ def test_recruit_processes_advanced_then_ordinary_free_draw(caplog, monkeypatch)
 
     assert client.taps == [
         (121, 251),
-        (1330, 865),
+        (1281, 881),
         (601, 871),
         (121, 901),
-        (1330, 865),
+        (1201, 851),
         (601, 871),
     ]
     assert waits == [1.0] * 14
@@ -362,7 +362,7 @@ def test_hidden_ordinary_tab_is_scrolled_into_view_before_checking_its_red_dot(m
 
     def complete_json(*args, **kwargs):
         calls.append(1)
-        return dict(category='普通招募', free_count=1, button_text='免费1抽')
+        return dict(category='普通招募', free_count=2, button_text='免费2抽', center=[1115, 865])
 
     monkeypatch.setattr(handler, 'MultimodalClient', lambda *a, **kw:
                         SimpleNamespace(complete_json=complete_json))
@@ -371,5 +371,5 @@ def test_hidden_ordinary_tab_is_scrolled_into_view_before_checking_its_red_dot(m
 
     assert len(client.swipes) == 3
     assert result == handler.RecruitSummary(0, int(has_ordinary_dot))
-    assert client.taps == ([(128, 680), (1330, 865), (600, 870)] if has_ordinary_dot else [])
+    assert client.taps == ([(128, 680), (1115, 865), (600, 870)] if has_ordinary_dot else [])
     assert len(calls) == (2 if has_ordinary_dot else 0)

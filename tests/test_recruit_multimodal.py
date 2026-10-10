@@ -4,11 +4,11 @@ from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.multimodal.client import MultimodalError
 
 
-TARGET = dict(name="免费招募按钮", left=900, top=700, right=1500, bottom=910, click_x=1330, click_y=865)
+TARGET = dict(name="免费招募按钮", left=900, top=700, right=1500, bottom=910)
 GUARD = dict(name="普通招募红点", template="red.png", left=170, top=700, right=270, bottom=980, threshold=.95)
 
 
-def reply(count=1, center=(1330, 870), category="普通招募", text=None):
+def reply(count=1, center=(1115, 865), category="普通招募", text=None):
     return dict(category=category, free_count=count, button_text=text or f"免费{count}抽", center=list(center))
 
 
@@ -39,7 +39,7 @@ class Model:
         return result
 
 
-def run(replies, *, guards=None, timeout=20, max_calls=6, clock=lambda: 0):
+def run(replies, *, category="普通招募", guards=None, timeout=20, max_calls=6, clock=lambda: 0):
     from naruto_daily.recruit.free_button import click_free_recruit
     client = Client()
     model = Model(replies)
@@ -53,17 +53,21 @@ def run(replies, *, guards=None, timeout=20, max_calls=6, clock=lambda: 0):
         return ((218, 742), 1) if found else (None, .1)
 
     images = ImageRecognition(client, matcher, sleep=sleeps.append)
-    result = click_free_recruit(client, TARGET, category="普通招募", guard=GUARD,
+    result = click_free_recruit(client, TARGET, category=category, guard=GUARD,
         images=images, model=model, timeout_seconds=timeout, poll_seconds=1,
         pre_click_wait=1, post_click_wait=1, max_calls=max_calls, clock=clock)
     return result, client, model, sleeps, matched
 
 
 @pytest.mark.parametrize("count", [1, 2, 5, 10])
-def test_free_draw_counts_are_confirmed_before_clicking_configured_position(count):
-    result, client, model, sleeps, matched = run([reply(count), reply(count, center=(1340, 860))])
+@pytest.mark.parametrize("category", ["普通招募", "高级招募"])
+def test_free_draw_clicks_latest_model_coordinates_after_confirmation(count, category):
+    result, client, model, sleeps, matched = run([
+        reply(count, category=category), reply(count, center=(1125, 860), category=category),
+    ], category=category)
     assert result is True
-    assert client.taps == [(1330, 865)]
+    assert client.taps == [(1125, 860)]
+    assert (1330, 865) not in client.taps  # 旧固定坐标在普通招募中落到收费十连抽。
     assert [call[0] for call in model.calls] == matched == client.frames
     assert sleeps == [1, 1]
 
@@ -86,7 +90,7 @@ def test_malformed_model_output_fails_closed(result):
 
 def test_first_miss_gets_one_second_retry_then_fresh_confirmation():
     result, client, model, sleeps, matched = run([reply(count=0), reply(), reply()])
-    assert result and client.taps == [(1330, 865)]
+    assert result and client.taps == [(1115, 865)]
     assert len(model.calls) == 3
     assert sleeps == [1, 1, 1]
 
@@ -118,9 +122,54 @@ def test_late_model_response_cannot_trigger_click():
         run([reply(), reply()], clock=lambda: next(ticks))
 
 
-def test_model_coordinates_are_ignored():
+@pytest.mark.parametrize("center", [[900, 700], [1499, 909], [1115, 865]])
+def test_model_coordinates_are_full_screen_pixels_inside_button_region(center):
     from naruto_daily.recruit.free_button import parse_free_recruit
-    assert parse_free_recruit(reply(center=(1650, 870)), TARGET, "普通招募") == (1, (1330, 865))
+    assert parse_free_recruit(reply(count=2, center=center), TARGET, "普通招募") == (2, tuple(center))
+
+
+INVALID_CENTERS = [
+    None, [], [1115], [1115, 865, 1], (1115, 865),
+    "1115,865", {"x": 1115, "y": 865}, [True, 865], [1115, False],
+    ["1115", 865], [1115, "865"], [1115.0, 865], [1115, 865.0],
+    [899, 865], [1500, 865], [1115, 699], [1115, 910], [1650, 870],
+]
+
+
+@pytest.mark.parametrize("category", ["普通招募", "高级招募"])
+@pytest.mark.parametrize("center", INVALID_CENTERS)
+@pytest.mark.parametrize("invalid_on_confirmation", [False, True])
+def test_invalid_model_center_fails_closed_without_tapping(category, center, invalid_on_confirmation):
+    from naruto_daily.recruit.free_button import click_free_recruit
+    client = Client()
+    images = ImageRecognition(client, lambda *a: ((218, 742), 1), sleep=lambda _: None)
+    invalid = {**reply(category=category), "center": center}
+    model = Model(([reply(category=category)] if invalid_on_confirmation else []) + [invalid])
+    with pytest.raises(MultimodalError):
+        click_free_recruit(client, TARGET, category=category, guard=GUARD, images=images,
+            model=model, timeout_seconds=20, poll_seconds=1, pre_click_wait=1, post_click_wait=1,
+            max_calls=4, clock=lambda: 0)
+    assert client.taps == []
+
+
+@pytest.mark.parametrize("category", ["普通招募", "高级招募"])
+def test_free_button_without_model_center_is_rejected(category):
+    from naruto_daily.recruit.free_button import parse_free_recruit
+    result = reply(category=category)
+    del result["center"]
+    with pytest.raises(MultimodalError):
+        parse_free_recruit(result, TARGET, category)
+
+
+@pytest.mark.parametrize("result", [
+    dict(category="普通招募", free_count=0, button_text=None),
+    dict(category="高级招募", free_count=1, button_text="免费"),
+    dict(category="普通招募", free_count=10, button_text="10抽"),
+    dict(category="普通招募", free_count=1, button_text="4:21:15后增加一次免费"),
+])
+def test_unavailable_paid_or_wrong_category_needs_no_center(result):
+    from naruto_daily.recruit.free_button import parse_free_recruit
+    assert parse_free_recruit(result, TARGET, "普通招募") is None
 
 
 def test_free_draw_disappears_during_confirmation_does_not_click(monkeypatch):
@@ -136,9 +185,10 @@ def test_free_draw_disappears_during_confirmation_does_not_click(monkeypatch):
 
 
 @pytest.mark.parametrize("change", [
+    {"click_x": 1330}, {"click_y": 865}, {"click_x": 1330, "click_y": 865},
     {"click_x": 1650}, {"click_y": 930}, {"click_x": True}, {"right": 900},
 ])
-def test_config_rejects_invalid_free_button_click_position(tmp_path, change):
+def test_config_rejects_fixed_free_button_coordinates_or_invalid_region(tmp_path, change):
     import json
     from pathlib import Path
     from naruto_daily.config import load_settings, ConfigError
@@ -170,5 +220,5 @@ def test_recruit_dry_run_does_not_create_model_or_read_key(monkeypatch):
 
 def test_advanced_button_with_only_free_text_counts_as_one_draw():
     from naruto_daily.recruit.free_button import parse_free_recruit
-    assert parse_free_recruit(reply(category="高级招募", text="免费"), TARGET, "高级招募") == (1, (1330, 865))
+    assert parse_free_recruit(reply(category="高级招募", text="免费"), TARGET, "高级招募") == (1, (1115, 865))
     assert parse_free_recruit(reply(category="高级招募", count=5, text="免费"), TARGET, "高级招募") is None

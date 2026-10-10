@@ -1,4 +1,4 @@
-"""多模态读取免费招募次数，点击前重新确认同一帧红点。"""
+"""多模态读取免费招募次数及按钮坐标，点击前重新确认同一帧红点。"""
 from __future__ import annotations
 
 import logging
@@ -28,11 +28,14 @@ def parse_free_recruit(result: dict, target: dict, category: str):
     label = re.fullmatch(r'免费([0-9]+)抽', text)
     if not ((text == '免费' and count == 1) or (label and int(label[1]) == count)):
         return None
-    x, y = target["click_x"], target["click_y"]
+    center = result.get('center')
+    if not isinstance(center, list) or len(center) != 2:
+        raise MultimodalError('模型返回的免费招募坐标必须是 [x, y]')
+    x, y = center
     if type(x) is not int or type(y) is not int:
-        raise MultimodalError("免费招募点击坐标必须是整数")
+        raise MultimodalError("模型返回的免费招募坐标必须是整数")
     if not (target['left'] <= x < target['right'] and target['top'] <= y < target['bottom']):
-        raise MultimodalError("免费招募点击坐标超出按钮区域")
+        raise MultimodalError("模型返回的免费招募坐标超出按钮区域")
     return count, (x, y)
 
 
@@ -63,7 +66,7 @@ def click_free_recruit(client, target: dict, *, category: str, guard: dict, imag
             raise MultimodalError(f'{category}免费按钮识别超时，忽略迟到的模型结果')
         button = parse_free_recruit(result, target, category)
         if button:
-            LOGGER.info('模型确认%s：免费 %d 抽，配置点击坐标 (%d, %d)', category, button[0], *button[1])
+            LOGGER.info('模型确认%s：免费 %d 抽，模型按钮坐标 (%d, %d)', category, button[0], *button[1])
         else:
             LOGGER.info('模型未确认%s当前可用的免费按钮（检查选中标签、按钮文字和抽数）', category)
         return button
@@ -75,7 +78,7 @@ def click_free_recruit(client, target: dict, *, category: str, guard: dict, imag
     round_number = 0
     while images.elapsed < deadline:
         round_number += 1
-        LOGGER.info('[%s免费按钮 第%d轮] 模型读取免费抽数→等待后重新截图复查→点击；'
+        LOGGER.info('[%s免费按钮 第%d轮] 模型读取免费抽数和坐标→等待后重新截图复查→点击最新模型坐标；'
                     '未确认则补查或轮询，红点消失则取消；剩余 %.2f 秒，调用 %d/%d 次',
                     category, round_number, max(0, deadline - images.elapsed), calls, max_calls)
         first = check()
@@ -91,7 +94,7 @@ def click_free_recruit(client, target: dict, *, category: str, guard: dict, imag
                 LOGGER.info('点击免费招募按钮前%s红点未确认，取消点击', category)
                 return False
             if confirmed is not None and confirmed[0] == first[0]:
-                LOGGER.info('复查确认%s免费 %d 抽，点击配置坐标 (%d, %d)',
+                LOGGER.info('复查确认%s免费 %d 抽，点击最新模型坐标 (%d, %d)',
                             category, confirmed[0], *confirmed[1])
                 client.tap(*confirmed[1])
                 images.sleep(post_click_wait)
