@@ -38,6 +38,7 @@ SAFE_DRIVER_ERRORS = {
     "login_finish_failed": "扫码授权已完成，但进入游戏失败，请重新申请。",
     "daily_timeout": "已达到日常总时限（最多50分钟），任务已停止。",
     "daily_failed": "Could not complete the daily tasks.",
+    "worker_stopped": "执行服务器已停止，任务执行中断，请重新申请。",
 }
 SAFE_REJECTION_ERRORS = {
     "worker_clock_skew": "执行服务器时间与任务服务器不同步，请同步执行服务器系统时间后重新申请。",

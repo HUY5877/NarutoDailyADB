@@ -237,6 +237,8 @@ def test_shutdown_releases_pool_before_requeueing_same_task(monkeypatch, tmp_pat
 
         async def requeue(item):
             events.append(("requeue", item.id))
+            assert item.daily_status == "interrupted"
+            assert item.daily_error_code == "worker_stopped"
 
         monkeypatch.setattr(runtime, "_cleanup_ldplayer", cleanup)
         monkeypatch.setattr(runtime, "_prepare_ldplayer_retry", lambda task_id: events.append(
@@ -264,4 +266,6 @@ def test_shutdown_does_not_requeue_when_pool_release_fails(monkeypatch, tmp_path
         monkeypatch.setattr(runtime, "_requeue", lambda item: requeued.append(item.id))
         await runtime._process_record(task)
         assert requeued == []
+        assert task.daily_status == "failed"
+        assert task.daily_error_code == "instance_cleanup_failed"
     asyncio.run(scenario())

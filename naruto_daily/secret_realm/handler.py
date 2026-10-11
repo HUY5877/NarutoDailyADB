@@ -7,6 +7,7 @@ from pathlib import Path
 
 from naruto_daily.battle import run_battle
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.execution import current_execution, stage_timeout
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalClient
 from .recognition import wait_for_tickets
@@ -26,7 +27,7 @@ def _ninja_selection_end(png):
 
 
 def _enter_room(client, images, action):
-    deadline = images.elapsed + action['timeout_seconds']
+    deadline = images.elapsed + stage_timeout(action['timeout_seconds'])
     round_number = 0
     targets = [action['deploy_button'], action['create_room']]
     while images.elapsed < deadline:
@@ -51,7 +52,8 @@ def _enter_room(client, images, action):
 
 def finish_secret_result(client, images, action, *, exited_battle=False, result_confirmed=False):
     """处理结算或误入的更换忍者页，逐轮检查直到回房间。"""
-    deadline = images.elapsed + action['timeout_seconds']
+    deadline = images.elapsed + stage_timeout(action['timeout_seconds'])
+    scoped = current_execution() is not None
     return_clicked = False
     dismiss_enabled = exited_battle or result_confirmed
 
@@ -89,7 +91,7 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
         if state and state[0] == 'ninja_selection':
             # 更换忍者页不能沿用结算弹层的空白处点击；重新截图后只点该页返回。
             dismiss_enabled = False
-            if images.elapsed + action['pre_click_wait_seconds'] >= deadline:
+            if not scoped and images.elapsed + action['pre_click_wait_seconds'] >= deadline:
                 break
             images.sleep(action['pre_click_wait_seconds'])
             state = check()
@@ -99,7 +101,7 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
                 images.sleep(action['post_click_wait_seconds'])
                 continue
         if state and state[0] == 'result' and not return_clicked:
-            if images.elapsed + action['pre_click_wait_seconds'] >= deadline:
+            if not scoped and images.elapsed + action['pre_click_wait_seconds'] >= deadline:
                 break
             images.sleep(action['pre_click_wait_seconds'])
             state = check()
@@ -124,7 +126,8 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
             dismiss_enabled = True
             if state[0] == 'failure':
                 LOGGER.info('已确认秘境失败结算，点击空白处回房间后重新核对挑战券')
-        if dismiss_enabled and images.elapsed < deadline:
+        if (dismiss_enabled and images.elapsed < deadline
+                and (not scoped or (state is not None and state[0] in ('result', 'reward', 'failure')))):
             # 避开奖励物品所在的中间一排；此空白坐标已经实机验证可关闭奖励弹层。
             client.tap(960, 900)
             LOGGER.info('已点击屏幕下方空白处 (960, 900)，继续检查是否回到秘境房间')

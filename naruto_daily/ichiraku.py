@@ -2,6 +2,7 @@
 import time
 from pathlib import Path
 
+from .common.execution import current_execution
 from .common.model_workflow import ModelWorkflow
 from .common.visual import VisualError, find_template_in_png
 
@@ -26,11 +27,39 @@ def _takeout(data):
     return sorted(slots)
 
 
+def _claim_with_execution_budget(flow, slots):
+    claimed = set()
+    pending = None
+    while True:
+        if slots is None:
+            # Only a freshly confirmed reward foreground may be dismissed.
+            flow.tap((1550, 740))
+        elif pending is not None and pending in slots:
+            # A delayed result must not cause another claim, including another slot.
+            flow.images.sleep(min(1, flow.remaining()))
+        else:
+            pending = None
+            if not slots:
+                return
+            available = [slot for slot in slots if slot not in claimed]
+            if available:
+                pending = available[0]
+                flow.tap(({1: 450, 2: 880, 3: 1310}[pending], 520))
+                claimed.add(pending)
+            else:
+                # A previously claimed slot can remain visible while the UI updates.
+                flow.images.sleep(min(1, flow.remaining()))
+        slots = flow.read('一乐外卖领取结果', TAKEOUT_PROMPT, _takeout)
+
+
 def handle_ichiraku_takeout(client, action, *, model=None, template_matcher=find_template_in_png,
                             asset_root=Path('.'), sleep=time.sleep):
     flow = ModelWorkflow(client, action, model=model, template_matcher=template_matcher,
                          asset_root=asset_root, sleep=sleep)
     slots = flow.read('一乐外卖领取判断', TAKEOUT_PROMPT, _takeout)
+    if current_execution() is not None:
+        _claim_with_execution_budget(flow, slots)
+        return
     if slots is None:
         flow.tap((1550, 740))
         slots = flow.read('一乐外卖领取判断', TAKEOUT_PROMPT, _takeout)

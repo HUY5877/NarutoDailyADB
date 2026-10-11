@@ -46,7 +46,7 @@ def _wait_and_click(images, target, action, *, guard=None):
     while images.elapsed < deadline:
         center = check()
         if center is not None:
-            if images.elapsed + action['pre_click_wait_seconds'] >= deadline:
+            if current_execution() is None and images.elapsed + action['pre_click_wait_seconds'] >= deadline:
                 break
             images.sleep(action['pre_click_wait_seconds'])
             center = check()
@@ -71,7 +71,7 @@ def identify_battle_realm(images, model, action, *, clock=time.monotonic):
             return '已结束'
         if images.elapsed >= deadline:
             raise MultimodalError('秘境副本名称识别超时')
-        if calls >= action['multimodal']['max_calls']:
+        if current_execution() is None and calls >= action['multimodal']['max_calls']:
             raise MultimodalError('秘境副本名称识别达到模型调用上限，未攻击或退出')
         start = clock()
         try:
@@ -86,7 +86,9 @@ def identify_battle_realm(images, model, action, *, clock=time.monotonic):
         name = result.get('realm_name') if isinstance(result, dict) and result.get('page') == 'battle' else None
         if not isinstance(name, str) or not 3 <= len(name.strip()) <= 20 or not name.strip().endswith('秘境'):
             name = None
-        LOGGER.info('模型识别秘境副本：%s；调用 %d/%d 次', name or '未确认', calls, action['multimodal']['max_calls'])
+        call_progress = (f'{calls} 次（由总时限约束）' if current_execution() is not None
+                         else f"{calls}/{action['multimodal']['max_calls']} 次")
+        LOGGER.info('模型识别秘境副本：%s；调用 %s', name or '未确认', call_progress)
         return name.strip() if name else None
 
     while images.elapsed < deadline:

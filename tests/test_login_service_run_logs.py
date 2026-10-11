@@ -180,7 +180,8 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
     asyncio.run(scenario())
 
 
-def test_owner_handoff_rejects_old_owner_before_and_after_qr_session_expiration():
+@pytest.mark.parametrize("stale_status", ["failed", "interrupted"])
+def test_owner_handoff_rejects_old_owner_before_and_after_qr_session_expiration(stale_status):
     async def scenario():
         client, cfg = fake_client(), config()
         first, second = RedisTaskQueue(cfg, client=client), RedisTaskQueue(cfg, client=client)
@@ -196,7 +197,7 @@ def test_owner_handoff_rejects_old_owner_before_and_after_qr_session_expiration(
             await second_reporter._write(record.id, second_reporter._pending[record.id][-1])
             run_key, stream_key, session_key = keys(cfg, record)
             new_state = await client.get(run_key)
-            first_reporter.emit(record, status="failed", message="stale owner write")
+            first_reporter.emit(record, status=stale_status, message="stale owner write")
             old_update = first_reporter._pending[record.id][-1]
             await first_reporter._write(record.id, old_update)
             assert await client.get(run_key) == new_state
@@ -212,6 +213,41 @@ def test_owner_handoff_rejects_old_owner_before_and_after_qr_session_expiration(
         finally:
             await first_reporter.close(timeout=0)
             await second_reporter.close(timeout=0)
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("session_state", ["queued", "failed", "missing"])
+def test_interrupted_run_rejects_late_progress_without_an_active_claim(session_state):
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        reporter = RedisRunReporter(cfg, queue)
+        try:
+            reporter.emit(record, status="interrupted", error_code="worker_stopped")
+            await reporter._write(record.id, reporter._pending[record.id][-1])
+            run_key, stream_key, session_key = keys(cfg, record)
+            if session_state == "missing":
+                await client.delete(session_key)
+            elif session_state == "failed":
+                record.daily_error_code = "worker_stopped"
+                assert await queue.finish_failed(record)
+            else:
+                assert await queue.requeue(record)
+            before = await client.get(run_key)
+            reporter.emit(record, status="starting_emulator", message="late progress")
+            await reporter._write(record.id, reporter._pending[record.id][-1])
+            assert await client.get(run_key) == before
+            assert len(await entries(client, stream_key)) == 1
+            if session_state == "queued":
+                retried = await queue.pop()
+                assert retried is not None
+                reporter.emit(retried, status="starting_emulator", message="new attempt")
+                await reporter._write(retried.id, reporter._pending[retried.id][-1])
+                assert json.loads(await client.get(run_key))["status"] == "starting_emulator"
+        finally:
+            await reporter.close(timeout=0)
             await client.aclose()
     asyncio.run(scenario())
 

@@ -67,10 +67,28 @@ if sessionKind == 'string' then
     local ok, value = pcall(cjson.decode, redis.call('GET', KEYS[3]))
     if ok and type(value) == 'table' then session = value end
 end
-if session and session.workerId ~= ARGV[1] then return 0 end
+local ok, update = pcall(cjson.decode, ARGV[3])
+if not ok or type(update) ~= 'table' then return 0 end
+local ownsSession = session and session.workerId == ARGV[1]
+-- Requeue can clear the owner before a buffered shutdown event is delivered.
+-- Only the last recorded owner may finish that attempt, until a new claim.
+local requeuedStop = session and session.status == 'queued'
+    and (session.workerId == nil or session.workerId == cjson.null)
+    and old and old.workerId == ARGV[1] and update.status == 'interrupted'
+if session and not ownsSession and not requeuedStop then return 0 end
 if (not old or old.workerId ~= ARGV[1])
-    and (not session or session.workerId ~= ARGV[1]) then return 0 end
+    and not ownsSession then return 0 end
 if old and old.workerId == ARGV[1] and tonumber(old.sequence or 0) >= tonumber(ARGV[2]) then return 1 end
+-- A deleted/expired/requeued session cannot authorize late progress to reopen
+-- a stopped run. A fresh owned claim can legitimately begin another attempt.
+local activeClaim = ownsSession and (session.status == 'starting_emulator'
+    or session.status == 'opening_game' or session.status == 'preparing_qr'
+    or session.status == 'qr_ready')
+if old and old.workerId == ARGV[1] and not activeClaim
+    and (old.status == 'completed' or old.status == 'failed'
+        or old.status == 'interrupted' or old.status == 'expired')
+    and update.status ~= 'completed' and update.status ~= 'failed'
+    and update.status ~= 'interrupted' and update.status ~= 'expired' then return 0 end
 redis.call('XADD', KEYS[2], 'MAXLEN', ARGV[6], '*', 'json', ARGV[4])
 redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[7])
 redis.call('EXPIRE', KEYS[2], ARGV[5])
@@ -181,6 +199,18 @@ class RedisRunReporter:
         """Release local buffers once all accepted updates have been delivered."""
         self._finished.add(task_id)
         self._discard_finished(task_id)
+
+    async def flush(self, task_id: str, *, timeout: float = 2) -> None:
+        """Publish an attempt's final update before relinquishing its owner."""
+        async def drain() -> None:
+            while self._pending.get(task_id):
+                self._wake.set()
+                await asyncio.sleep(0.02)
+
+        try:
+            await asyncio.wait_for(drain(), timeout)
+        except TimeoutError:
+            logger.warning("Task %s progress could not be sent before ownership handoff", task_id)
 
     def _discard_finished(self, task_id: str) -> None:
         if task_id in self._finished and not self._pending.get(task_id):

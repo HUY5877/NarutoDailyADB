@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
-from naruto_daily.common.execution import check_execution, retry_observation, stage_timeout
+from naruto_daily.common.execution import check_execution, current_execution, retry_observation, stage_timeout
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal.prompts import SURVIVAL_RESET_COUNT
@@ -67,7 +67,9 @@ def _wait_and_click(client, images: ImageRecognition, target: dict, *, deadline:
 
 
 def _dismiss_transfer_if_present(client, images: ImageRecognition, target: dict) -> None:
-    center, score = images.match(client.screenshot(), target)
+    center, score = retry_observation(
+        lambda: images.match(client.screenshot(), target), name='生存挑战传送提示',
+    )
     check_execution()
     if center is None:
         LOGGER.info("未发现包含“传送”的提示界面，继续生存挑战")
@@ -112,15 +114,18 @@ def _start_sweep_and_wait(client, images: ImageRecognition, action: dict, *, dea
             return stage
         if stage == 'start_sweep' and elapsed() >= retry_at:
             if retries >= START_SWEEP_MAX_RETRIES:
-                LOGGER.info('开始扫荡补点%d次后仍停留原页面，本轮无法继续扫荡，转入重置次数检查', retries)
-                return 'reset'
-            retries += 1
-            LOGGER.info('仍在开始扫荡页面，相似度 %.3f，第%d/%d次补点，坐标：(%d, %d)',
-                        score, retries, START_SWEEP_MAX_RETRIES, *center)
-            client.tap(*center)
-            retry_at = elapsed() + START_SWEEP_RETRY_SECONDS
-            if post_click_wait:
-                images.sleep(min(post_click_wait, max(0, deadline - elapsed())))
+                if current_execution() is None:
+                    LOGGER.info('开始扫荡补点%d次后仍停留原页面，本轮无法继续扫荡，转入重置次数检查', retries)
+                    return 'reset'
+                LOGGER.info('开始扫荡补点%d次后仍停留原页面，继续截图等待页面切换，未继续补点', retries)
+            else:
+                retries += 1
+                LOGGER.info('仍在开始扫荡页面，相似度 %.3f，第%d/%d次补点，坐标：(%d, %d)',
+                            score, retries, START_SWEEP_MAX_RETRIES, *center)
+                client.tap(*center)
+                retry_at = elapsed() + START_SWEEP_RETRY_SECONDS
+                if post_click_wait:
+                    images.sleep(min(post_click_wait, max(0, deadline - elapsed())))
         elif stage is None:
             LOGGER.info('尚未确认扫荡后的页面，继续等待，不补点')
         remaining = deadline - elapsed()
@@ -130,14 +135,15 @@ def _start_sweep_and_wait(client, images: ImageRecognition, action: dict, *, dea
 
 
 def _read_reset_count(model: MultimodalClient, client, *, timeout_seconds: float) -> int:
-    result = retry_observation(
-        lambda: model.complete_json(client.screenshot(), SURVIVAL_RESET_COUNT,
-                                    timeout_seconds=stage_timeout(timeout_seconds)),
-        name='生存挑战重置次数',
-    )
-    count = result.get("reset_count") if isinstance(result, dict) else None
-    if type(count) is not int or count < 0:
-        raise VisualError("大模型未能确认生存挑战重置次数，已停止")
+    def observe():
+        result = model.complete_json(client.screenshot(), SURVIVAL_RESET_COUNT,
+                                     timeout_seconds=stage_timeout(timeout_seconds))
+        count = result.get("reset_count") if isinstance(result, dict) else None
+        if type(count) is not int or count < 0:
+            raise VisualError("大模型未能确认生存挑战重置次数，已停止")
+        return count
+
+    count = retry_observation(observe, name='生存挑战重置次数')
     LOGGER.info("大模型识别生存挑战重置次数：%d", count)
     return count
 
@@ -160,7 +166,10 @@ def handle_survival_challenge(
     post_click_wait = float(action.get("post_click_wait_seconds", 1))
     poll_seconds = float(action["poll_seconds"])
 
-    for round_number in range(1, int(action["max_rounds"]) + 1):
+    round_number = 0
+    while current_execution() is not None or round_number < int(action["max_rounds"]):
+        check_execution()
+        round_number += 1
         LOGGER.info("[生存挑战第%d轮] 关闭可选传送提示→开始扫荡→处理名单/扫荡确认→等待%d秒→检查重置次数",
                     round_number, int(action["wait_seconds"]))
         _dismiss_transfer_if_present(client, images, action["transfer_marker"])
@@ -183,7 +192,7 @@ def handle_survival_challenge(
                                 poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
             _wait_and_click(client, images, action['confirm_second'], deadline=deadline,
                             poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
-            if elapsed() + float(action["wait_seconds"]) >= deadline:
+            if current_execution() is None and elapsed() + float(action["wait_seconds"]) >= deadline:
                 raise VisualError("生存挑战等待扫荡完成超时")
             images.sleep(float(action["wait_seconds"]))
         remaining = deadline - elapsed()

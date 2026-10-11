@@ -606,17 +606,29 @@ class LoginRuntime:
         except TimeoutError:
             logger.info("Task %s: 失败现场保留时间已到，开始关闭模拟器", record.id)
 
-    async def _release_and_requeue(self, record: TaskRecord) -> None:
+    async def _release_and_requeue(self, record: TaskRecord) -> bool:
+        self._set_daily_status(record, "interrupted", error_code="worker_stopped")
         if self.config.emulator_driver == "ldplayer":
             if not await self._cleanup_ldplayer(record.id):
-                return
+                self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
+                return False
             if self.config.ldplayer_pool_indices:
                 try:
                     await asyncio.to_thread(self._prepare_ldplayer_retry, record.id)
                 except Exception:
                     logger.warning("Could not prepare LDPlayer pool task %s for retry", record.id)
-                    return
+                    return False
+        if self._run_reporter is not None:
+            self._run_reporter.emit(
+                record, status="interrupted", error_code="worker_stopped", level="WARNING",
+            )
+            # Finish this attempt while its session still authorizes the worker.
+            # After requeue, another consumer (even with the same owner) may
+            # immediately take over; the old finally must not emit or finish again.
+            await self._run_reporter.flush(record.id)
+            self._run_reporter.finish(record.id)
         await self._requeue(record)
+        return self._run_reporter is not None
 
     async def _consume(self) -> None:
         while not self._stopping:
@@ -685,7 +697,13 @@ class LoginRuntime:
                 await self._retry_pause()
                 continue
             if self._stopping:
-                await self._release_and_requeue(record)
+                reported = await self._release_and_requeue(record)
+                if self._run_reporter is not None and not reported:
+                    self._run_reporter.emit(
+                        record, status=record.daily_status or "interrupted",
+                        error_code=record.daily_error_code or "worker_stopped", level="WARNING",
+                    )
+                    self._run_reporter.finish(record.id)
                 return
             self._tasks[record.id] = record
             await self._process_record(record)
@@ -727,6 +745,10 @@ class LoginRuntime:
                     await asyncio.to_thread(self._mark_ldplayer_ready, task_id)
                 except Exception:
                     logger.warning("Could not mark the LDPlayer pool slot ready for task %s", task_id)
+        except asyncio.CancelledError:
+            self._set_daily_status(record, "interrupted", error_code="worker_stopped")
+            requeue_on_exit = not record.qr_published and self._redis_queue is not None
+            raise
         except Exception as error:
             # Failures before the child starts have no daily status yet, but
             # still need a safe public reason in the final execution log.
@@ -736,7 +758,7 @@ class LoginRuntime:
                 "command_timeout" if isinstance(error, (TimeoutError, _TaskExpired)) else
                 "unexpected_error"
             )
-            if not record.qr_published and record.daily_status is not None:
+            if not record.qr_published and (self._stopping or record.daily_status is not None):
                 code = error.code if isinstance(error, _WorkerError) else "protocol_error"
                 if self._stopping:
                     code = "worker_stopped"
@@ -790,14 +812,16 @@ class LoginRuntime:
                 except _TaskExpired:
                     self._expire(record)
                 except _WorkerStopping:
+                    self._set_daily_status(record, "interrupted", error_code="worker_stopped")
                     requeue_on_exit = True
                 self._pending_deletes.add(task_id)
         finally:
             child = self._children.pop(task_id, None)
             if child is not None:
                 self._kill(child)
+            interruption_reported = False
             if requeue_on_exit:
-                await self._release_and_requeue(record)
+                interruption_reported = await self._release_and_requeue(record)
             elif self.config.emulator_driver == "ldplayer" and not keep_ldplayer:
                 try:
                     if (not self._stopping
@@ -807,24 +831,23 @@ class LoginRuntime:
                     # The pool binding stays reserved throughout the hold. Also
                     # release it if the consumer is cancelled during inspection.
                     released = await self._cleanup_ldplayer(task_id)
-                    if record.qr_published and not released:
+                    if not released and (record.qr_published or record.daily_status == "interrupted"):
                         self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
                     elif record.qr_published and record.daily_status in {'failed', 'interrupted'}:
                         await self._finish_failed_session(record)
-            if self._run_reporter is not None:
+            if self._run_reporter is not None and not interruption_reported:
                 final_status = record.daily_status
                 if final_status not in RUN_TERMINAL_STATUSES:
                     final_status = ("interrupted" if self._stopping else record.status
                                     if record.status in {"failed", "expired"} else
                                     "completed" if self.config.emulator_driver == "mock" else "failed")
-                if not requeue_on_exit:
-                    record.daily_status = final_status
-                    self._run_reporter.emit(
-                        record, status=final_status,
-                        error_code=record.daily_error_code,
-                        level="ERROR" if final_status == "failed" else "WARNING" if final_status in {"interrupted", "expired"} else "INFO",
-                        message="模拟二维码已生成" if self.config.emulator_driver == "mock" and final_status == "completed" else None,
-                    )
+                record.daily_status = final_status
+                self._run_reporter.emit(
+                    record, status=final_status,
+                    error_code=record.daily_error_code,
+                    level="ERROR" if final_status == "failed" else "WARNING" if final_status in {"interrupted", "expired"} else "INFO",
+                    message="模拟二维码已生成" if self.config.emulator_driver == "mock" and final_status == "completed" else None,
+                )
                 self._run_reporter.finish(task_id)
 
     async def _sweep_loop(self) -> None:

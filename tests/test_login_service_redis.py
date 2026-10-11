@@ -65,7 +65,8 @@ def test_queue_schema_is_tokenless_and_path_is_exact():
 
 
 @pytest.mark.parametrize('lease', [False, True])
-def test_failed_login_cleanup_releases_only_its_lock_and_preserves_history(lease):
+@pytest.mark.parametrize('error_code', ['login_finish_failed', 'worker_stopped'])
+def test_failed_login_cleanup_releases_only_its_lock_and_preserves_history(lease, error_code):
     async def scenario():
         client = fake_client()
         try:
@@ -90,13 +91,13 @@ def test_failed_login_cleanup_releases_only_its_lock_and_preserves_history(lease
             await client.set(run, 'execution failure history', ex=86400)
             await client.xadd(log, {'json': 'original execution log'})
             before = await client.pttl(key)
-            record.daily_error_code = 'login_finish_failed'
+            record.daily_error_code = error_code
             intruder = RedisTaskQueue(config(), client=client)
             assert not await intruder.finish_failed(record)
             assert await client.get(active) == record.id
             assert await queue.finish_failed(record)
             ended = json.loads(await client.get(key))
-            assert ended['status'] == 'failed' and ended['errorCode'] == 'login_finish_failed'
+            assert ended['status'] == 'failed' and ended['errorCode'] == error_code
             assert 'loginAuthorized' not in ended and 'refreshRequestId' not in ended
             for field in ['tokenHash', 'createdAt', 'expiresAt', 'userOptions', 'loginExpiresAt']:
                 assert ended.get(field) == saved.get(field)

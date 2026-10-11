@@ -72,13 +72,14 @@ def worker(server, storage, **overrides):
     return LoginRuntime(config, storage, redis_queue=queue)
 
 
-async def enqueue(client, runtime, body, *, ttl=30_000):
+async def enqueue(client, runtime, body, *, ttl=30_000, session_fields=None):
     # Match the public TypeScript envelope/session contract; no bearer token is queued.
     session = {
         "id": body["id"], "status": "queued", "createdAt": body["createdAt"],
         "expiresAt": body["expiresAt"], "simulation": True,
         "tokenHash": sha256(b"test-only-browser-session-token").hexdigest(),
     }
+    session.update(session_fields or {})
     key = f"{runtime.config.redis_queue_key}:sessions:{body['id']}"
     payload = json.dumps(body)
     await client.set(key, json.dumps(session), px=ttl)
@@ -102,6 +103,41 @@ async def eventually(predicate, *, timeout=8):
     async with asyncio.timeout(timeout):
         while not predicate():
             await asyncio.sleep(0.01)
+
+
+async def wait_for_run_status(client, runtime, task_id, status, *, timeout=8):
+    key = f"{runtime.config.redis_queue_key}:runs:{task_id}"
+    async with asyncio.timeout(timeout):
+        while True:
+            raw = await client.get(key)
+            run = json.loads(raw) if raw else None
+            if run is not None and run["status"] == status:
+                return run
+            await asyncio.sleep(0.01)
+
+
+async def assert_interrupted_run(client, runtime, task_id):
+    prefix = runtime.config.redis_queue_key
+    run = json.loads(await client.get(f"{prefix}:runs:{task_id}"))
+    assert run["status"] == "interrupted"
+    assert run["errorCode"] == "worker_stopped"
+    assert run["workerId"] == runtime._redis_queue.owner
+    assert run["finishedAt"] is not None
+    assert datetime.fromisoformat(run["finishedAt"].replace("Z", "+00:00"))
+    logs = [json.loads(fields["json"]) for _, fields in await client.xrange(f"{prefix}:logs:{task_id}")]
+    assert logs[-1]["level"] == "WARNING"
+    assert "停止" in logs[-1]["message"] and "中断" in logs[-1]["message"]
+    journal_path = runtime.config.ldplayer_state_dir / "runs" / f"{task_id}.json"
+    assert journal_path.is_file(), "Stopping a consumed task must persist its interrupted execution journal"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["status"] == "interrupted"
+    assert journal["errorCode"] == "worker_stopped"
+
+
+async def assert_requeued_session(client, runtime, key, payload, original, before_ttl):
+    assert json.loads(await client.get(key)) == original
+    assert 0 < await client.pttl(key) <= before_ttl
+    assert await client.lrange(runtime.config.redis_queue_key, 0, -1) == [payload]
 
 
 def test_redis_worker_publishes_png_and_stages_without_changing_auth_or_expiry():
@@ -235,29 +271,43 @@ def test_storage_failure_publishes_safe_error_and_worker_continues(caplog):
     asyncio.run(scenario())
 
 
-def test_shutdown_requeues_active_task_and_next_worker_preserves_ready_image():
+def test_shutdown_records_interrupted_run_and_next_worker_preserves_ready_image(tmp_path):
     async def scenario():
         server = fake_server()
         producer = fake_client(server)
         storage = MemoryStorage()
-        first = worker(server, storage, step_delay_ms=5000)
-        second = worker(server, storage)
+        first = worker(server, storage, step_delay_ms=5000, ldplayer_state_dir=tmp_path / "first")
+        second = worker(server, storage, ldplayer_state_dir=tmp_path / "second")
         body = task_body()
-        key, payload, original = await enqueue(producer, first, body)
+        user_id = str(uuid4())
+        key, payload, original = await enqueue(producer, first, body, session_fields={
+            "userId": user_id, "userOptions": {"equipmentStamina": False},
+        })
+        active_key = f"{first.config.redis_queue_key}:users:{user_id}:active"
+        await producer.set(active_key, body["id"], px=30_000)
         before_ttl = await producer.pttl(key)
         await first.start()
         try:
             await eventually(lambda: body["id"] in first._children)
             child = first._children[body["id"]]
+            await wait_for_run_status(producer, first, body["id"], "starting_emulator")
+            log_key = f"{first.config.redis_queue_key}:logs:{body['id']}"
+            original_logs = await producer.xrange(log_key)
             await asyncio.wait_for(first.stop(), 3)
             assert child.poll() is not None
             assert storage.put_ids == []
-            assert json.loads(await producer.get(key)) == original
-            assert await producer.lrange(first.config.redis_queue_key, 0, -1) == [payload]
-            assert 0 < await producer.pttl(key) <= before_ttl
+            await assert_requeued_session(producer, first, key, payload, original, before_ttl)
+            assert await producer.get(active_key) == body["id"]
+            await assert_interrupted_run(producer, first, body["id"])
+            assert (await producer.xrange(log_key))[:len(original_logs)] == original_logs
             await second.start()
             ready = await wait_for_status(producer, key, "qr_ready")
             assert ready["tokenHash"] == original["tokenHash"]
+            completed = await wait_for_run_status(producer, second, body["id"], "completed")
+            assert completed["workerId"] == second._redis_queue.owner
+            assert completed["workerId"] != first._redis_queue.owner
+            assert completed["finishedAt"] is not None
+            assert "errorCode" not in completed
             png = storage.objects[body["id"]]
             await asyncio.wait_for(second.stop(), 3)
             assert storage.objects[body["id"]] == png
@@ -273,7 +323,209 @@ def test_shutdown_requeues_active_task_and_next_worker_preserves_ready_image():
     asyncio.run(scenario())
 
 
-def test_shutdown_during_initial_status_write_does_not_spawn_and_requeues(monkeypatch):
+def test_cancelling_entrypoint_worker_records_interrupted_run_and_requeues(monkeypatch, tmp_path):
+    from naruto_daily.login_service import __main__ as entrypoint
+    from naruto_daily.login_service import runtime as runtime_module
+
+    async def scenario():
+        server = fake_server()
+        producer = fake_client(server)
+        storage = MemoryStorage()
+        runtime = worker(server, storage, step_delay_ms=5000, ldplayer_state_dir=tmp_path)
+        key, payload, original = await enqueue(producer, runtime, task_body(), ttl=10_000)
+        before_ttl = await producer.pttl(key)
+        task_id = original["id"]
+        # Keep run_worker and the runtime lifecycle real; isolate only Redis and OSS.
+        monkeypatch.setattr(runtime_module, "LoginRuntime", lambda config: runtime)
+        running = asyncio.create_task(entrypoint.run_worker(runtime.config))
+        try:
+            await eventually(lambda: task_id in runtime._children)
+            child = runtime._children[task_id]
+            await wait_for_run_status(producer, runtime, task_id, "starting_emulator")
+            # asyncio.Runner handles the first Ctrl+C by cancelling its main task.
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(running, 3)
+            assert child.poll() is not None
+            assert runtime._children == {}
+            assert all(consumer.done() for consumer in runtime._workers)
+            assert storage.put_ids == []
+            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl)
+            await assert_interrupted_run(producer, runtime, task_id)
+        finally:
+            if not running.done():
+                running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+            await runtime.stop()
+            await producer.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_consumer_terminates_child_and_records_interrupted_run(tmp_path):
+    async def scenario():
+        server = fake_server()
+        producer = fake_client(server)
+        storage = MemoryStorage()
+        runtime = worker(server, storage, step_delay_ms=5000, ldplayer_state_dir=tmp_path)
+        body = task_body()
+        key, payload, original = await enqueue(producer, runtime, body, ttl=10_000)
+        before_ttl = await producer.pttl(key)
+        await runtime.start()
+        try:
+            await eventually(lambda: body["id"] in runtime._children)
+            child = runtime._children[body["id"]]
+            await wait_for_run_status(producer, runtime, body["id"], "starting_emulator")
+            consumer = runtime._workers[0]
+            consumer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(consumer, 3)
+            await runtime.stop()
+            assert child.poll() is not None
+            assert runtime._children == {}
+            assert storage.put_ids == []
+            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl)
+            await assert_interrupted_run(producer, runtime, body["id"])
+        finally:
+            await runtime.stop()
+            await producer.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_old_consumer_cleanup_does_not_interrupt_new_attempt_with_same_owner(monkeypatch, tmp_path):
+    async def scenario():
+        server = fake_server()
+        producer = fake_client(server)
+        runtime = worker(server, MemoryStorage(), step_delay_ms=5000, ldplayer_state_dir=tmp_path)
+        body = task_body()
+        key, _, _ = await enqueue(producer, runtime, body)
+        run_key = f"{runtime.config.redis_queue_key}:runs:{body['id']}"
+        handoff_runs = []
+        real_requeue = runtime._requeue
+
+        async def requeue_and_claim_next_attempt(record):
+            await real_requeue(record)
+            # Another consumer on this runtime shares its queue owner. Claim
+            # immediately so the old attempt's finally runs after the handoff.
+            next_record = await runtime._redis_queue.pop()
+            assert next_record is not None and next_record.id == body["id"]
+            await runtime._set_status(next_record, "starting_emulator")
+            await runtime._run_reporter.flush(next_record.id)
+            handoff_runs.append(json.loads(await producer.get(run_key)))
+
+        monkeypatch.setattr(runtime, "_requeue", requeue_and_claim_next_attempt)
+        await runtime.start()
+        try:
+            await eventually(lambda: body["id"] in runtime._children)
+            child = runtime._children[body["id"]]
+            await wait_for_run_status(producer, runtime, body["id"], "starting_emulator")
+            consumer = runtime._workers[0]
+            consumer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(consumer, 3)
+            await runtime._run_reporter.flush(body["id"])
+            assert child.poll() is not None
+            run = json.loads(await producer.get(run_key))
+            assert run["status"] == "starting_emulator"
+            assert run["workerId"] == runtime._redis_queue.owner
+            assert run["finishedAt"] is None and "errorCode" not in run
+            assert run == handoff_runs[0]
+            session = json.loads(await producer.get(key))
+            assert session["status"] == "starting_emulator"
+            assert session["workerId"] == runtime._redis_queue.owner
+            assert await producer.lrange(runtime.config.redis_queue_key, 0, -1) == []
+        finally:
+            await runtime.stop()
+            await producer.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_before_initial_run_write_still_records_interrupted_run(tmp_path):
+    async def scenario():
+        server = fake_server()
+        producer = fake_client(server)
+        storage = MemoryStorage()
+        runtime = worker(server, storage, step_delay_ms=5000, ldplayer_state_dir=tmp_path)
+        body = task_body()
+        key, payload, original = await enqueue(producer, runtime, body, ttl=10_000)
+        before_ttl = await producer.pttl(key)
+        run_key = f"{runtime.config.redis_queue_key}:runs:{body['id']}"
+        client = runtime._redis_queue._client
+        publish_started, allow_publish = asyncio.Event(), asyncio.Event()
+
+        class PausedPublishClient:
+            def __getattr__(self, name):
+                return getattr(client, name)
+
+            async def eval(self, *args):
+                if args[1] == 3 and args[2] == run_key and not publish_started.is_set():
+                    publish_started.set()
+                    await allow_publish.wait()
+                return await client.eval(*args)
+
+        runtime._redis_queue._client = PausedPublishClient()
+        stopping = None
+        await runtime.start()
+        try:
+            await asyncio.wait_for(publish_started.wait(), 3)
+            await eventually(lambda: body["id"] in runtime._children)
+            child = runtime._children[body["id"]]
+            assert await producer.get(run_key) is None
+            stopping = asyncio.create_task(runtime.stop())
+            # Hold the initial write until the real runtime has queued its stop
+            # outcome, then let the real publisher drain both updates to Redis.
+            await eventually(lambda: any(
+                update.snapshot["status"] == "interrupted"
+                for update in runtime._run_reporter._pending.get(body["id"], ())
+            ))
+            assert await producer.get(run_key) is None
+            allow_publish.set()
+            await asyncio.wait_for(stopping, 3)
+            assert child.poll() is not None
+            assert storage.put_ids == []
+            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl)
+            await assert_interrupted_run(producer, runtime, body["id"])
+        finally:
+            allow_publish.set()
+            if stopping is not None:
+                await asyncio.wait_for(stopping, 3)
+            else:
+                await runtime.stop()
+            await producer.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_keeps_interrupted_history_without_recreating_deleted_session(tmp_path):
+    async def scenario():
+        server = fake_server()
+        producer = fake_client(server)
+        storage = MemoryStorage()
+        runtime = worker(server, storage, step_delay_ms=5000, ldplayer_state_dir=tmp_path)
+        body = task_body()
+        key, _, _ = await enqueue(producer, runtime, body)
+        await runtime.start()
+        try:
+            await eventually(lambda: body["id"] in runtime._children)
+            child = runtime._children[body["id"]]
+            await wait_for_run_status(producer, runtime, body["id"], "starting_emulator")
+            assert await producer.delete(key) == 1
+            await asyncio.wait_for(runtime.stop(), 3)
+            assert child.poll() is not None
+            assert storage.put_ids == []
+            assert await producer.get(key) is None
+            assert await producer.lrange(runtime.config.redis_queue_key, 0, -1) == []
+            await assert_interrupted_run(producer, runtime, body["id"])
+        finally:
+            await runtime.stop()
+            await producer.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_during_initial_status_write_does_not_spawn_and_requeues(monkeypatch, tmp_path):
     import naruto_daily.login_service.runtime as runtime_module
 
     spawned = []
@@ -303,7 +555,10 @@ def test_shutdown_during_initial_status_write_does_not_spawn_and_requeues(monkey
                     await finish_status.wait()
                 return await worker_client.eval(*args)
 
-        config = ServiceConfig(redis_url="redis://unused.invalid/0", concurrency=1, step_delay_ms=0)
+        config = ServiceConfig(
+            redis_url="redis://unused.invalid/0", concurrency=1, step_delay_ms=0,
+            ldplayer_state_dir=tmp_path,
+        )
         storage = MemoryStorage()
         runtime = LoginRuntime(
             config, storage, redis_queue=RedisTaskQueue(config, client=PausedStatusClient()),
@@ -321,9 +576,8 @@ def test_shutdown_during_initial_status_write_does_not_spawn_and_requeues(monkey
             await asyncio.wait_for(stopping, 3)
             assert spawned == []
             assert storage.put_ids == []
-            assert json.loads(await producer.get(key)) == original
-            assert await producer.lrange(config.redis_queue_key, 0, -1) == [payload]
-            assert 0 < await producer.pttl(key) <= before_ttl
+            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl)
+            await assert_interrupted_run(producer, runtime, original["id"])
         finally:
             finish_status.set()
             if stopping is not None:

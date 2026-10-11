@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.execution import current_execution, stage_timeout
 from naruto_daily.common.visual import VisualError, find_template_in_png
 
 
@@ -45,6 +46,7 @@ def navigate_to_card(
 
     name = action["name"]
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
+    shared_budget = current_execution()
     max_swipes = action.get("max_swipes", REWARD_CARD_MAX_SWIPES)
 
     def scan_card(png):
@@ -69,13 +71,23 @@ def navigate_to_card(
         # 每次补查都重新定位文字、已完成标记及该卡片的按钮。
         return images.check(scan_card, lambda r: r[2] is not None or r[4] is not None, name)
 
+    def wait_for_card_confirmation(reason):
+        LOGGER.info('%s：%s；暂停滑动和点击，1 秒后重新截图，总时限剩余 %.2f 秒',
+                    name, reason, shared_budget.remaining())
+        images.sleep(1)
+
     swipe_count = 0
     alignment_swipe_used = False
+    observation_only = False
     round_number = 0
     while True:
         round_number += 1
-        LOGGER.info('[查找%s 第%d轮] 定位卡片→检查已完成标记或前往按钮；未找到则滑动，达到上限后跳过或报错；已滑动 %d 次，常规上限 %d 次',
-                    name, round_number, swipe_count, max_swipes)
+        if shared_budget is not None:
+            LOGGER.info('[查找%s 第%d轮] 定位卡片→检查已完成标记或前往按钮；达到滑动上限后暂停滑动并继续观察；已滑动 %d 次，上限 %d 次，总时限剩余 %.2f 秒',
+                        name, round_number, swipe_count, max_swipes, shared_budget.remaining())
+        else:
+            LOGGER.info('[查找%s 第%d轮] 定位卡片→检查已完成标记或前往按钮；未找到则滑动，达到上限后跳过或报错；已滑动 %d 次，常规上限 %d 次',
+                        name, round_number, swipe_count, max_swipes)
         center, score, completed_center, completed_score, button_center, button_score = check_card()
         if center is not None:
             LOGGER.info(
@@ -94,14 +106,19 @@ def navigate_to_card(
                 return NavigationSummary(swipes=swipe_count, completed=True)
 
             if button_center is None:
-                if not alignment_swipe_used:
+                if not alignment_swipe_used and not observation_only and (
+                        shared_budget is None or swipe_count < max_swipes):
                     LOGGER.info(
                         "找到%s文字，但按钮和已完成标记都不完整，额外左滑一次后重新判断",
                         name,
                     )
-                    _swipe_reward_cards(client, sleep)
+                    _swipe_reward_cards(client, images.sleep)
                     swipe_count += 1
                     alignment_swipe_used = True
+                    continue
+                if shared_budget is not None:
+                    observation_only = True
+                    wait_for_card_confirmation('已找到卡片文字，尚未确认对应按钮或已完成标记')
                     continue
                 if action.get("completed_skip_type"):
                     LOGGER.info(
@@ -117,12 +134,16 @@ def navigate_to_card(
                 button_score,
                 float(action.get("pre_click_wait_seconds", 1)),
             )
-            sleep(float(action.get("pre_click_wait_seconds", 1)))
+            images.sleep(float(action.get("pre_click_wait_seconds", 1)))
             _, _, completed_center, completed_score, confirmed_center, confirmed_score = check_card()
             if completed_center is not None:
                 LOGGER.info("今日%s已完成，相似度 %.3f，取消点击并跳过执行", name, completed_score)
                 return NavigationSummary(swipes=swipe_count, completed=True)
             if confirmed_center is None:
+                if shared_budget is not None:
+                    observation_only = True
+                    wait_for_card_confirmation('点击前复查尚未确认目标，取消本次点击')
+                    continue
                 raise VisualError(
                     f"找到{name}的立刻前往，但点击前复查及补查均未确认，"
                     f"最后相似度 {confirmed_score:.3f}"
@@ -138,9 +159,13 @@ def navigate_to_card(
                 "点击立刻前往后等待页面响应 %.2f 秒",
                 float(action.get("post_click_wait_seconds", 1)),
             )
-            sleep(float(action.get("post_click_wait_seconds", 1)))
+            images.sleep(float(action.get("post_click_wait_seconds", 1)))
             return NavigationSummary(swipes=swipe_count, completed=False)
 
+        if shared_budget is not None and (observation_only or alignment_swipe_used or swipe_count >= max_swipes):
+            observation_only = True
+            wait_for_card_confirmation('尚未确认目标卡片，继续观察当前页面')
+            continue
         if alignment_swipe_used:
             if action.get("completed_skip_type"):
                 LOGGER.info(
@@ -167,7 +192,7 @@ def navigate_to_card(
             swipe_count + 1,
             max_swipes,
         )
-        _swipe_reward_cards(client, sleep)
+        _swipe_reward_cards(client, images.sleep)
         swipe_count += 1
 
 
@@ -176,9 +201,9 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
     """等待、复查并点击必需按钮；主界面目标通过 ImageRecognition 使用模型。"""
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     is_main = 'main_menu' in action
-    if is_main:
+    if is_main and current_execution() is None:
         images.main_call_limit = action['multimodal']['max_calls']
-    timeout_seconds = float(action["timeout_seconds"])
+    timeout_seconds = stage_timeout(float(action["timeout_seconds"]))
     poll_seconds = float(action["poll_seconds"])
     pre_click_wait_seconds = float(action.get("pre_click_wait_seconds", 1))
     post_click_wait_seconds = float(action.get("post_click_wait_seconds", 1))

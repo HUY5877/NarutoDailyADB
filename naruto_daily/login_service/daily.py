@@ -14,7 +14,7 @@ from typing import Callable, Sequence
 from naruto_daily.common.adb_client import AdbClient, CommandResult
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common.recognition import ImageRecognition
-from naruto_daily.common.visual import VisualError, find_template_in_png
+from naruto_daily.common.visual import find_template_in_png
 from naruto_daily.config import ConfigError, load_settings
 from naruto_daily.runner import ActionRunner
 from naruto_daily.tasks import build_all, build_task
@@ -195,9 +195,7 @@ class DailySession:
             self._runner().run(actions)
             LOGGER.info("登录收尾动作已完成，额外复核主界面；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
             images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
-            center, _ = images.find(self._main_marker, deadline=images.elapsed + self._remaining())
-            if center is None:
-                raise VisualError("扫码登录后未能确认游戏主界面")
+            images.wait_for(self._main_marker, timeout_seconds=self._remaining(), poll_seconds=1)
             self._remaining()
             self._logged_in = True
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from itertools import count
 from pathlib import Path
 from typing import Callable
 
@@ -9,6 +10,7 @@ from naruto_daily.common.adb_client import AdbClient
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.results import PopupCleanupSummary
+from naruto_daily.common.execution import check_execution, current_execution
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -34,10 +36,17 @@ def return_to_main(
     post_click_wait = float(action.get("post_click_wait_seconds", 1))
     poll_seconds = float(action["poll_seconds"])
 
-    for round_number in range(1, int(action["max_rounds"]) + 1):
+    shared_budget = current_execution()
+    rounds = count(1) if shared_budget is not None else range(1, int(action["max_rounds"]) + 1)
+    for round_number in rounds:
+        check_execution()
         completed_rounds = round_number
-        LOGGER.info('[回主界面 第%d/%d轮] 先找主界面标记，找到即结束；否则找关闭按钮并复查点击；都未找到则等待，连续空闲 %d 轮后停止',
-                    round_number, action['max_rounds'], action['idle_rounds'])
+        if shared_budget is not None:
+            LOGGER.info('[回主界面 第%d轮] 先找主界面标记，找到即结束；否则找关闭按钮并复查点击；都未找到则继续观察，总时限剩余 %.2f 秒',
+                        round_number, shared_budget.remaining())
+        else:
+            LOGGER.info('[回主界面 第%d/%d轮] 先找主界面标记，找到即结束；否则找关闭按钮并复查点击；都未找到则等待，连续空闲 %d 轮后停止',
+                        round_number, action['max_rounds'], action['idle_rounds'])
         page, matches = images.either([main_target, close_target])
         main_center, main_score = matches[0]
         if 'main_menu' in main_target:
@@ -65,7 +74,7 @@ def return_to_main(
                 idle_count,
                 int(action["idle_rounds"]),
             )
-            if idle_count >= int(action["idle_rounds"]):
+            if shared_budget is None and idle_count >= int(action["idle_rounds"]):
                 message = (
                     f"连续 {idle_count} 轮既未发现主界面标记，也未发现关闭按钮，"
                     "未能确认已经返回主界面"
@@ -73,7 +82,7 @@ def return_to_main(
                 LOGGER.error(message)
                 raise VisualError(message)
             LOGGER.info('本轮未找到主界面或关闭按钮，等待 %.2f 秒后进入下一轮检查（如有剩余轮次）', poll_seconds)
-            sleep(poll_seconds)
+            images.sleep(poll_seconds)
             continue
 
         LOGGER.info(
@@ -82,7 +91,7 @@ def return_to_main(
             score,
             pre_click_wait,
         )
-        sleep(pre_click_wait)
+        images.sleep(pre_click_wait)
         page, matches = images.either([main_target, close_target])
         confirmed_main_center, confirmed_main_score = matches[0]
         if 'main_menu' in main_target:
@@ -105,7 +114,7 @@ def return_to_main(
                 confirmed_score,
             )
             idle_count += 1
-            if idle_count >= int(action["idle_rounds"]):
+            if shared_budget is None and idle_count >= int(action["idle_rounds"]):
                 message = (
                     f"连续 {idle_count} 轮既未发现主界面标记，也未发现关闭按钮，"
                     "未能确认已经返回主界面"
@@ -113,7 +122,7 @@ def return_to_main(
                 LOGGER.error(message)
                 raise VisualError(message)
             LOGGER.info('本轮取消关闭点击，等待 %.2f 秒后进入下一轮检查（如有剩余轮次）', poll_seconds)
-            sleep(poll_seconds)
+            images.sleep(poll_seconds)
             continue
 
         LOGGER.info(
@@ -126,7 +135,7 @@ def return_to_main(
         click_count += 1
         idle_count = 0
         LOGGER.info("关闭一层界面后等待 %.2f 秒", post_click_wait)
-        sleep(post_click_wait)
+        images.sleep(post_click_wait)
     else:
         message = (
             f"已达到最多 {int(action['max_rounds'])} 轮回主界面检查，"

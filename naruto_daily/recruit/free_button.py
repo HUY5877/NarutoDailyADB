@@ -53,7 +53,7 @@ def click_free_recruit(client, target: dict, *, category: str, guard: dict, imag
             return no_red_dot
         if images.elapsed >= deadline:
             raise MultimodalError(f'{category}免费按钮识别超时')
-        if calls >= max_calls:
+        if current_execution() is None and calls >= max_calls:
             raise MultimodalError(f'{category}免费按钮识别达到模型调用上限')
         started = clock()
         try:
@@ -78,15 +78,17 @@ def click_free_recruit(client, target: dict, *, category: str, guard: dict, imag
     round_number = 0
     while images.elapsed < deadline:
         round_number += 1
+        call_progress = (f'{calls} 次（由总时限约束）' if current_execution() is not None
+                         else f'{calls}/{max_calls} 次')
         LOGGER.info('[%s免费按钮 第%d轮] 模型读取免费抽数和坐标→等待后重新截图复查→点击最新模型坐标；'
-                    '未确认则补查或轮询，红点消失则取消；剩余 %.2f 秒，调用 %d/%d 次',
-                    category, round_number, max(0, deadline - images.elapsed), calls, max_calls)
+                    '未确认则补查或轮询，红点消失则取消；剩余 %.2f 秒，调用 %s',
+                    category, round_number, max(0, deadline - images.elapsed), call_progress)
         first = check()
         if first is no_red_dot:
             LOGGER.info('%s红点未确认，取消免费招募', category)
             return False
         if first is not None:
-            if images.elapsed + pre_click_wait >= deadline:
+            if current_execution() is None and images.elapsed + pre_click_wait >= deadline:
                 break
             images.sleep(pre_click_wait)
             confirmed = check()

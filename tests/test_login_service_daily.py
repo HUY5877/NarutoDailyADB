@@ -368,8 +368,9 @@ def test_login_rejects_missing_main_screen_and_cannot_run_daily(tmp_path):
         return ((900, 900), 1.0) if path.name == "start_game_button.png" else (None, 0.0)
 
     session, clock, calls = session_for(tmp_path, matcher=match)
-    with pytest.raises(VisualError, match="主界面"):
+    with pytest.raises(DailyDeadlineExceeded):
         session.wait_for_login(400)
+    assert clock() == 400
     with pytest.raises(RuntimeError, match="先完成扫码登录"):
         session.run_daily(500)
 

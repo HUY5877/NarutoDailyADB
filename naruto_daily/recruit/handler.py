@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
-from naruto_daily.common.execution import current_execution
+from naruto_daily.common.execution import current_execution, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient
 from .free_button import click_free_recruit
 from naruto_daily.common.visual import VisualError, find_template_in_png
@@ -22,17 +22,20 @@ ORDINARY_MAX_SWIPES = 8
 
 def _find_ordinary_targets(images: ImageRecognition, action: dict) -> tuple[dict, dict]:
     target = dict(action['ordinary_tab'], top=200)
+    execution = current_execution()
     deadline = images.elapsed + float(action['timeout_seconds'])
     wall_deadline = time.monotonic() + float(action['timeout_seconds'])
     swipes = 0
     while True:
-        remaining = min(deadline - images.elapsed, wall_deadline - time.monotonic())
+        remaining = (execution.remaining() if execution is not None else
+                     min(deadline - images.elapsed, wall_deadline - time.monotonic()))
         if remaining <= 0:
             raise VisualError('查找普通招募标签超时，未继续滑动或点击')
         LOGGER.info('[查找普通招募 第%d轮] 重新识别左侧标签；已小幅滑动 %d/%d 次',
                     swipes + 1, swipes, ORDINARY_MAX_SWIPES)
         center, score = images.find(target, deadline=images.elapsed + remaining)
-        remaining = min(deadline - images.elapsed, wall_deadline - time.monotonic())
+        remaining = (execution.remaining() if execution is not None else
+                     min(deadline - images.elapsed, wall_deadline - time.monotonic()))
         if remaining <= 0:
             raise VisualError('查找普通招募标签超时，未继续滑动或点击')
         if center is not None:
@@ -44,10 +47,17 @@ def _find_ordinary_targets(images: ImageRecognition, action: dict) -> tuple[dict
                         score, *center)
             return tab, guard
         if swipes >= ORDINARY_MAX_SWIPES:
+            if execution is not None:
+                LOGGER.info('普通招募尚未确认，停止增加滑动，等待后重新截图；总时限剩余 %.2f 秒', remaining)
+                images.sleep(min(max(1.0, float(action['poll_seconds'])), remaining))
+                continue
             raise VisualError(f'小幅滑动{swipes}次仍未找到普通招募标签，已停止')
         # 手指短距离上移，使列表向下展示后续活动；每次都等页面停稳再截图。
         wait = max(1.0, float(action['poll_seconds']))
         if remaining <= ORDINARY_SCROLL[-1] / 1000 + wait:
+            if execution is not None:
+                images.sleep(min(wait, remaining))
+                continue
             raise VisualError('查找普通招募标签剩余时间不足，未继续滑动')
         swipes += 1
         LOGGER.info('普通招募尚未显示，手指向上短滑120像素，让列表向下滚，第%d/%d次；停稳后重新识别',
@@ -70,7 +80,7 @@ def _click_confirmed_target(
     pre_click_wait: float, post_click_wait: float,
     guard_target: dict | None = None, guard_name: str = "",
 ) -> bool:
-    deadline = images.elapsed + timeout_seconds
+    deadline = images.elapsed + stage_timeout(timeout_seconds)
 
     def confirm(png):
         button = images.match(png, target)
