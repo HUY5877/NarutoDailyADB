@@ -14,7 +14,8 @@ from naruto_daily.multimodal.prompts import SURVIVAL_RESET_COUNT
 
 
 LOGGER = logging.getLogger("naruto_daily")
-TRANSFER_DISMISS = (960, 540)
+# 1920×1080：点击传送弹层下方、底部操作栏上方的空白处；弹层内部点击不会关闭。
+TRANSFER_DISMISS = (960, 850)
 BUTTON_TIMEOUT_SECONDS = 20.0
 START_SWEEP_MAX_RETRIES = 2
 START_SWEEP_RETRY_SECONDS = 2.0
@@ -100,8 +101,8 @@ def _dismiss_transfer_if_present(client, images: ImageRecognition, target: dict,
                 LOGGER.info("未发现包含“传送”的提示界面，继续生存挑战")
             return
         clicks += 1
-        LOGGER.info("%s“传送”提示界面，相似度 %.3f，第%d次点击任意位置退出，随后重新截图确认",
-                    '发现' if clicks == 1 else '仍发现', score, clicks)
+        LOGGER.info("%s“传送”提示界面，相似度 %.3f，第%d次点击弹层外空白处 (%d, %d) 退出，随后重新截图确认",
+                    '发现' if clicks == 1 else '仍发现', score, clicks, *TRANSFER_DISMISS)
         client.tap(*TRANSFER_DISMISS)
         images.sleep(min(1, max(0, deadline - elapsed())))
     raise VisualError("关闭生存挑战传送提示超时，未继续开始扫荡")

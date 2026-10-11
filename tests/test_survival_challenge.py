@@ -143,18 +143,41 @@ def test_survival_dismisses_transfer_then_sweeps_until_model_reports_zero():
     client, waits = Client(), []
     run(action(), client, Model([2, 0]), waits)
     assert [(x, y) for x, y, _ in client.taps] == [
-        (960, 540), (1100, 900), (1100, 900), (1100, 900),
+        (960, 850), (1100, 900), (1100, 900), (1100, 900),
         (1100, 900), (1400, 900), (1100, 900), (1100, 900),
         (1100, 900), (1100, 900), (1100, 900),
     ]
     assert waits.count(60) == 2
 
 
+@pytest.mark.parametrize('initial_transfer', [False, True])
+def test_transfer_panel_ignores_inside_taps_but_dismisses_from_blank_area(initial_transfer):
+    class TransferPanelClient(Client):
+        def tap(self, x, y):
+            # The live 1920x1080 dialog covers y=325..705. Only the blank strip
+            # below it and above the bottom toolbar was verified to dismiss it.
+            if self.state == 'transfer' and not (500 < x < 1500 and 720 < y < 900):
+                self.taps.append((x, y, self.state))
+                return
+            reset_confirmed = self.state == 'reset_confirm'
+            super().tap(x, y)
+            if reset_confirmed:
+                self.state = 'transfer'
+
+    client, waits = TransferPanelClient(transfer=initial_transfer), []
+    model = Model([1, 0])
+    run(action(), client, model, waits)
+
+    assert sum(state == 'transfer' for _, _, state in client.taps) == 1 + int(initial_transfer)
+    assert client.state == 'map'
+    assert model.calls == waits.count(60) == 2
+
+
 def test_survival_without_transfer_starts_directly_and_zero_breaks():
     client, waits = Client(transfer=False), []
     run(action(), client, Model([0]), waits)
     assert client.taps[0][0] == 1100
-    assert (960, 540, 'map') not in client.taps
+    assert (960, 850, 'map') not in client.taps
     assert waits[-1] == 60
 
 
@@ -195,7 +218,7 @@ def test_survival_rechecks_transfer_until_second_dismiss_click_before_sweeping(i
 
         def tap(self, x, y):
             if self.state == 'transfer':
-                assert (x, y) == (960, 540), 'Sweep attempted before transfer closed'
+                assert (x, y) == (960, 850), 'Sweep attempted before transfer closed'
                 self.taps.append((x, y, self.state))
                 self.transfer_clicks += 1
                 if self.transfer_clicks == 2:
@@ -226,7 +249,7 @@ def test_unclosed_transfer_stops_before_any_sweep_click_without_scope(monkeypatc
         run(dict(action(), timeout_seconds=timeout_seconds), client, Model([]), waits)
 
     assert sum(waits) == min(timeout_seconds, 20)
-    assert all((x, y, state) == (960, 540, 'transfer') for x, y, state in client.taps)
+    assert all((x, y, state) == (960, 850, 'transfer') for x, y, state in client.taps)
 
 
 def test_late_transfer_recheck_cannot_trigger_second_dismiss_without_scope(monkeypatch):
@@ -243,7 +266,7 @@ def test_late_transfer_recheck_cannot_trigger_second_dismiss_without_scope(monke
     client.screenshot = screenshot
     with pytest.raises(VisualError, match='关闭生存挑战传送提示超时'):
         run(action(), client, Model([]), waits)
-    assert client.taps == [(960, 540, 'transfer')]
+    assert client.taps == [(960, 850, 'transfer')]
 
 
 @pytest.mark.parametrize('count', [None, True, -1, '1'])

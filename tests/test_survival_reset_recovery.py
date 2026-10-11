@@ -161,7 +161,7 @@ class TransferAfterResetDevice(Device):
         return visible
 
     def tap(self, x, y):
-        if (x, y) == (960, 540):
+        if (x, y) == (960, 850):
             assert self.state == 'transfer', 'Dismissal clicked after transfer closed'
             frame, taps = self.frames[-1]
             assert 'transfer' in json.loads(frame)['visible']
@@ -182,7 +182,7 @@ def test_reset_transfer_is_rechecked_and_closed_before_background_sweep(clock, d
 
     assert points(device) == [POINTS['start_sweep']] * 3 + [
         POINTS['reset'], POINTS['reset_confirm'],
-    ] + [(960, 540)] * dismiss_clicks + [
+    ] + [(960, 850)] * dismiss_clicks + [
         POINTS['start_sweep'], POINTS['ready'], POINTS['confirm_first'], POINTS['confirm_second'],
     ]
     assert device.state == 'completed'
@@ -197,7 +197,7 @@ def test_unclosed_reset_transfer_stops_at_shared_deadline_without_sweep_or_reset
 
     assert clock() == 20
     assert device.transfer_taps > 1
-    assert all(point == (960, 540) for point in points(device)[5:])
+    assert all(point == (960, 850) for point in points(device)[5:])
     assert points(device).count(POINTS['reset']) == 1
     assert points(device).count(POINTS['reset_confirm']) == 1
     assert points(device).count(POINTS['start_sweep']) == 3
