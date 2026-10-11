@@ -1,13 +1,18 @@
-"""主界面背景可随账号变化，只按模型识别到的 UI 语义定位。"""
+"""模型识别主界面入口；奖励候选另用同帧文字复核。"""
 from __future__ import annotations
 
+import json
 import logging
 import time
+from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from zipfile import ZipFile
 
 import cv2
 import numpy as np
 
-from .visual import VisualError
+from .visual import VisualError, find_template_in_png
 from .execution import current_execution, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal.diagnostics import model_request_context
@@ -45,11 +50,8 @@ home 目标仅当 page=main 且上述三组 UI 均已确认时才能 found=true�
 '''
 
 
-def button_candidates(frame, target):
-    """固定 HUD 槽位只用于裁图和坐标映射，是否为目标按钮仍由模型读取当前画面。"""
-    height, width = frame.shape[:2]
-    if target == 'home':
-        return cv2.imencode('.png', frame)[1].tobytes(), {}
+def button_regions(target):
+    """1920×1080 下的候选槽位；裁图、坐标映射与奖励复核共用。"""
     if target == 'equipment':
         regions = [(20 + i * 160, 910, 180 + i * 160, 1080) for i in range(6)]
     elif target == 'equipment_submenu':
@@ -58,6 +60,15 @@ def button_candidates(frame, target):
         regions = [(left, top, right, bottom) for top, bottom in ((0, 170), (170, 310), (310, 465))
                    for left, right in ((1620, 1770), (1770, 1920))]
         regions += [(1770, 465, 1920, 610), (1770, 610, 1920, 780)]
+    return regions
+
+
+def button_candidates(frame, target):
+    """固定 HUD 槽位只用于裁图和坐标映射，是否为目标按钮仍由模型读取当前画面。"""
+    height, width = frame.shape[:2]
+    if target == 'home':
+        return cv2.imencode('.png', frame)[1].tobytes(), {}
+    regions = button_regions(target)
     # 预览不改变原始 ADB 坐标；编号在候选之外，不覆盖 UI 文字。
     preview_height = round(height * 960 / width)
     sheet = np.full((preview_height + ((len(regions) + 3) // 4) * 220, 960, 3), 245, np.uint8)
@@ -94,8 +105,39 @@ def parse_main_screen(result, target, width, height, centers):
     return centers[candidate], 1.0
 
 
+def save_rejected_reward(asset_root, png, preview, prompt, result, roi, score, width, height):
+    """只保留一份完整拒绝证据；保存失败不能改变未点击的判断。"""
+    relative = Path('.data/diagnostics/main-screen/rejected-rewards.zip')
+    destination, temporary = asset_root / relative, None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        metadata = dict(candidate_id=result['candidate_id'], roi=roi, score=score,
+                        width=width, height=height, recorded_at_utc=datetime.now(timezone.utc).isoformat())
+        with NamedTemporaryFile(dir=destination.parent, prefix='rejected-rewards-',
+                                suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            with ZipFile(stream, 'w') as archive:
+                archive.writestr('input.png', png)
+                archive.writestr('candidates.png', preview)
+                archive.writestr('prompt.txt', prompt)
+                archive.writestr('result.json', json.dumps(result, ensure_ascii=False))
+                archive.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False))
+        temporary.replace(destination)
+        LOGGER.info('奖励候选 %d 拒绝证据已保存：%s', result['candidate_id'], relative.as_posix())
+    except Exception as exc:
+        LOGGER.warning('奖励候选 %d 拒绝证据保存失败：%s，仍未点击',
+                       result['candidate_id'], type(exc).__name__)
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 class MainScreenRecognition:
     def __init__(self, config, asset_root):
+        self.asset_root = Path(asset_root)
         self.model = MultimodalClient(config, asset_root=asset_root)
         self.timeout = config['timeout_seconds']
 
@@ -115,14 +157,42 @@ class MainScreenRecognition:
             if remaining <= 0:
                 raise VisualError('主界面截图处理超时，未继续点击')
             LOGGER.info('主界面模型识别：%s，调用预算 %.2f 秒', target['name'], budget)
+            prompt = main_screen_prompt(menu)
             with model_request_context(f'主界面识别/{menu}'):
-                result = self.model.complete_json(preview, main_screen_prompt(menu), timeout_seconds=remaining)
+                result = self.model.complete_json(preview, prompt, timeout_seconds=remaining)
             execution = current_execution()
             if execution is not None:
                 execution.remaining()
             elif time.monotonic() - started >= budget:
                 raise VisualError('主界面模型响应已超时，忽略结果，未继续点击')
             center, score = parse_main_screen(result, menu, width, height, centers)
+            if menu == 'rewards' and center is not None:
+                candidate = result['candidate_id']
+                left, top, right, bottom = button_regions(menu)[candidate - 1]
+                roi = (round(left * width / 1920), round(top * height / 1080),
+                       round(right * width / 1920), round(bottom * height / 1080))
+                if (width, height) != (1920, 1080):
+                    LOGGER.warning('奖励候选 %d 未通过复核：截图尺寸 %d×%d，仅支持 1920×1080，未点击',
+                                   candidate, width, height)
+                    center, score = None, 0.0
+                else:
+                    score = -1.0
+                    for template in ('main_reward_label.png', 'main_reward_label_red_dot.png'):
+                        _, template_score = find_template_in_png(
+                            png, self.asset_root / 'assets' / template, roi, .9)
+                        score = max(score, template_score)
+                        if score >= .9:
+                            break
+                    LOGGER.info('奖励候选 %d 同帧文字复核：相似度 %.3f，阈值 0.900，%s',
+                                candidate, score, '通过' if score >= .9 else '未通过，未点击')
+                    if score < .9:
+                        center = None
+                if center is None:
+                    save_rejected_reward(self.asset_root, png, preview, prompt, result, roi, score, width, height)
+                if execution is not None:
+                    execution.remaining()
+                elif time.monotonic() - started >= budget:
+                    raise VisualError('奖励候选复核已超时，未继续点击')
         except Exception as exc:
             elapsed = time.monotonic() - started
             LOGGER.error('主界面模型识别失败：目标=%s，异常类型=%s，已耗时 %.2f 秒，本次识别总预算 %.2f 秒，剩余预算 %.2f 秒',

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
-from naruto_daily.common.execution import current_execution, stage_timeout
+from naruto_daily.common.execution import check_execution, current_execution, stage_timeout
 from naruto_daily.common.reward_cards import reward_card_displacement, reward_card_swipe_starts
 from naruto_daily.common.visual import VisualError, find_template_in_png
 
@@ -263,6 +263,27 @@ def navigate_to_card(
         swipe_or_reobserve()
 
 
+def _confirm_reward_page(images, deadline):
+    """入口点击不等于进入成功；等待卡片布局出现后才允许后续操作。"""
+    deadline = min(deadline, images.elapsed + 10)
+    while images.elapsed < deadline:
+        # This bounded postcondition must not inherit check()'s observation
+        # retries, which intentionally use the entire daily execution budget.
+        check_execution()
+        ready = bool(reward_card_swipe_starts(images.client.screenshot()))
+        check_execution()
+        if images.elapsed >= deadline:
+            break
+        if ready:
+            LOGGER.info('已确认奖励任务页卡片布局，继续执行')
+            return
+        if images.elapsed < deadline:
+            LOGGER.info('尚未确认奖励任务页卡片布局，继续截图观察（剩余 %.2f 秒）',
+                        deadline - images.elapsed)
+            images.sleep(min(1, deadline - images.elapsed))
+    raise VisualError('点击奖励入口后未确认奖励任务页，停止后续卡片查找和点击')
+
+
 def required_template_tap(client, action, *, template_matcher=find_template_in_png,
                           asset_root=Path("."), sleep=time.sleep):
     """等待、复查并点击必需按钮；主界面目标通过 ImageRecognition 使用模型。"""
@@ -278,7 +299,7 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
     round_number = 0
     while True:
         round_number += 1
-        LOGGER.info('[等待点击%s 第%d轮] 查找按钮→等待后复查→点击后结束；未确认则轮询，超时停止；剩余等待 %.2f 秒',
+        LOGGER.info('[等待点击%s 第%d轮] 查找按钮→等待后复查→点击；奖励入口另需确认任务页；未确认则轮询，超时停止；剩余等待 %.2f 秒',
                     action['name'], round_number, max(0, deadline - images.elapsed))
         if is_main:
             images.main_call_phase = '查找'
@@ -307,6 +328,8 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
                     post_click_wait_seconds,
                 )
                 images.sleep(post_click_wait_seconds)
+                if action.get('main_menu') == 'rewards':
+                    _confirm_reward_page(images, deadline)
                 break
         if images.elapsed >= deadline:
             if is_main:
