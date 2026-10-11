@@ -28,6 +28,8 @@ from .run_logs import RedisRunReporter, TERMINAL as RUN_TERMINAL_STATUSES
 
 if TYPE_CHECKING:
     from .storage import ObjectStorage
+    from .qq_notify import QQGroupNotifier
+    from .user_names import UserNameResolver
 
 
 logger = logging.getLogger(__name__)
@@ -62,12 +64,25 @@ class LoginRuntime:
         self, config: ServiceConfig, storage: ObjectStorage | None = None,
         *, redis_queue: RedisTaskQueue | None = None,
         run_reporter: RedisRunReporter | None = None,
+        qq_notifier: QQGroupNotifier | None = None,
+        user_name_resolver: UserNameResolver | None = None,
     ) -> None:
         if storage is None:
             from .storage import create_storage
             storage = create_storage(config)
         self.config = config
         self.storage = storage
+        self._qq_notifier = qq_notifier
+        self._user_name_resolver = user_name_resolver
+        if self._qq_notifier is None and config.qq_bot_app_id:
+            from .qq_notify import QQGroupNotifier
+            self._qq_notifier = QQGroupNotifier(
+                config.qq_bot_app_id, config.qq_bot_app_secret, config.qq_bot_group_openid,
+            )
+        if self._user_name_resolver is None and config.database_url:
+            from .user_names import UserNameResolver
+            self._user_name_resolver = UserNameResolver(config.database_url)
+        self._notification_tasks: set[asyncio.Task[None]] = set()
         self._tasks: dict[str, TaskRecord] = {}
         self._queue: MockRedisQueue[str] = MockRedisQueue(config.max_queue_size)
         self._redis_queue = redis_queue or (RedisTaskQueue(config) if config.redis_url else None)
@@ -479,6 +494,39 @@ class LoginRuntime:
             daily=True,
         )
 
+    def _notify_qr_ready(self, record: TaskRecord, refresh_request_id: str | None = None) -> None:
+        if self._qq_notifier is None:
+            return
+        revision = refresh_request_id or 'initial'
+        if revision in record._qr_notifications:
+            return
+        record._qr_notifications.add(revision)
+        task = asyncio.create_task(self._send_qr_notification(record, refreshed=refresh_request_id is not None))
+        self._notification_tasks.add(task)
+        task.add_done_callback(self._notification_tasks.discard)
+
+    async def _send_qr_notification(self, record: TaskRecord, *, refreshed: bool) -> None:
+        try:
+            if self._redis_queue is None or self._user_name_resolver is None:
+                raise ValueError('Username lookup is unavailable')
+            user_id = await self._redis_queue.notification_user_id(record)
+            if not user_id:
+                raise ValueError('Task identity is unavailable')
+            user_name = await self._user_name_resolver.resolve(user_id)
+            if not user_name:
+                raise ValueError('Username is unavailable')
+            if record.status != 'qr_ready' or record.expires_at_ms <= time.time() * 1000:
+                return
+            if await self._redis_queue.notification_user_id(record) != user_id:
+                return
+            await self._qq_notifier.notify_qr_ready(record.id, user_name, refreshed=refreshed,
+                                                   expires_at_ms=record.expires_at_ms)
+            logger.info('QQ QR notification sent for task %s', record.id, extra={'backend_only': True})
+        except Exception as error:
+            # Third-party exception messages can contain credentials or database URLs.
+            logger.warning('QQ QR notification failed for task %s (%s)', record.id, type(error).__name__,
+                           extra={'backend_only': True})
+
     async def _publish_qr(self, record: TaskRecord, png: bytes, *, refresh_request_id: str | None = None) -> None:
         if record.expires_at_ms <= time.time() * 1000:
             raise _TaskExpired
@@ -504,6 +552,7 @@ class LoginRuntime:
             self._pending_deletes.add(record.id)
             raise
         record.qr_published = True
+        self._notify_qr_ready(record, refresh_request_id)
         if self.config.ldplayer_pool_indices:
             await asyncio.to_thread(self._mark_ldplayer_ready, record.id)
 
@@ -739,6 +788,8 @@ class LoginRuntime:
             if self._stopping and self._redis_queue is None:
                 raise _WorkerStopping
             await self._set_status(record, "qr_ready")
+            record.qr_published = True
+            self._notify_qr_ready(record)
             keep_ldplayer = self.config.emulator_driver == "ldplayer"
             if self.config.ldplayer_pool_indices:
                 try:
@@ -891,6 +942,16 @@ class LoginRuntime:
         for child in list(self._children.values()):
             self._kill(child)
         await asyncio.gather(*self._workers, return_exceptions=True)
+        if self._notification_tasks:
+            # Bound shutdown even when the network or database is unavailable.
+            pending = list(self._notification_tasks)
+            await asyncio.wait(pending, timeout=25)
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        if self._qq_notifier is not None:
+            await self._qq_notifier.close()
         for record in list(self._pending_session_failures.values()):
             await self._finish_failed_session(record)
         if self._run_reporter is not None:

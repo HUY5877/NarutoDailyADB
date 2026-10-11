@@ -422,6 +422,15 @@ class RedisTaskQueue:
         record._queue_payload = payload
         return record
 
+    async def notification_user_id(self, record: TaskRecord) -> str:
+        """Read identity only from this worker's existing, unexpired session."""
+        script = _SESSION_GUARD + _OWNER_GUARD + """
+if type(session.userId) ~= 'string' then return '' end
+return session.userId
+"""
+        value = await self._call('eval', script, 1, self._session_key(record), *self._session_args(record))
+        return value if isinstance(value, str) and UUID_PATTERN.fullmatch(value) else ''
+
     async def pending_refresh(self, record: TaskRecord, request_id: str) -> bool:
         raw = await self._call('get', f'{self.config.redis_queue_key}:refresh:{record.id}')
         try:

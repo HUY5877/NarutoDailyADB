@@ -142,6 +142,37 @@ def test_cloud_overrides_local_and_process_settings_and_clears_deleted_keys(monk
     assert initialize_gateway().channels[0].name == 'deepseek'
 
 
+def test_qq_and_database_credentials_are_cloud_only_and_not_in_child_environment(monkeypatch, tmp_path):
+    names = ('QQ_BOT_APP_ID', 'QQ_BOT_APP_SECRET', 'QQ_BOT_GROUP_OPENID', 'DATABASE_URL')
+    with (tmp_path / '.env').open('a', encoding='utf-8') as stream:
+        stream.write('\n' + '\n'.join(f'{name}=stale-local-value' for name in names))
+    os.environ.update(dict.fromkeys(names, 'stale-process-value'))
+    remote = {**OSS_ENV, 'QQ_BOT_APP_ID': '1900000001', 'QQ_BOT_APP_SECRET': 'cloud-qq-secret',
+              'QQ_BOT_GROUP_OPENID': 'A' * 32, 'DATABASE_URL': 'postgresql://user:password@db.invalid/naruto'}
+    monkeypatch.setattr(kv, 'fetch_environment', lambda settings: dict(remote))
+    environment.initialize_environment(tmp_path / '.env')
+    config = load_config()
+    assert config.qq_bot_app_secret == 'cloud-qq-secret'
+    assert config.database_url == 'postgresql://user:password@db.invalid/naruto'
+    assert all(name not in environment.model_environment_for_child() for name in names)
+    environment._initialized = False
+    remote.clear()
+    environment.initialize_environment(tmp_path / '.env')
+    assert all(name not in os.environ for name in names)
+    assert all(name not in environment._read_local_dotenv(tmp_path / '.env') for name in names)
+
+
+def test_startup_reports_missing_username_database_configuration(monkeypatch, tmp_path, caplog):
+    remote = {**OSS_ENV, 'REDIS_URL': 'redis://unused.invalid/0', 'QQ_BOT_APP_ID': '1900000001',
+              'QQ_BOT_APP_SECRET': 'private-qq-secret', 'QQ_BOT_GROUP_OPENID': 'A' * 32}
+    monkeypatch.setattr(kv, 'fetch_environment', lambda settings: dict(remote))
+    with pytest.raises(SystemExit) as result:
+        entrypoint.main(['--env-file', str(tmp_path / '.env')])
+    assert result.value.code == 1
+    assert 'DATABASE_URL' in caplog.text
+    assert 'private-qq-secret' not in caplog.text
+
+
 @pytest.mark.parametrize('cloud_yuwan', [False, True])
 def test_local_yuwan_key_and_model_are_loaded_and_override_cloud(monkeypatch, tmp_path, cloud_yuwan):
     with (tmp_path / '.env').open('a', encoding='utf-8') as stream:

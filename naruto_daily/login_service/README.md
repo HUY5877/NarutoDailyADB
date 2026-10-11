@@ -56,6 +56,10 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 
 DeepSeek、Redis 和 OSS 统一从 KV 读取，不回退到本地文件。鱼玩是例外：本地 `YUWAN_API_KEY` 非空时优先使用本地 key 和 `YUWAN_MODEL`，否则使用 KV 的鱼玩配置。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次模型 HTTP 尝试通过同一 Redis 的 `INCR` 计数轮询渠道，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
 
+QQ群出码通知也由本 worker 发送。在同一个 Cloudflare KV 命名空间配置 `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID`，并配置网站正在使用的 PostgreSQL 连接串 `DATABASE_URL`。三个 QQ 配置必须同时填写；全部留空则关闭通知，启用通知时必须有数据库配置。这四项只从 KV 读取，不回退到本地 `.env`，也不传给任务子进程。网站客户端的 Vercel 环境变量与本项目的 KV 是不同配置来源，可复用同一个数据库连接串；数据库账号只需有 `naruto_login.users` 表的查询权限。
+
+二维码上传 OSS 并成功发布 `qr_ready` 后，worker 从自己的有效 Redis 会话读取 `userId`，通过只读、参数绑定的数据库查询取得 `username`，异步发送“某用户的二维码已生成，请打开登录页面扫码”的群消息。每个任务初次生成及每个成功刷新各通知一次，重复发布不重复通知；过期二维码不再发出新的通知。数据库查询或 QQ 接口失败只记后台日志，不改变扫码状态；查不到用户名时跳过提醒。连接、SQL 和 QQ 请求均有超时，通知不自动重试。机器人需要已加入目标群，且群主已开启主动消息权限；`group_openid` 是该机器人收到群事件时的群标识，并非 QQ 群号。无需保持 WebSocket 连接，也不需要客户端接入 QQ。
+
 查看固定实例池占用也使用同一环境和配置：
 
 ```powershell

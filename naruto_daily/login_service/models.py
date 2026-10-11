@@ -59,6 +59,7 @@ class TaskRecord:
     user_options: UserOptions = field(default_factory=parse_user_options)
     login_timeout_seconds: int | None = None
     queue_expires_at: str | None = None
+    _qr_notifications: set[str] = field(default_factory=set, repr=False, compare=False)
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {
