@@ -112,6 +112,30 @@ def test_completed_recruit_does_not_swipe_or_click():
     assert not client.swipes and not client.taps
 
 
+def test_completed_abundance_at_right_screen_edge_is_confirmed_without_input():
+    from naruto_daily.common.execution import execution_scope
+    from test_execution import Clock
+
+    config = json.loads((ROOT / 'config.example.json').read_text(encoding='utf-8'))
+    abundance = next(a for a in config['tasks']['abundance'] if a['type'] == 'find_card_and_click')
+    frame = (FIXTURES / 'abundance_card_completed_right_edge.png').read_bytes()
+    clock = Clock()
+
+    class CompletedCard:
+        def screenshot(self):
+            return frame
+
+        def tap(self, *point):
+            raise AssertionError('Completed abundance must not receive a click')
+
+        def swipe(self, *movement):
+            raise AssertionError('Visible completed abundance must not receive another swipe')
+
+    with execution_scope(10, clock=clock, sleep=clock.sleep):
+        result = navigate_to_card(CompletedCard(), abundance, asset_root=ROOT, sleep=clock.sleep)
+    assert result.completed and result.swipes == 0
+
+
 def test_failed_attempt_does_not_consume_the_successful_swipe_limit():
     client = RewardReplay()
     result = navigate_to_card(client, dict(action(), max_swipes=1),
