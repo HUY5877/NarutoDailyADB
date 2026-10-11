@@ -188,6 +188,64 @@ def test_survival_dismisses_transfer_again_after_reset_before_next_sweep(initial
     assert waits.count(60) == 2
 
 
+@pytest.mark.parametrize('initial_transfer', [False, True])
+def test_survival_rechecks_transfer_until_second_dismiss_click_before_sweeping(initial_transfer):
+    class TwoClickTransferClient(Client):
+        transfer_clicks = 0
+
+        def tap(self, x, y):
+            if self.state == 'transfer':
+                assert (x, y) == (960, 540), 'Sweep attempted before transfer closed'
+                self.taps.append((x, y, self.state))
+                self.transfer_clicks += 1
+                if self.transfer_clicks == 2:
+                    self.state = 'map'
+                return
+            reset_confirmed = self.state == 'reset_confirm'
+            super().tap(x, y)
+            if reset_confirmed:
+                self.state = 'transfer'
+                self.transfer_clicks = 0
+
+    client, waits = TwoClickTransferClient(transfer=initial_transfer), []
+    run(action(), client, Model([1, 0]), waits)
+    states = [state for _, _, state in client.taps]
+    reset = states.index('reset_confirm')
+    assert states[reset + 1:] == ['transfer', 'transfer', 'map', 'ready',
+                                  'confirm_first', 'confirm_second']
+    assert states.count('transfer') == 2 + 2 * int(initial_transfer)
+    assert waits.count(60) == 2
+
+
+@pytest.mark.parametrize('timeout_seconds', [5, 180])
+def test_unclosed_transfer_stops_before_any_sweep_click_without_scope(monkeypatch, timeout_seconds):
+    monkeypatch.setattr('naruto_daily.survival_challenge.handler.time.monotonic', lambda: 0)
+    client, waits = Client(), []
+    client.tap = lambda x, y: client.taps.append((x, y, client.state))
+    with pytest.raises(VisualError, match='关闭生存挑战传送提示超时'):
+        run(dict(action(), timeout_seconds=timeout_seconds), client, Model([]), waits)
+
+    assert sum(waits) == min(timeout_seconds, 20)
+    assert all((x, y, state) == (960, 540, 'transfer') for x, y, state in client.taps)
+
+
+def test_late_transfer_recheck_cannot_trigger_second_dismiss_without_scope(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr('naruto_daily.survival_challenge.handler.time.monotonic', lambda: now[0])
+    client, waits = Client(), []
+    client.tap = lambda x, y: client.taps.append((x, y, client.state))
+
+    def screenshot():
+        if client.taps:
+            now[0] += 25
+        return client.state.encode()
+
+    client.screenshot = screenshot
+    with pytest.raises(VisualError, match='关闭生存挑战传送提示超时'):
+        run(action(), client, Model([]), waits)
+    assert client.taps == [(960, 540, 'transfer')]
+
+
 @pytest.mark.parametrize('count', [None, True, -1, '1'])
 def test_survival_rejects_invalid_model_result(count):
     client, waits = Client(transfer=False), []

@@ -358,13 +358,14 @@ def test_survival_transfer_rechecks_invalid_frames_before_single_dismiss():
         observed.append((frame, tuple(device.taps)))
         if len(observed) <= 4:
             raise VisualError('截图无法解码')
-        return (100, 100), 1
+        return ((None, 0) if device.taps else ((100, 100), 1))
 
     with execution_scope(20, clock=clock, sleep=clock.sleep):
         _dismiss_transfer_if_present(device, ImageRecognition(device, matcher), target('transfer'))
 
-    assert device.frames == [b'1', b'2', b'3', b'4', b'5']
-    assert all(taps == () for _, taps in observed)
+    assert device.frames == [b'1', b'2', b'3', b'4', b'5', b'6']
+    assert all(taps == () for _, taps in observed[:5])
+    assert observed[-1][1] == (TRANSFER_DISMISS,)
     assert device.taps == [TRANSFER_DISMISS]
     assert clock() == 5
 

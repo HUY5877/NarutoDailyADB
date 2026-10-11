@@ -146,6 +146,64 @@ def test_blocked_sweep_positive_count_resets_once_then_sweeps_normally(clock):
     assert len(model.reads[0][1]) == 3
 
 
+class TransferAfterResetDevice(Device):
+    def __init__(self, clock, *, dismiss_clicks):
+        super().__init__(clock)
+        self.dismiss_clicks = dismiss_clicks
+        self.transfer_taps = 0
+
+    def visible(self):
+        visible = super().visible()
+        if self.state == 'map_ready' and self.transfer_taps < self.dismiss_clicks:
+            self.state = 'transfer'
+        if self.state == 'transfer':
+            return {'transfer', 'start_sweep', 'reset'}
+        return visible
+
+    def tap(self, x, y):
+        if (x, y) == (960, 540):
+            assert self.state == 'transfer', 'Dismissal clicked after transfer closed'
+            frame, taps = self.frames[-1]
+            assert 'transfer' in json.loads(frame)['visible']
+            assert len(taps) == len(self.taps), 'Dismissal used a stale frame'
+            self.taps.append(((x, y), self.state, self.clock()))
+            self.transfer_taps += 1
+            if self.transfer_taps == self.dismiss_clicks:
+                self.state = 'map_ready'
+            return
+        super().tap(x, y)
+
+
+@pytest.mark.parametrize('dismiss_clicks', [2, 3])
+def test_reset_transfer_is_rechecked_and_closed_before_background_sweep(clock, dismiss_clicks):
+    device = TransferAfterResetDevice(clock, dismiss_clicks=dismiss_clicks)
+    model = Model(clock, device, 1, 0)
+    execute(clock, device, model)
+
+    assert points(device) == [POINTS['start_sweep']] * 3 + [
+        POINTS['reset'], POINTS['reset_confirm'],
+    ] + [(960, 540)] * dismiss_clicks + [
+        POINTS['start_sweep'], POINTS['ready'], POINTS['confirm_first'], POINTS['confirm_second'],
+    ]
+    assert device.state == 'completed'
+    assert [json.loads(frame)['state'] for frame, _ in model.reads] == ['map_blocked', 'completed']
+
+
+def test_unclosed_reset_transfer_stops_at_shared_deadline_without_sweep_or_reset_replay(clock):
+    device = TransferAfterResetDevice(clock, dismiss_clicks=100)
+    model = Model(clock, device, 1)
+    with pytest.raises(DailyDeadlineExceeded):
+        execute(clock, device, model, deadline=20)
+
+    assert clock() == 20
+    assert device.transfer_taps > 1
+    assert all(point == (960, 540) for point in points(device)[5:])
+    assert points(device).count(POINTS['reset']) == 1
+    assert points(device).count(POINTS['reset_confirm']) == 1
+    assert points(device).count(POINTS['start_sweep']) == 3
+    assert len(model.reads) == 1
+
+
 def test_blocked_sweep_zero_count_finishes_without_reset_or_more_start(clock):
     device = Device(clock)
     model = Model(clock, device, 0)

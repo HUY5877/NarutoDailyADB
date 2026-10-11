@@ -79,17 +79,32 @@ def _wait_and_click(client, images: ImageRecognition, target: dict, *, deadline:
     raise VisualError(f"等待生存挑战按钮{target['name']}超时，最后相似度 {score:.3f}，未继续点击")
 
 
-def _dismiss_transfer_if_present(client, images: ImageRecognition, target: dict) -> None:
-    center, score = retry_observation(
-        lambda: images.match(client.screenshot(), target), name='生存挑战传送提示',
-    )
-    check_execution()
-    if center is None:
-        LOGGER.info("未发现包含“传送”的提示界面，继续生存挑战")
-        return
-    LOGGER.info("发现“传送”提示界面，相似度 %.3f，点击任意位置退出", score)
-    client.tap(*TRANSFER_DISMISS)
-    images.sleep(1)
+def _dismiss_transfer_if_present(client, images: ImageRecognition, target: dict, *,
+                                 deadline: float = float('inf'),
+                                 elapsed: Callable[[], float] | None = None) -> None:
+    if elapsed is None:
+        elapsed = lambda: images.elapsed
+    deadline = min(deadline, elapsed() + stage_timeout(BUTTON_TIMEOUT_SECONDS))
+    clicks = 0
+    while elapsed() < deadline:
+        center, score = retry_observation(
+            lambda: images.match(client.screenshot(), target), name='生存挑战传送提示',
+        )
+        check_execution()
+        if elapsed() >= deadline:
+            break
+        if center is None:
+            if clicks:
+                LOGGER.info("重新截图确认“传送”提示已关闭，继续生存挑战")
+            else:
+                LOGGER.info("未发现包含“传送”的提示界面，继续生存挑战")
+            return
+        clicks += 1
+        LOGGER.info("%s“传送”提示界面，相似度 %.3f，第%d次点击任意位置退出，随后重新截图确认",
+                    '发现' if clicks == 1 else '仍发现', score, clicks)
+        client.tap(*TRANSFER_DISMISS)
+        images.sleep(min(1, max(0, deadline - elapsed())))
+    raise VisualError("关闭生存挑战传送提示超时，未继续开始扫荡")
 
 
 def _sweep_page(images: ImageRecognition, action: dict, png: bytes, *, check_map=False):
@@ -228,7 +243,8 @@ def handle_survival_challenge(
         round_number += 1
         LOGGER.info("[生存挑战第%d轮] 关闭可选传送提示→开始扫荡→处理名单/扫荡确认→等待%d秒→检查重置次数",
                     round_number, int(action["wait_seconds"]))
-        _dismiss_transfer_if_present(client, images, action["transfer_marker"])
+        _dismiss_transfer_if_present(client, images, action["transfer_marker"],
+                                     deadline=deadline, elapsed=elapsed)
         stage = _start_sweep_and_wait(
             client, images, action, deadline=deadline, poll_seconds=poll_seconds,
             post_click_wait=post_click_wait, elapsed=elapsed,
