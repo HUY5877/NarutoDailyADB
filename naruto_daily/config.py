@@ -511,8 +511,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             raise ConfigError(f"{context} 的按钮搜索区域上下范围无效")
         if "max_swipes" in action:
             max_swipes = action["max_swipes"]
-            if not isinstance(max_swipes, int) or isinstance(max_swipes, bool) or not 0 <= max_swipes <= 10:
-                raise ConfigError(f"{context} 的 max_swipes 必须在 0 到 10 之间")
+            if not isinstance(max_swipes, int) or isinstance(max_swipes, bool) or not 0 <= max_swipes <= 20:
+                raise ConfigError(f"{context} 的 max_swipes 必须在 0 到 20 之间")
         for key, limit in (
             ("swipe_x1", width), ("swipe_x2", width),
             ("swipe_y1", height), ("swipe_y2", height),

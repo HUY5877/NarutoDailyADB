@@ -96,11 +96,11 @@ def test_reward_search_default_limit_is_shared_by_all_tasks():
         client = NavigationClient()
         summary = navigate_to_card(client, action, template_matcher=lambda *args: (None, .1),
                                    sleep=lambda _: None)
-        assert summary.completed and summary.swipes == 10
-        assert client.swipes == [(1450, 550, 1000, 550, 600)] * 10
+        assert summary.completed and summary.swipes == 20
+        assert client.swipes == [(1450, 550, 1000, 550, 600)] * 20
 
 
-def test_default_limit_allows_ten_successes_after_failed_attempts(monkeypatch):
+def test_default_limit_allows_twenty_successes_after_failed_attempts(monkeypatch):
     from naruto_daily.common import navigation
     client = NavigationClient()
     monkeypatch.setattr(navigation, 'reward_card_swipe_starts',
@@ -109,7 +109,7 @@ def test_default_limit_allows_ten_successes_after_failed_attempts(monkeypatch):
                         lambda before, after: 0.0 if len(client.swipes) in (1, 4) else -520.0)
     summary = navigate_to_card(client, reward_card_actions()[0],
                                template_matcher=lambda *args: (None, .1), sleep=lambda _: None)
-    assert summary.swipes == 10 and len(client.swipes) == 12
+    assert summary.swipes == 20 and len(client.swipes) == 22
     assert client.swipes[0][:2] != client.swipes[1][:2]
     assert client.swipes[3][:2] != client.swipes[4][:2]
 

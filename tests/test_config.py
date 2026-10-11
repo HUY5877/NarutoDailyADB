@@ -409,7 +409,7 @@ def test_find_card_and_click_accepts_shared_navigation_and_legacy_settings(tmp_p
         "button_top_offset": 80,
         "button_right_offset": 140,
         "button_bottom_offset": 260,
-        "max_swipes": 6,
+        "max_swipes": 20,
         "swipe_x1": 1650, "swipe_y1": 550,
         "swipe_x2": 350, "swipe_y2": 550,
         "swipe_duration_ms": 500,
