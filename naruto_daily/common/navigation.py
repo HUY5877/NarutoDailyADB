@@ -8,27 +8,78 @@ from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.execution import current_execution, stage_timeout
+from naruto_daily.common.reward_cards import reward_card_displacement, reward_card_swipe_starts
 from naruto_daily.common.visual import VisualError, find_template_in_png
 
 
 LOGGER = logging.getLogger("naruto_daily")
 # 1920×1080 奖励页统一参数，所有任务的常规查找和卡片补齐共用。
-REWARD_CARD_SWIPE = (1450, 550, 1000, 550, 600)
+REWARD_CARD_SWIPE_DISTANCE = 450
+REWARD_CARD_SWIPE_DURATION_MS = 600
 REWARD_CARD_WAIT_SECONDS = 2
 REWARD_CARD_MAX_SWIPES = 10
 
 
-def _swipe_reward_cards(client, sleep):
-    x1, y1, x2, y2, duration = REWARD_CARD_SWIPE
-    LOGGER.info('奖励卡片统一左滑：(%d, %d)→(%d, %d)，持续%d毫秒，滑后等待%d秒',
-                x1, y1, x2, y2, duration, REWARD_CARD_WAIT_SECONDS)
-    client.swipe(*REWARD_CARD_SWIPE)
-    sleep(REWARD_CARD_WAIT_SECONDS)
+class _RewardCardSwipes:
+    """同一静止视图换起点重试；只有截图确认移动才计入滑动上限。"""
+
+    def __init__(self):
+        self.successful = 0
+        self.attempts = 0
+        self.alignment_used = False
+        self._alignment_pending = False
+        self._before = None
+        self._latest = None
+        self._start = None
+        self._failed_starts = []
+
+    def observe(self, png):
+        self._latest = png
+        if self._before is None:
+            return
+        displacement = reward_card_displacement(self._before, png)
+        if displacement is None:
+            LOGGER.info('奖励卡片第%d次尝试：位移尚未确认，重新截图后再判断', self.attempts)
+            return
+        if abs(displacement) > 10:
+            self.successful += 1
+            self.alignment_used |= self._alignment_pending
+            self._failed_starts.clear()
+            LOGGER.info('奖励卡片第%d次尝试：实际向%s移动 %.0f 像素，累计成功滑动 %d 次',
+                        self.attempts, '左' if displacement < 0 else '右',
+                        abs(displacement), self.successful)
+        else:
+            self._failed_starts.append(self._start)
+            LOGGER.info('奖励卡片第%d次尝试：未产生位移（%.0f 像素），不计入成功次数；换卡片内部起点重试',
+                        self.attempts, displacement)
+        self._before = None
+
+    def swipe(self, client, sleep, *, alignment=False):
+        if self._before is not None:
+            raise VisualError('上次滑动的位移尚未确认')
+        starts = reward_card_swipe_starts(self._latest)
+        if not starts:
+            raise VisualError('尚未确认可靠的卡片内部起点')
+        start = next((point for point in starts if all(
+            abs(point[0] - failed[0]) > 30 for failed in self._failed_starts)), None)
+        if start is None:
+            raise VisualError('多个卡片内部起点均未产生位移，可能已到列表末端，暂停滑动')
+        x, y = start
+        LOGGER.info('奖励卡片第%d次尝试：从卡片内部 (%d, %d) 左滑至 (%d, %d)，持续%d毫秒；已成功 %d 次',
+                    self.attempts + 1, x, y, x - REWARD_CARD_SWIPE_DISTANCE, y,
+                    REWARD_CARD_SWIPE_DURATION_MS, self.successful)
+        client.swipe(x, y, x - REWARD_CARD_SWIPE_DISTANCE, y, REWARD_CARD_SWIPE_DURATION_MS)
+        self.attempts += 1
+        self._before, self._start = self._latest, start
+        # A missed label on the retry frame must not turn a failed alignment
+        # into a new ordinary search and grant another successful alignment.
+        self._alignment_pending |= alignment
+        sleep(REWARD_CARD_WAIT_SECONDS)
 
 
 @dataclass(frozen=True)
 class NavigationSummary:
-    """记录横向滑动次数以及目标任务是否已经完成。"""
+    """记录截图确认的成功横向滑动次数，以及目标任务是否已经完成。"""
 
     swipes: int
     completed: bool
@@ -48,8 +99,13 @@ def navigate_to_card(
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     shared_budget = current_execution()
     max_swipes = action.get("max_swipes", REWARD_CARD_MAX_SWIPES)
+    swipes = _RewardCardSwipes()
+    latest_png = None
+    blocked_observations = 0
 
     def scan_card(png):
+        nonlocal latest_png
+        latest_png = png
         center, score = images.match(png, action)
         if center is None:
             return center, score, None, 0.0, None, 0.0
@@ -76,19 +132,33 @@ def navigate_to_card(
                     name, reason, shared_budget.remaining())
         images.sleep(1)
 
-    swipe_count = 0
-    alignment_swipe_used = False
+    def swipe_or_reobserve(*, alignment=False):
+        nonlocal blocked_observations
+        try:
+            swipes.swipe(client, images.sleep, alignment=alignment)
+            blocked_observations = 0
+        except VisualError as exc:
+            blocked_observations += 1
+            if shared_budget is not None:
+                wait_for_card_confirmation(str(exc))
+            elif blocked_observations < 2:
+                LOGGER.info('%s；暂停输入，1 秒后重新截图', exc)
+                images.sleep(1)
+            else:
+                raise
+
     observation_only = False
     round_number = 0
     while True:
         round_number += 1
         if shared_budget is not None:
-            LOGGER.info('[查找%s 第%d轮] 定位卡片→检查已完成标记或前往按钮；达到滑动上限后暂停滑动并继续观察；已滑动 %d 次，上限 %d 次，总时限剩余 %.2f 秒',
-                        name, round_number, swipe_count, max_swipes, shared_budget.remaining())
+            LOGGER.info('[查找%s 第%d轮] 定位卡片→检查已完成标记或前往按钮；达到成功滑动上限后暂停滑动并继续观察；已成功 %d 次，上限 %d 次，总时限剩余 %.2f 秒',
+                        name, round_number, swipes.successful, max_swipes, shared_budget.remaining())
         else:
-            LOGGER.info('[查找%s 第%d轮] 定位卡片→检查已完成标记或前往按钮；未找到则滑动，达到上限后跳过或报错；已滑动 %d 次，常规上限 %d 次',
-                        name, round_number, swipe_count, max_swipes)
+            LOGGER.info('[查找%s 第%d轮] 定位卡片→检查已完成标记或前往按钮；未找到则滑动，达到上限后跳过或报错；已成功 %d 次，常规上限 %d 次',
+                        name, round_number, swipes.successful, max_swipes)
         center, score, completed_center, completed_score, button_center, button_score = check_card()
+        swipes.observe(latest_png)
         if center is not None:
             LOGGER.info(
                 "发现%s，相似度 %.3f，文字中心：(%d, %d)",
@@ -103,18 +173,15 @@ def navigate_to_card(
                     name,
                     completed_score,
                 )
-                return NavigationSummary(swipes=swipe_count, completed=True)
+                return NavigationSummary(swipes=swipes.successful, completed=True)
 
             if button_center is None:
-                if not alignment_swipe_used and not observation_only and (
-                        shared_budget is None or swipe_count < max_swipes):
+                if not swipes.alignment_used and not observation_only and swipes.successful < max_swipes:
                     LOGGER.info(
                         "找到%s文字，但按钮和已完成标记都不完整，额外左滑一次后重新判断",
                         name,
                     )
-                    _swipe_reward_cards(client, images.sleep)
-                    swipe_count += 1
-                    alignment_swipe_used = True
+                    swipe_or_reobserve(alignment=True)
                     continue
                 if shared_budget is not None:
                     observation_only = True
@@ -125,7 +192,7 @@ def navigate_to_card(
                         "额外左滑后仍未找到可执行按钮，跳过%s这个可选任务",
                         name,
                     )
-                    return NavigationSummary(swipes=swipe_count, completed=True)
+                    return NavigationSummary(swipes=swipes.successful, completed=True)
                 raise VisualError(
                     f"找到{name}，但未找到它下方的立刻前往，最后相似度 {button_score:.3f}"
                 )
@@ -136,9 +203,10 @@ def navigate_to_card(
             )
             images.sleep(float(action.get("pre_click_wait_seconds", 1)))
             _, _, completed_center, completed_score, confirmed_center, confirmed_score = check_card()
+            swipes.observe(latest_png)
             if completed_center is not None:
                 LOGGER.info("今日%s已完成，相似度 %.3f，取消点击并跳过执行", name, completed_score)
-                return NavigationSummary(swipes=swipe_count, completed=True)
+                return NavigationSummary(swipes=swipes.successful, completed=True)
             if confirmed_center is None:
                 if shared_budget is not None:
                     observation_only = True
@@ -160,40 +228,39 @@ def navigate_to_card(
                 float(action.get("post_click_wait_seconds", 1)),
             )
             images.sleep(float(action.get("post_click_wait_seconds", 1)))
-            return NavigationSummary(swipes=swipe_count, completed=False)
+            return NavigationSummary(swipes=swipes.successful, completed=False)
 
-        if shared_budget is not None and (observation_only or alignment_swipe_used or swipe_count >= max_swipes):
+        if shared_budget is not None and (observation_only or swipes.alignment_used or swipes.successful >= max_swipes):
             observation_only = True
             wait_for_card_confirmation('尚未确认目标卡片，继续观察当前页面')
             continue
-        if alignment_swipe_used:
+        if swipes.alignment_used:
             if action.get("completed_skip_type"):
                 LOGGER.info(
                     "额外左滑后未再找到%s，跳过这个可选任务",
                     name,
                 )
-                return NavigationSummary(swipes=swipe_count, completed=True)
+                return NavigationSummary(swipes=swipes.successful, completed=True)
             raise VisualError(f"额外左滑后未再找到{name}，最后相似度 {score:.3f}")
 
-        if swipe_count == max_swipes:
+        if swipes.successful >= max_swipes:
             if action.get("completed_skip_type"):
                 LOGGER.info(
                     "滑动 %d 次后仍未找到%s，跳过这个可选任务",
                     max_swipes,
                     name,
                 )
-                return NavigationSummary(swipes=swipe_count, completed=True)
+                return NavigationSummary(swipes=swipes.successful, completed=True)
             raise VisualError(f"滑动 {max_swipes} 次后仍未找到{name}，最后相似度 {score:.3f}")
 
         LOGGER.info(
-            "当前页面未找到%s，相似度 %.3f，执行第 %d/%d 次横向滑动",
+            "当前页面未找到%s，相似度 %.3f，准备左滑；已成功滑动 %d/%d 次",
             name,
             score,
-            swipe_count + 1,
+            swipes.successful,
             max_swipes,
         )
-        _swipe_reward_cards(client, images.sleep)
-        swipe_count += 1
+        swipe_or_reobserve()
 
 
 def required_template_tap(client, action, *, template_matcher=find_template_in_png,

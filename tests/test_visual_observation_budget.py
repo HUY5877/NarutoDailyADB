@@ -304,7 +304,7 @@ def card_matcher(device, *, available):
     return match
 
 
-def test_reward_card_at_swipe_cap_waits_without_more_swipes_then_clicks_latest_frame():
+def test_reward_card_at_swipe_cap_waits_without_more_swipes_then_clicks_latest_frame(reward_swipe_vision):
     clock, device = Clock(), CardFrames()
     matcher = card_matcher(device, available=lambda frame: clock() >= 8)
     with execution_scope(20, clock=clock, sleep=clock.sleep):
@@ -314,7 +314,7 @@ def test_reward_card_at_swipe_cap_waits_without_more_swipes_then_clicks_latest_f
     assert device.taps == [(80, 580)]
 
 
-def test_reward_card_never_confirmed_stops_at_deadline_without_swiping_past_cap():
+def test_reward_card_never_confirmed_stops_at_deadline_without_swiping_past_cap(reward_swipe_vision):
     clock, device = Clock(), CardFrames()
     with pytest.raises(DailyDeadlineExceeded):
         with execution_scope(8, clock=clock, sleep=clock.sleep):
@@ -324,7 +324,7 @@ def test_reward_card_never_confirmed_stops_at_deadline_without_swiping_past_cap(
 
 
 @pytest.mark.parametrize('missing', ['button', 'card'])
-def test_reward_card_after_alignment_observes_missing_target_without_another_swipe(missing):
+def test_reward_card_after_alignment_observes_missing_target_without_another_swipe(missing, reward_swipe_vision):
     clock, device = Clock(), CardFrames()
     latest = card_matcher(device, available=lambda frame: clock() >= 8)
 
