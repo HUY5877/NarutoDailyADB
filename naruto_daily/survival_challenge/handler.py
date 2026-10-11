@@ -18,19 +18,28 @@ TRANSFER_DISMISS = (960, 540)
 BUTTON_TIMEOUT_SECONDS = 20.0
 START_SWEEP_MAX_RETRIES = 2
 START_SWEEP_RETRY_SECONDS = 2.0
+SWEEP_FOREGROUND_STAGES = ('ready', 'confirm_first', 'confirm_second')
 
 
 def _wait_and_click(client, images: ImageRecognition, target: dict, *, deadline: float,
                     poll_seconds: float, post_click_wait: float,
-                    elapsed: Callable[[], float], skip_if: dict | None = None) -> bool:
+                    elapsed: Callable[[], float], skip_if: dict | None = None,
+                    page_guard: Callable[[bytes], bool] | None = None,
+                    resume_if: Callable[[bytes], str | None] | None = None) -> bool | str:
     def probe(png):
+        if resume_if is not None:
+            stage = resume_if(png)
+            if stage is not None:
+                return None, 0.0, False, stage
+        if page_guard is not None and not page_guard(png):
+            return None, 0.0, False, None
         # 先确认前景的扫荡提示，不能点击弹窗后方变暗的“准备就绪”。
         if skip_if is not None:
             center, score = images.match(png, skip_if)
             if center is not None:
-                return None, score, True
+                return None, score, True, None
         center, score = images.match(png, target)
-        return center, score, False
+        return center, score, False, None
 
     deadline = min(deadline, elapsed() + stage_timeout(BUTTON_TIMEOUT_SECONDS))
     round_number = 0
@@ -41,13 +50,17 @@ def _wait_and_click(client, images: ImageRecognition, target: dict, *, deadline:
         LOGGER.info("[生存挑战：%s 第%d轮] 等待按钮，剩余 %.2f 秒",
                     target['name'], round_number, remaining)
         name = target['name'] if skip_if is None else f"{target['name']} / {skip_if['name']}"
-        center, score, skip = images.check(
-            probe, lambda result: result[0] is not None or result[2], name,
+        center, score, skip, resume_stage = images.check(
+            probe, lambda result: result[0] is not None or result[2] or result[3] is not None, name,
             deadline=images.elapsed + remaining,
         )
         # ADB 截图和模板计算也计入本步骤预算，迟到的匹配结果不能触发点击。
         if elapsed() >= deadline:
             break
+        if resume_stage is not None:
+            LOGGER.info('等待%s期间已进入%s，未点击%s，继续处理当前扫荡页面',
+                        target['name'], resume_stage, target['name'])
+            return resume_stage
         if skip:
             LOGGER.info("已出现%s，名单已确认，跳过准备就绪和名单确认", skip_if['name'])
             return False
@@ -79,26 +92,45 @@ def _dismiss_transfer_if_present(client, images: ImageRecognition, target: dict)
     images.sleep(1)
 
 
+def _sweep_page(images: ImageRecognition, action: dict, png: bytes, *, check_map=False):
+    # Foreground dialogs take precedence over buttons left visible behind them.
+    for key, stage in [('sweep_prompt', 'confirm_second'), ('confirm_second', 'confirm_second'),
+                       ('confirm_first', 'confirm_first'), ('ready', 'ready')]:
+        if key in action:
+            center, score = images.match(png, action[key])
+            if center is not None:
+                return stage, center, score
+    if check_map:
+        for key in ('transfer_marker', 'reset_confirm'):
+            if key in action and images.match(png, action[key])[0] is not None:
+                return None, None, 0.0
+    center, score = images.match(png, action['start_sweep'])
+    if center is not None:
+        if check_map and images.match(png, action['reset'])[0] is not None:
+            return 'map', center, score
+        return 'start_sweep', center, score
+    return None, None, 0.0
+
+
 def _start_sweep_and_wait(client, images: ImageRecognition, action: dict, *, deadline: float,
                           poll_seconds: float, post_click_wait: float,
                           elapsed: Callable[[], float]) -> str:
+    scoped = current_execution() is not None
+    start_guard = (lambda png: _sweep_page(images, action, png, check_map=True)[0]
+                   in ('start_sweep', 'map')) if scoped else None
     _wait_and_click(client, images, action['start_sweep'], deadline=deadline,
-                    poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
+                    poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed,
+                    page_guard=start_guard)
     deadline = min(deadline, elapsed() + stage_timeout(BUTTON_TIMEOUT_SECONDS))
     retry_at = elapsed() + START_SWEEP_RETRY_SECONDS
     retries = 0
 
     def probe(png):
-        # 同一张新截图先查前景页面，避免补点弹窗后方仍可见的开始扫荡。
-        for key, stage in [('sweep_prompt', 'confirm_second'), ('confirm_second', 'confirm_second'),
-                           ('confirm_first', 'confirm_first'), ('ready', 'ready'),
-                           ('start_sweep', 'start_sweep')]:
-            if key not in action:
-                continue
-            center, score = images.match(png, action[key])
-            if center is not None:
-                return stage, center, score
-        return None, None, 0.0
+        stage, center, score = _sweep_page(images, action, png, check_map=scoped)
+        if stage == 'map':
+            stage = ('reset' if retries >= START_SWEEP_MAX_RETRIES and elapsed() >= retry_at
+                     else 'start_sweep')
+        return stage, center, score
 
     while elapsed() < deadline:
         remaining = deadline - elapsed()
@@ -109,6 +141,9 @@ def _start_sweep_and_wait(client, images: ImageRecognition, action: dict, *, dea
         )
         if elapsed() >= deadline:
             break
+        if stage == 'reset':
+            LOGGER.info('开始扫荡补点%d次后仍确认在生存地图，转入重置次数检查，未继续补点', retries)
+            return stage
         if stage is not None and stage != 'start_sweep':
             LOGGER.info('已确认%s页面，停止补点开始扫荡，继续处理当前页面', action[stage]['name'])
             return stage
@@ -134,17 +169,33 @@ def _start_sweep_and_wait(client, images: ImageRecognition, action: dict, *, dea
     raise VisualError('开始扫荡后等待名单或扫荡确认页面超时，未继续点击')
 
 
-def _read_reset_count(model: MultimodalClient, client, *, timeout_seconds: float) -> int:
+def _read_reset_count(model: MultimodalClient, client, *, timeout_seconds: float,
+                      page_probe: Callable[[bytes], str | None] | None = None) -> int | str:
     def observe():
-        result = model.complete_json(client.screenshot(), SURVIVAL_RESET_COUNT,
+        png = client.screenshot()
+        if page_probe is not None:
+            stage = page_probe(png)
+            if stage in SWEEP_FOREGROUND_STAGES:
+                return stage
+            if stage != 'map':
+                raise VisualError('尚未确认生存地图，继续截图，未读取或操作重置')
+        result = model.complete_json(png, SURVIVAL_RESET_COUNT,
                                      timeout_seconds=stage_timeout(timeout_seconds))
+        if page_probe is not None:
+            stage = page_probe(client.screenshot())
+            if stage in SWEEP_FOREGROUND_STAGES:
+                LOGGER.info('读取重置次数期间已进入%s，忽略旧读数，继续处理当前扫荡页面', stage)
+                return stage
+            if stage != 'map':
+                raise VisualError('读取重置次数后地图状态未确认，继续截图，未重置或结束')
         count = result.get("reset_count") if isinstance(result, dict) else None
         if type(count) is not int or count < 0:
-            raise VisualError("大模型未能确认生存挑战重置次数，已停止")
+            raise VisualError("大模型未能确认生存挑战重置次数")
         return count
 
     count = retry_observation(observe, name='生存挑战重置次数')
-    LOGGER.info("大模型识别生存挑战重置次数：%d", count)
+    if type(count) is int:
+        LOGGER.info("大模型识别生存挑战重置次数：%d", count)
     return count
 
 
@@ -165,6 +216,11 @@ def handle_survival_challenge(
     deadline = elapsed() + stage_timeout(float(action["timeout_seconds"]))
     post_click_wait = float(action.get("post_click_wait_seconds", 1))
     poll_seconds = float(action["poll_seconds"])
+    page_probe = lambda png: _sweep_page(images, action, png, check_map=True)[0]
+
+    def forward_stage(png):
+        stage = page_probe(png)
+        return stage if stage in SWEEP_FOREGROUND_STAGES else None
 
     round_number = 0
     while current_execution() is not None or round_number < int(action["max_rounds"]):
@@ -177,37 +233,56 @@ def handle_survival_challenge(
             client, images, action, deadline=deadline, poll_seconds=poll_seconds,
             post_click_wait=post_click_wait, elapsed=elapsed,
         )
-        if stage == 'reset':
-            LOGGER.info('本轮未进入扫荡，跳过名单/扫荡确认和等待，直接检查能否重置')
-        else:
-            if stage == 'ready':
-                roster_open = _wait_and_click(
-                    client, images, action['ready'], deadline=deadline, poll_seconds=poll_seconds,
-                    post_click_wait=post_click_wait, elapsed=elapsed, skip_if=action.get('sweep_prompt'),
-                )
+        while True:
+            count = None
+            if stage == 'reset' and current_execution() is not None:
+                result = _read_reset_count(model, client, timeout_seconds=deadline - elapsed(),
+                                           page_probe=page_probe)
+                if type(result) is int:
+                    count = result
+                else:
+                    stage = result
+            if stage == 'reset':
+                LOGGER.info('本轮未进入扫荡，跳过名单/扫荡确认和等待，直接检查能否重置')
             else:
-                roster_open = stage == 'confirm_first'
-            if roster_open:
-                _wait_and_click(client, images, action['confirm_first'], deadline=deadline,
+                if stage == 'ready':
+                    roster_open = _wait_and_click(
+                        client, images, action['ready'], deadline=deadline, poll_seconds=poll_seconds,
+                        post_click_wait=post_click_wait, elapsed=elapsed, skip_if=action.get('sweep_prompt'),
+                    )
+                else:
+                    roster_open = stage == 'confirm_first'
+                if roster_open:
+                    _wait_and_click(client, images, action['confirm_first'], deadline=deadline,
+                                    poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
+                _wait_and_click(client, images, action['confirm_second'], deadline=deadline,
                                 poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
-            _wait_and_click(client, images, action['confirm_second'], deadline=deadline,
-                            poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed)
-            if current_execution() is None and elapsed() + float(action["wait_seconds"]) >= deadline:
+                if current_execution() is None and elapsed() + float(action["wait_seconds"]) >= deadline:
+                    raise VisualError("生存挑战等待扫荡完成超时")
+                images.sleep(float(action["wait_seconds"]))
+            remaining = deadline - elapsed()
+            if remaining <= 0:
                 raise VisualError("生存挑战等待扫荡完成超时")
-            images.sleep(float(action["wait_seconds"]))
-        remaining = deadline - elapsed()
-        if remaining <= 0:
-            raise VisualError("生存挑战等待扫荡完成超时")
-        count = _read_reset_count(model, client, timeout_seconds=remaining)
-        if elapsed() >= deadline:
-            raise VisualError("生存挑战重置次数识别超时，未继续点击")
-        if count == 0:
-            LOGGER.info("生存挑战重置次数为0，结束扫荡循环")
-            return
-        LOGGER.info("生存挑战剩余重置次数为%d，点击重置并确认后回到下一轮扫荡", count)
-        _wait_and_click(client, images, action["reset"], deadline=deadline,
-                        poll_seconds=poll_seconds, post_click_wait=post_click_wait,
-                        elapsed=elapsed)
+            if count is None:
+                count = _read_reset_count(model, client, timeout_seconds=remaining)
+            if elapsed() >= deadline:
+                raise VisualError("生存挑战重置次数识别超时，未继续点击")
+            if count == 0:
+                LOGGER.info("生存挑战重置次数为0，结束扫荡循环")
+                return
+            LOGGER.info("生存挑战剩余重置次数为%d，点击重置并确认后回到下一轮扫荡", count)
+            reset_result = _wait_and_click(
+                client, images, action["reset"], deadline=deadline,
+                poll_seconds=poll_seconds, post_click_wait=post_click_wait, elapsed=elapsed,
+                page_guard=(lambda png: page_probe(png) == 'map')
+                if current_execution() is not None else None,
+                resume_if=forward_stage if current_execution() is not None else None,
+            )
+            if isinstance(reset_result, str):
+                # The last START responded before RESET: finish that sweep using fresh state.
+                stage = reset_result
+                continue
+            break
         _wait_and_click(client, images, action["reset_confirm"], deadline=deadline,
                         poll_seconds=poll_seconds, post_click_wait=post_click_wait,
                         elapsed=elapsed)

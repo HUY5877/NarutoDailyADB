@@ -417,13 +417,14 @@ def test_survival_transfer_invalid_frame_still_fails_once_without_scope():
     assert device.taps == []
 
 
-def test_survival_start_after_retry_cap_observes_new_page_without_extra_start():
+def test_survival_start_without_confirmed_reset_observes_new_page_after_retry_cap():
     from naruto_daily.survival_challenge.handler import _start_sweep_and_wait
     from test_survival_challenge import action as survival_action
 
     clock, device = Clock(), Device()
 
     def matcher(frame, path, *args):
+        # The reset button is absent: a blocked START alone cannot justify fallback.
         visible = 'start_sweep' if clock() < 12 else 'ready'
         return ((1100, 900), 1) if path.stem == visible else (None, 0)
 
@@ -439,13 +440,14 @@ def test_survival_start_after_retry_cap_observes_new_page_without_extra_start():
     assert len(device.frames) == len(set(device.frames))
 
 
-def test_survival_start_after_retry_cap_waits_to_deadline_without_more_start():
+def test_survival_start_without_confirmed_reset_waits_to_deadline_after_retry_cap():
     from naruto_daily.survival_challenge.handler import _start_sweep_and_wait
     from test_survival_challenge import action as survival_action
 
     clock, device = Clock(), Device()
 
     def matcher(frame, path, *args):
+        # Keep reset unconfirmed throughout the original shared deadline.
         return ((1100, 900), 1) if path.stem == 'start_sweep' else (None, 0)
 
     with pytest.raises(DailyDeadlineExceeded):
