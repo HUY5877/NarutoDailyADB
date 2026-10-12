@@ -152,6 +152,111 @@ def test_reuses_token_and_uses_distinct_message_sequences(monkeypatch):
     assert transport.requests[2][0].get_header("Authorization") == "QQBot private-access-token"
 
 
+@pytest.mark.parametrize("status,error_code,expected", [
+    ("completed", None, "日常任务已全部完成"),
+    ("expired", None, "任务已超时"),
+    ("failed", "daily_failed", "任务执行失败"),
+    ("failed", "daily_timeout", "任务执行失败（超时）"),
+    ("failed", "command_timeout", "任务执行失败（超时）"),
+    ("failed", "login_timeout", "任务执行失败（超时）"),
+    ("failed", "login_finish_timeout", "任务执行失败（超时）"),
+])
+def test_finished_tasks_send_named_active_group_messages(monkeypatch, status, error_code, expected):
+    transport = QQTransport(token_response(), {"id": "message-1"})
+    module, notifier = make_notifier(monkeypatch, transport)
+    asyncio.run(notifier.notify_task_finished(TASK_ID, "小鸣人", status=status, error_code=error_code))
+
+    (token_request, token_timeout), (message_request, message_timeout) = transport.requests
+    assert request_json(token_request) == {"appId": APP_ID, "clientSecret": APP_SECRET}
+    assert message_request.full_url == "https://api.bot.qq.com/v2/groups/test-group-openid/messages"
+    assert message_request.get_header("Authorization") == "QQBot private-access-token"
+    assert token_timeout == message_timeout == 5
+    payload = request_json(message_request)
+    assert set(payload) == {"msg_type", "content", "msg_seq"}
+    assert payload["msg_type"] == 0
+    assert payload["msg_seq"] == 1
+    assert "小鸣人" in payload["content"]
+    assert expected in payload["content"]
+    assert "任务：12345678" in payload["content"]
+    if status == "failed":
+        assert module.SAFE_RUN_ERRORS[error_code] in payload["content"]
+    for private_value in (TASK_ID, APP_SECRET, TOKEN, GROUP):
+        assert private_value not in payload["content"]
+
+
+@pytest.mark.parametrize("status", ["interrupted", "running_daily", "unknown", ""])
+def test_finished_task_ignores_non_notifiable_status_without_network(monkeypatch, status):
+    transport = QQTransport()
+    _, notifier = make_notifier(monkeypatch, transport)
+    asyncio.run(notifier.notify_task_finished(TASK_ID, "小鸣人", status=status))
+    assert transport.requests == []
+
+
+@pytest.mark.parametrize("error_code", [None, "unknown", APP_SECRET + TOKEN, "private-timeout_timeout\n" + APP_SECRET])
+def test_finished_task_uses_safe_reason_for_unknown_errors(monkeypatch, error_code):
+    transport = QQTransport(token_response(), {"id": "message-1"})
+    module, notifier = make_notifier(monkeypatch, transport)
+    asyncio.run(notifier.notify_task_finished(TASK_ID, "小鸣人", status="failed", error_code=error_code))
+    content = request_json(transport.requests[1][0])["content"]
+    assert "任务执行失败" in content
+    assert module.SAFE_RUN_ERRORS["unexpected_error"] in content
+    assert "超时" not in content
+    assert APP_SECRET not in content and TOKEN not in content
+    if error_code:
+        assert error_code not in content
+
+
+@pytest.mark.parametrize("user_name,task_id,expected_name,expected_id", [
+    ("小鸣人\r\n管理员\x00" + "界" * 1000, "\r\n/12345678/?" + TASK_ID, "小鸣人 管理员", "12345678"),
+    ("", "\r\n/?", "未提供姓名", "未知"),
+], ids=["controls-and-long-name", "missing-name-and-id"])
+def test_finished_task_sanitizes_name_and_short_task_id(monkeypatch, user_name, task_id, expected_name, expected_id):
+    transport = QQTransport(token_response(), {"id": "message-1"})
+    _, notifier = make_notifier(monkeypatch, transport)
+    asyncio.run(notifier.notify_task_finished(task_id, user_name, status="completed"))
+    content = request_json(transport.requests[1][0])["content"]
+    assert expected_name in content
+    assert f"任务：{expected_id}" in content
+    assert "\r" not in content and "\x00" not in content
+    assert content.count("\n") == 1
+    assert len(content) < 200
+
+
+def test_qr_and_finished_messages_reuse_token_and_increasing_sequences(monkeypatch):
+    transport = QQTransport(token_response(), {"id": "message-1"}, {"id": "message-2"}, {"id": "message-3"})
+    _, notifier = make_notifier(monkeypatch, transport)
+
+    async def notify_all():
+        await notifier.notify_qr_ready(TASK_ID, "小鸣人")
+        await notifier.notify_task_finished(TASK_ID, "小鸣人", status="completed")
+        await notifier.notify_task_finished("abcdefgh-1234", "小佐助", status="failed", error_code="daily_timeout")
+
+    asyncio.run(notify_all())
+    assert len(transport.requests) == 4
+    assert sum(item[0].full_url.endswith("/app/getAppAccessToken") for item in transport.requests) == 1
+    messages = [request_json(item[0]) for item in transport.requests[1:]]
+    assert [item["msg_seq"] for item in messages] == [1, 2, 3]
+    assert all(set(item) == {"msg_type", "content", "msg_seq"} for item in messages)
+    assert all(item[0].get_header("Authorization") == "QQBot private-access-token" for item in transport.requests[1:])
+
+
+@pytest.mark.parametrize("stage", ["token", "message"])
+@pytest.mark.parametrize("failure_kind", ["business", "network"])
+def test_finished_notification_failures_are_safe_and_never_retried(monkeypatch, stage, failure_kind):
+    failure = (
+        {"code": 40001, "message": APP_SECRET + TOKEN}
+        if failure_kind == "business" else URLError(APP_SECRET + TOKEN)
+    )
+    responses = [failure] if stage == "token" else [token_response(), failure]
+    transport = QQTransport(*responses)
+    module, notifier = make_notifier(monkeypatch, transport)
+    with pytest.raises(module.QQNotifyError) as caught:
+        asyncio.run(notifier.notify_task_finished(TASK_ID, "小鸣人", status="completed"))
+    assert APP_SECRET not in str(caught.value) and TOKEN not in str(caught.value)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert len(transport.requests) == (1 if stage == "token" else 2)
+
+
 def test_refreshes_token_before_monotonic_expiration(monkeypatch):
     # Catches trusting a token right up to expiry or retaining the stale token header.
     transport = QQTransport(token_response(expires_in="100"), {"id": "message-1"}, {"id": "message-2"}, token_response("new-token", "100"), {"id": "message-3"})

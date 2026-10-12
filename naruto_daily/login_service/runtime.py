@@ -515,6 +515,63 @@ class LoginRuntime:
         self._notification_tasks.add(task)
         task.add_done_callback(self._notification_tasks.discard)
 
+    async def _notification_username(self, record: TaskRecord) -> str:
+        # Share one lookup between QR refreshes and the final notification.
+        if record._username_lookup_task is None:
+            record._username_lookup_task = asyncio.create_task(self._lookup_notification_username(record))
+            # Cancelling a caller must neither repeat the lookup nor leave a
+            # late database failure attached to an unobserved background task.
+            record._username_lookup_task.add_done_callback(
+                lambda task: task.exception() if not task.cancelled() else None,
+            )
+        return await asyncio.shield(record._username_lookup_task)
+
+    async def _lookup_notification_username(self, record: TaskRecord) -> str:
+        if self._redis_queue is None or self._user_name_resolver is None:
+            raise ValueError('Username lookup is unavailable')
+        user_id = await self._redis_queue.notification_user_id(record)
+        if not user_id:
+            raise ValueError('Task identity is unavailable')
+        user_name = await self._user_name_resolver.resolve(user_id)
+        if not user_name:
+            raise ValueError('Username is unavailable')
+        record.username = user_name
+        return user_name
+
+    async def _prepare_notification_username(self, record: TaskRecord) -> None:
+        # Resolve before the login session expires. The same name is passed
+        # through run snapshots and reused when daily execution ends.
+        if self._qq_notifier is None:
+            return
+        try:
+            await self._notification_username(record)
+        except Exception as error:
+            logger.warning('QQ task username lookup failed for task %s (%s)', record.id, type(error).__name__,
+                           extra={'backend_only': True})
+
+    def _notify_task_finished(self, record: TaskRecord, status: str) -> None:
+        if (self._qq_notifier is None or self._stopping
+                or status not in {'completed', 'failed', 'expired'}
+                or record.daily_error_code == 'worker_stopped'
+                or record._terminal_notification_scheduled
+                or status == 'completed' and record.daily_started_at is None):
+            return
+        record._terminal_notification_scheduled = True
+        task = asyncio.create_task(self._send_task_notification(record, status, record.daily_error_code))
+        self._notification_tasks.add(task)
+        task.add_done_callback(self._notification_tasks.discard)
+
+    async def _send_task_notification(self, record: TaskRecord, status: str, error_code: str | None) -> None:
+        try:
+            if not record.username:
+                raise ValueError('Username is unavailable')
+            await self._qq_notifier.notify_task_finished(record.id, record.username, status=status, error_code=error_code)
+            logger.info('QQ task notification sent for task %s (%s)', record.id, status,
+                        extra={'backend_only': True})
+        except Exception as error:
+            logger.warning('QQ task notification failed for task %s (%s)', record.id, type(error).__name__,
+                           extra={'backend_only': True})
+
     async def _send_qr_notification(self, record: TaskRecord, *, refreshed: bool) -> None:
         try:
             if self._redis_queue is None or self._user_name_resolver is None:
@@ -522,9 +579,7 @@ class LoginRuntime:
             user_id = await self._redis_queue.notification_user_id(record)
             if not user_id:
                 raise ValueError('Task identity is unavailable')
-            user_name = await self._user_name_resolver.resolve(user_id)
-            if not user_name:
-                raise ValueError('Username is unavailable')
+            user_name = await self._notification_username(record)
             if record.status != 'qr_ready' or record.expires_at_ms <= time.time() * 1000:
                 return
             if await self._redis_queue.notification_user_id(record) != user_id:
@@ -772,9 +827,11 @@ class LoginRuntime:
         uploaded = False
         keep_ldplayer = False
         requeue_on_exit = False
+        cancelled = False
         if self._run_reporter is not None:
             self._run_reporter.emit(record, status="starting_emulator")
         try:
+            await self._prepare_notification_username(record)
             await self._set_status(record, "starting_emulator")
             if self._stopping:
                 raise _WorkerStopping
@@ -807,6 +864,7 @@ class LoginRuntime:
                 except Exception:
                     logger.warning("Could not mark the LDPlayer pool slot ready for task %s", task_id)
         except asyncio.CancelledError:
+            cancelled = True
             self._set_daily_status(record, "interrupted", error_code="worker_stopped")
             requeue_on_exit = not record.qr_published and self._redis_queue is not None
             raise
@@ -896,12 +954,12 @@ class LoginRuntime:
                         self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
                     elif record.qr_published and record.daily_status in {'failed', 'interrupted'}:
                         await self._finish_failed_session(record)
+            final_status = record.daily_status
+            if final_status not in RUN_TERMINAL_STATUSES:
+                final_status = ("interrupted" if self._stopping else record.status
+                                if record.status in {"failed", "expired"} else
+                                "completed" if self.config.emulator_driver == "mock" else "failed")
             if self._run_reporter is not None and not interruption_reported:
-                final_status = record.daily_status
-                if final_status not in RUN_TERMINAL_STATUSES:
-                    final_status = ("interrupted" if self._stopping else record.status
-                                    if record.status in {"failed", "expired"} else
-                                    "completed" if self.config.emulator_driver == "mock" else "failed")
                 record.daily_status = final_status
                 self._run_reporter.emit(
                     record, status=final_status,
@@ -910,6 +968,8 @@ class LoginRuntime:
                     message="模拟二维码已生成" if self.config.emulator_driver == "mock" and final_status == "completed" else None,
                 )
                 self._run_reporter.finish(task_id)
+            if not cancelled and not requeue_on_exit and not keep_ldplayer:
+                self._notify_task_finished(record, final_status)
 
     async def _sweep_loop(self) -> None:
         while not self._stopping:

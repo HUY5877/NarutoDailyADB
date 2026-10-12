@@ -110,6 +110,93 @@ def test_two_task_streams_and_snapshots_are_isolated_and_public():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("terminal,error_code", [
+    ("completed", None), ("failed", "daily_timeout"),
+    ("expired", "login_timeout"), ("interrupted", "worker_stopped"),
+])
+def test_run_username_survives_progress_terminal_and_missing_session(terminal, error_code):
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        record.username = "小鸣人"
+        reporter = RedisRunReporter(cfg, queue)
+        reporter.start()
+        try:
+            run_key, stream_key, session_key = keys(cfg, record)
+            reporter.emit(record, status="starting_emulator")
+            await drain(reporter)
+            assert json.loads(await client.get(run_key))["username"] == "小鸣人"
+
+            reporter.emit(record, status="running_daily")
+            reporter.emit(record, message="日常动作", action_index=1, action_total=3)
+            await drain(reporter)
+            progress = json.loads(await client.get(run_key))
+            assert progress["status"] == "running_daily"
+            assert progress["username"] == "小鸣人"
+            assert progress["actionIndex"] == 1 and progress["actionTotal"] == 3
+
+            await client.delete(session_key)
+            record.username = None  # Later progress must not remove an already-known name.
+            reporter.emit(record, message="二维码会话过期后的进度")
+            await drain(reporter)
+            assert json.loads(await client.get(run_key))["username"] == "小鸣人"
+            reporter.emit(record, status=terminal, error_code=error_code)
+            reporter.finish(record.id)
+            await drain(reporter)
+            final = json.loads(await client.get(run_key))
+            assert final["status"] == terminal
+            assert final["username"] == "小鸣人"
+            assert final["finishedAt"] is not None
+            assert await client.exists(session_key) == 0
+            assert record.id not in reporter._states
+
+            logs = await entries(client, stream_key)
+            assert all("username" not in event for _, event in logs)
+            public = json.dumps([final, logs])
+            for private_value in ("userId", "private-user-id", "tokenHash", "access_token", "accessToken"):
+                assert private_value not in public
+        finally:
+            await reporter.close()
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("missing_username", [None, ""])
+def test_same_status_publishes_new_username_once_and_keeps_legacy_snapshot_compatible(missing_username):
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        record.username = missing_username
+        reporter = RedisRunReporter(cfg, queue)
+        reporter.start()
+        try:
+            run_key, stream_key, _ = keys(cfg, record)
+            reporter.emit(record, status="starting_emulator")
+            await drain(reporter)
+            original = json.loads(await client.get(run_key))
+            assert "username" not in original
+
+            record.username = "小鸣人"
+            reporter.emit(record, status="starting_emulator")
+            await drain(reporter)
+            named = json.loads(await client.get(run_key))
+            assert named["username"] == "小鸣人"
+            assert named["status"] == original["status"]
+            assert named["sequence"] > original["sequence"]
+            assert len(await entries(client, stream_key)) == 2
+
+            reporter.emit(record, status="starting_emulator")
+            await drain(reporter)
+            assert json.loads(await client.get(run_key))["sequence"] == named["sequence"]
+            assert len(await entries(client, stream_key)) == 2
+        finally:
+            await reporter.close()
+            await client.aclose()
+    asyncio.run(scenario())
+
+
 def test_stream_ids_support_incremental_reads_and_exact_bounded_trimming():
     async def scenario():
         client, cfg = fake_client(), config()

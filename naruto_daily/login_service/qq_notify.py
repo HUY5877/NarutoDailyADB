@@ -1,4 +1,4 @@
-"""Send QR-ready reminders through the official QQ group bot HTTP API."""
+"""Send login reminders and task results through the official QQ group bot API."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .run_logs import SAFE_RUN_ERRORS
+
 
 _TOKEN_URL = "https://api.bot.qq.com/app/getAppAccessToken"
 _REQUEST_TIMEOUT_SECONDS = 5
@@ -20,6 +22,19 @@ _MAX_RESPONSE_BYTES = 64 * 1024
 
 class QQNotifyError(RuntimeError):
     """A notification failure containing no credentials or external response text."""
+
+
+def _notification_identity(task_id: str, user_name: str) -> tuple[str, str]:
+    printable_name = "".join(
+        character if character.isprintable() else " "
+        for character in (user_name or "")
+    )
+    name = " ".join(printable_name.split())[:80] or "未提供姓名"
+    short_id = "".join(
+        character for character in task_id
+        if character.isalnum() or character in "-_"
+    )[:8] or "未知"
+    return name, short_id
 
 
 def _post_json(url: str, payload: dict, *, token: str = "") -> dict:
@@ -137,22 +152,43 @@ class QQGroupNotifier:
         token = await self._access_token()
         if expires_at_ms is not None and time() * 1000 >= expires_at_ms:
             raise QQNotifyError('QR code expired before notification')
-        printable_name = "".join(
-            character if character.isprintable() else " "
-            for character in (user_name or "")
-        )
-        name = " ".join(printable_name.split())[:80] or "未提供姓名"
-        short_id = "".join(
-            character for character in task_id
-            if character.isalnum() or character in "-_"
-        )[:8] or "未知"
+        name, short_id = _notification_identity(task_id, user_name)
         state = "已刷新" if refreshed else "已生成"
+        await self._send_message(
+            f"【火影忍者登录】{name} 的二维码{state}，请打开登录页面扫码。\n任务：{short_id}",
+            token=token,
+        )
+
+    async def notify_task_finished(
+        self, task_id: str, user_name: str, *, status: str,
+        error_code: str | None = None,
+    ) -> None:
+        if status not in {"completed", "failed", "expired"}:
+            return
+
+        name, short_id = _notification_identity(task_id, user_name)
+        if status == "completed":
+            result = "日常任务已全部完成。"
+        elif status == "expired":
+            result = "任务已超时，本次任务已结束，请重新申请。"
+        else:
+            safe_code = error_code if error_code in SAFE_RUN_ERRORS else "unexpected_error"
+            timeout = "（超时）" if safe_code.endswith("_timeout") else ""
+            result = f"任务执行失败{timeout}。{SAFE_RUN_ERRORS[safe_code]}"
+
+        token = await self._access_token()
+        await self._send_message(
+            f"【火影忍者日常】{name} 的{result}\n任务：{short_id}",
+            token=token,
+        )
+
+    async def _send_message(self, content: str, *, token: str) -> None:
         await asyncio.to_thread(
             _post_json,
             self._message_url,
             {
                 "msg_type": 0,
-                "content": f"【火影忍者登录】{name} 的二维码{state}，请打开登录页面扫码。\n任务：{short_id}",
+                "content": content,
                 "msg_seq": next(self._message_sequences),
             },
             token=token,

@@ -7,6 +7,10 @@ from datetime import datetime
 import hmac
 import re
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from asyncio import Task
 
 from .user_options import UserOptions, parse_user_options
 from .login_types import DEFAULT_LOGIN_TYPE, parse_login_type
@@ -63,6 +67,9 @@ class TaskRecord:
     queue_expires_at: str | None = None
     login_type: str = DEFAULT_LOGIN_TYPE
     _qr_notifications: set[str] = field(default_factory=set, repr=False, compare=False)
+    username: str | None = field(default=None, repr=False, compare=False)
+    _username_lookup_task: Task[str] | None = field(default=None, repr=False, compare=False)
+    _terminal_notification_scheduled: bool = field(default=False, repr=False, compare=False)
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {

@@ -154,10 +154,14 @@ class RedisRunReporter:
             "taskId": record.id, "status": status or "starting_emulator",
             "startedAt": None, "finishedAt": None,
         })
+        username_changed = bool(record.username) and state.get("username") != record.username
+        if record.username:
+            state["username"] = record.username
         if status is not None:
             if status not in STAGE_MESSAGES:
                 return
-            if previous and previous["status"] == status and message is None and error_code == previous.get("errorCode"):
+            if (previous and previous["status"] == status and message is None
+                    and error_code == previous.get("errorCode") and not username_changed):
                 return
             state["status"] = status
             state["finishedAt"] = now if status in TERMINAL else None
