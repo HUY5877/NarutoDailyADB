@@ -159,7 +159,7 @@ class QQGroupNotifier:
 
     async def notify_task_finished(
         self, task_id: str, user_name: str, *, status: str,
-        error_code: str | None = None,
+        error_code: str | None = None, secret_realm_completed: bool = False,
     ) -> None:
         if status not in {"completed", "failed", "expired"}:
             return
@@ -169,6 +169,11 @@ class QQGroupNotifier:
             result = "日常任务全部搞定啦！辛苦啦～"
         elif status == "expired":
             result = "这次任务超时啦，重新申请后再试一次吧～"
+        elif error_code == "daily_timeout" and secret_realm_completed:
+            result = (
+                "日常全流程已经跑通啦，秘境探险也已完成至少一次！"
+                "只是本次运行时间已用完，扫荡券还没用完～"
+            )
         else:
             safe_code = error_code if error_code in SAFE_RUN_ERRORS else "unexpected_error"
             result = "这次任务超时啦。" if safe_code.endswith("_timeout") else "这次任务没能完成。"

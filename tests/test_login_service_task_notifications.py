@@ -15,6 +15,7 @@ from test_login_service_daily_runtime import (
     record_with_ttl, run_report, start_processing,
 )
 from test_login_service_qq_runtime import ready_runtime
+from test_login_service_qq_notify import QQTransport, make_notifier, request_json, token_response
 from test_login_service_worker import enqueue, fake_client, fake_server
 
 
@@ -49,7 +50,8 @@ class Notifications:
     async def notify_qr_ready(self, task_id, user_name, *, refreshed=False, expires_at_ms=None):
         self.qr_messages.append((task_id, user_name, refreshed))
 
-    async def notify_task_finished(self, task_id, user_name, *, status, error_code=None):
+    async def notify_task_finished(self, task_id, user_name, *, status, error_code=None,
+                                   secret_realm_completed=False):
         message = (task_id, user_name, status, error_code)
         self.attempts.append(message)
         if self.wait is not None:
@@ -194,6 +196,58 @@ def test_scan_login_finishing_and_daily_timeout_each_notify_once(monkeypatch, tm
             assert run_report(runtime, record)['errorCode'] == code
             assert pool.closed == [record.id] and not queue.requeued
             assert notifications.messages == [(record.id, '雪花', 'failed', code)]
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('secret_completed', [False, True])
+@pytest.mark.parametrize('source,code', [
+    ('parent', 'daily_timeout'),
+    ('child', 'daily_timeout'),
+    ('child', 'daily_failed'),
+])
+def test_secret_completion_changes_only_daily_timeout_group_message(
+    monkeypatch, tmp_path, secret_completed, source, code,
+):
+    # Catches losing the confirmed milestone before notification, or turning
+    # an unfinished daily run / non-timeout failure into a completion claim.
+    async def scenario():
+        record = record_with_ttl()
+        plan = [emit(QR), emit(LOGGED_IN)]
+        if secret_completed:
+            plan.append(emit({
+                'type': 'log', 'time': record.created_at, 'level': 'INFO',
+                'message': '已确认首次秘境探险成功结算',
+                'secretRealmCompletedAt': record.created_at,
+            }))
+        plan.append(gate(tmp_path / 'never-finish') if source == 'parent'
+                    else emit({'type': 'error', 'code': code}))
+        runtime, _, queue, pool = make_runtime(
+            tmp_path, monkeypatch, record, plan,
+            daily_timeout=.5 if source == 'parent' else 5,
+        )
+        enable_notifications(runtime, queue)
+        transport = QQTransport(token_response(), {'id': 'qr-message'}, {'id': 'result-message'})
+        _, runtime._qq_notifier = make_notifier(monkeypatch, transport)
+        try:
+            await asyncio.wait_for(runtime._process_record(record), 3)
+            await drain_notifications(runtime)
+            assert record.daily_status == 'failed' and record.daily_error_code == code
+            assert record.secret_realm_completed_at == (record.created_at if secret_completed else None)
+            assert pool.closed == [record.id] and not queue.requeued
+            messages = [request_json(request)['content'] for request, _ in transport.requests[1:]]
+            assert len(messages) == 2, 'Send exactly one QR reminder and one final result'
+            content = messages[-1]
+            assert content.startswith('雪花，') and record.id not in content
+            if secret_completed and code == 'daily_timeout':
+                assert '日常全流程已经跑通' in content
+                assert '秘境探险' in content and '扫荡券还没用完' in content
+                assert '时间' in content
+                assert '这次任务超时' not in content and '没能完成' not in content
+            else:
+                assert '日常全流程已经跑通' not in content
+                assert ('超时' if code == 'daily_timeout' else '没能完成') in content
         finally:
             await runtime.stop()
     asyncio.run(scenario())
