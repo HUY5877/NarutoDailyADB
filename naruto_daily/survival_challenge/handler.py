@@ -16,6 +16,8 @@ from naruto_daily.multimodal.prompts import SURVIVAL_RESET_COUNT
 LOGGER = logging.getLogger("naruto_daily")
 # 1920×1080：点击传送弹层下方、底部操作栏上方的空白处；弹层内部点击不会关闭。
 TRANSFER_DISMISS = (960, 850)
+TRANSFER_DETECTION_RETRIES = 3
+TRANSFER_DETECTION_RETRY_SECONDS = 1.0
 BUTTON_TIMEOUT_SECONDS = 20.0
 START_SWEEP_MAX_RETRIES = 2
 START_SWEEP_RETRY_SECONDS = 2.0
@@ -88,17 +90,27 @@ def _dismiss_transfer_if_present(client, images: ImageRecognition, target: dict,
     deadline = min(deadline, elapsed() + stage_timeout(BUTTON_TIMEOUT_SECONDS))
     clicks = 0
     while elapsed() < deadline:
-        center, score = retry_observation(
-            lambda: images.match(client.screenshot(), target), name='生存挑战传送提示',
-        )
-        check_execution()
+        center, score = None, 0.0
+        for retry_number in range(TRANSFER_DETECTION_RETRIES + 1):
+            if elapsed() >= deadline:
+                break
+            center, score = retry_observation(
+                lambda: images.match(client.screenshot(), target), name='生存挑战传送提示',
+            )
+            check_execution()
+            if center is not None or elapsed() >= deadline or retry_number == TRANSFER_DETECTION_RETRIES:
+                break
+            LOGGER.info('未发现“传送”提示，相似度 %.3f，1 秒后重新截图，第%d/%d次重试',
+                        score, retry_number + 1, TRANSFER_DETECTION_RETRIES)
+            images.sleep(min(TRANSFER_DETECTION_RETRY_SECONDS, max(0, deadline - elapsed())))
         if elapsed() >= deadline:
             break
         if center is None:
             if clicks:
                 LOGGER.info("重新截图确认“传送”提示已关闭，继续生存挑战")
             else:
-                LOGGER.info("未发现包含“传送”的提示界面，继续生存挑战")
+                LOGGER.info("初查及%d次重试均未发现包含“传送”的提示界面，继续生存挑战",
+                            TRANSFER_DETECTION_RETRIES)
             return
         clicks += 1
         LOGGER.info("%s“传送”提示界面，相似度 %.3f，第%d次点击弹层外空白处 (%d, %d) 退出，随后重新截图确认",

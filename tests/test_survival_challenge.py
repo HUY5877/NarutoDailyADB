@@ -404,7 +404,7 @@ def test_unknown_loading_screen_is_waited_for_without_blind_reclick(eventually_r
         with pytest.raises(VisualError, match='开始扫荡后等待名单或扫荡确认页面超时'):
             run(action(), client, Model([]), waits)
         assert len(client.taps) == 1
-        assert sum(waits) <= 21
+        assert sum(waits) <= 24  # Includes three initial transfer-check retries.
     assert not any(state == 'loading' for _, _, state in client.taps)
     assert sum(state == 'map' for _, _, state in client.taps) == 1
 
@@ -434,7 +434,7 @@ def test_slow_screenshot_result_cannot_trigger_click_after_button_timeout(monkey
 
     def screenshot():
         screenshots[0] += 1
-        if screenshots[0] == 2:
+        if screenshots[0] == 5:  # Four absent-transfer frames precede the button check.
             now[0] += 25
         return client.state.encode()
 

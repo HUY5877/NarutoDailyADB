@@ -343,7 +343,7 @@ def test_survival_pending_sweep_wait_keeps_legacy_early_timeout_without_scope():
     with pytest.raises(VisualError, match='扫荡完成超时'):
         run(dict(survival_action(), timeout_seconds=30), device, model, waits)
 
-    assert sum(waits) == 4
+    assert sum(waits) == 7  # Includes three initial transfer-check retries.
     assert model.calls == 0
     assert [state for _, _, state in device.taps] == ['map', 'ready', 'confirm_first', 'confirm_second']
 
@@ -363,11 +363,11 @@ def test_survival_transfer_rechecks_invalid_frames_before_single_dismiss():
     with execution_scope(20, clock=clock, sleep=clock.sleep):
         _dismiss_transfer_if_present(device, ImageRecognition(device, matcher), target('transfer'))
 
-    assert device.frames == [b'1', b'2', b'3', b'4', b'5', b'6']
+    assert device.frames == [b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9']
     assert all(taps == () for _, taps in observed[:5])
     assert observed[-1][1] == (TRANSFER_DISMISS,)
     assert device.taps == [TRANSFER_DISMISS]
-    assert clock() == 5
+    assert clock() == 8
 
 
 def test_survival_transfer_invalid_frames_reach_deadline_without_any_tap():

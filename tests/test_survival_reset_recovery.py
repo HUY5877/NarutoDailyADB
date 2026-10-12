@@ -189,6 +189,31 @@ def test_reset_transfer_is_rechecked_and_closed_before_background_sweep(clock, d
     assert [json.loads(frame)['state'] for frame, _ in model.reads] == ['map_blocked', 'completed']
 
 
+@pytest.mark.parametrize('misses', [1, 2, 3])
+def test_reset_transfer_missed_detection_retries_before_starting_next_sweep(clock, misses):
+    class MissedTransferDevice(TransferAfterResetDevice):
+        missed_frames = 0
+
+        def match(self, frame, path, *args):
+            if (path.stem == 'transfer' and 'transfer' in json.loads(frame)['visible']
+                    and self.missed_frames < misses):
+                self.missed_frames += 1
+                return None, .79
+            return super().match(frame, path, *args)
+
+    device = MissedTransferDevice(clock, dismiss_clicks=1)
+    model = Model(clock, device, 1, 0)
+    execute(clock, device, model)
+
+    assert device.missed_frames == misses
+    assert points(device) == [POINTS['start_sweep']] * 3 + [
+        POINTS['reset'], POINTS['reset_confirm'], (960, 850),
+        POINTS['start_sweep'], POINTS['ready'], POINTS['confirm_first'], POINTS['confirm_second'],
+    ]
+    assert device.state == 'completed'
+    assert len(model.reads) == 2
+
+
 def test_unclosed_reset_transfer_stops_at_shared_deadline_without_sweep_or_reset_replay(clock):
     device = TransferAfterResetDevice(clock, dismiss_clicks=100)
     model = Model(clock, device, 1)
