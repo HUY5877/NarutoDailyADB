@@ -11,6 +11,9 @@ import sys
 import time
 from typing import Callable, Sequence
 
+import cv2
+import numpy as np
+
 from naruto_daily.common.adb_client import AdbClient, CommandResult
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common.recognition import ImageRecognition
@@ -153,6 +156,11 @@ class DailySession:
             def observed():
                 self._remaining()
                 png = self.client.screenshot()
+                frame = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+                # 微信二维码、过期提示和加载页保持竖屏，不能套用游戏横屏检测区域。
+                # 继续交给刷新回调和原截止时间；恢复横屏后再确认扫码授权。
+                if frame is not None and frame.shape[0] > frame.shape[1]:
+                    return False
                 for index, target in enumerate(targets):
                     if index == 2 and on_wait is not None and target.get('main_menu'):
                         from .qr_navigation import pre_login_image

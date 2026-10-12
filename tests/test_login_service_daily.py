@@ -4,10 +4,12 @@ from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 
+import cv2
+import numpy as np
 import pytest
 
 from naruto_daily.config import ConfigError, load_settings
-from naruto_daily.common.visual import VisualError
+from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.execution import DailyDeadlineExceeded, current_execution
 from naruto_daily.login_service.daily import DailySession, _templates
 from naruto_daily.tasks import TASK_ORDER
@@ -223,6 +225,69 @@ def test_authorized_screen_skips_refresh_callback_and_refresh_can_handoff_author
         assert check()
     session.wait_for_authorization(clock() + 30, on_wait=refresh)
     assert session._authorized
+
+
+@pytest.mark.parametrize('with_refresh', [False, True])
+def test_portrait_qr_waits_for_landscape_authorization_and_keeps_refresh_responsive(tmp_path, monkeypatch, with_refresh):
+    matches = []
+
+    def match(*args):
+        matches.append(args[1].name)
+        return find_template_in_png(*args)
+
+    session, clock, calls = session_for(tmp_path, matcher=match)
+    target = session._login_actions[0]['start_game']
+    template_path = PROJECT_ROOT / target['template']
+    (tmp_path / target['template']).write_bytes(template_path.read_bytes())
+    portrait = np.full((1920, 1080, 3), 255, np.uint8)
+    instruction = cv2.imdecode(np.frombuffer(
+        (PROJECT_ROOT / 'assets/login_wechat_qr_instruction.png').read_bytes(), np.uint8,
+    ), cv2.IMREAD_COLOR)
+    height, width = instruction.shape[:2]
+    portrait[1210:1210 + height, 324:324 + width] = instruction
+    landscape = np.zeros((1080, 1920, 3), np.uint8)
+    template = cv2.imdecode(np.frombuffer(template_path.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    height, width = template.shape[:2]
+    left, top = target['left'] + 12, target['top'] + 12
+    landscape[top:top + height, left:left + width] = template
+    frames = iter([portrait, np.full_like(portrait, 255), landscape])
+    monkeypatch.setattr(session.client, 'screenshot', lambda: cv2.imencode('.png', next(frames))[1].tobytes())
+    refreshes = []
+
+    def refresh(check):
+        refreshes.append(clock())
+        assert not session._authorized
+        assert matches == []
+        # 刷新回调再次观察竖屏时也必须继续等待，不能进入横屏模板或模型识别。
+        assert not check()
+        assert matches == []
+
+    session.wait_for_authorization(clock() + 30, on_wait=refresh if with_refresh else None)
+    assert session._authorized
+    assert not session._already_in_game
+    assert matches == ['start_game_button.png']
+    assert len(refreshes) == (1 if with_refresh else 0)
+    assert calls == []
+
+
+@pytest.mark.parametrize('with_refresh', [False, True])
+def test_portrait_loading_or_expired_qr_preserves_original_login_deadline(tmp_path, monkeypatch, with_refresh):
+    session, clock, calls = session_for(tmp_path, matcher=lambda *args: pytest.fail('portrait must not match landscape targets'))
+    png = cv2.imencode('.png', np.full((1920, 1080, 3), 255, np.uint8))[1].tobytes()
+    monkeypatch.setattr(session.client, 'screenshot', lambda: png)
+    refreshes = []
+
+    def refresh(check):
+        refreshes.append(clock())
+        assert not check()
+
+    deadline = clock() + 1
+    with pytest.raises(DailyDeadlineExceeded):
+        session.wait_for_authorization(deadline, on_wait=refresh if with_refresh else None)
+    assert clock() == deadline
+    assert not session._authorized
+    assert bool(refreshes) == with_refresh
+    assert calls == []
 
 
 def test_login_cleanup_cannot_start_before_authorization(tmp_path):
