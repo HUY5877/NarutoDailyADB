@@ -91,9 +91,8 @@ def test_posts_credentials_and_named_active_group_message(monkeypatch):
     assert set(payload) == {"msg_type", "content", "msg_seq"}
     assert payload["msg_type"] == 0
     assert isinstance(payload["msg_seq"], int) and payload["msg_seq"] > 0
-    assert "小鸣人" in payload["content"]
-    assert "二维码已生成" in payload["content"]
-    assert "12345678" in payload["content"]
+    assert payload["content"] == "小鸣人，你的二维码准备好啦！快打开登录页面扫码吧～"
+    assert TASK_ID[:8] not in payload["content"]
     assert TASK_ID not in payload["content"]
     assert TOKEN not in payload["content"]
     assert "http" not in payload["content"]
@@ -120,8 +119,7 @@ def test_refresh_message_supports_missing_name(monkeypatch):
     _, notifier = make_notifier(monkeypatch, transport)
     asyncio.run(notifier.notify_qr_ready(TASK_ID, "", refreshed=True))
     content = request_json(transport.requests[1][0])["content"]
-    assert "未提供姓名" in content
-    assert "二维码已刷新" in content
+    assert content == "未提供姓名，二维码已经刷新啦！快打开登录页面扫新的码吧～"
 
 
 def test_user_name_cannot_insert_lines_or_unbounded_content(monkeypatch):
@@ -132,7 +130,8 @@ def test_user_name_cannot_insert_lines_or_unbounded_content(monkeypatch):
     content = request_json(transport.requests[1][0])["content"]
     assert "小鸣人 管理员" in content
     assert "\r" not in content and "\x00" not in content
-    assert content.count("\n") <= 1
+    assert "\n" not in content
+    assert len(content.split("，", 1)[0]) == 80
     assert len(content) < 200
 
 
@@ -153,13 +152,13 @@ def test_reuses_token_and_uses_distinct_message_sequences(monkeypatch):
 
 
 @pytest.mark.parametrize("status,error_code,expected", [
-    ("completed", None, "日常任务已全部完成"),
-    ("expired", None, "任务已超时"),
-    ("failed", "daily_failed", "任务执行失败"),
-    ("failed", "daily_timeout", "任务执行失败（超时）"),
-    ("failed", "command_timeout", "任务执行失败（超时）"),
-    ("failed", "login_timeout", "任务执行失败（超时）"),
-    ("failed", "login_finish_timeout", "任务执行失败（超时）"),
+    ("completed", None, "日常任务全部搞定啦！辛苦啦～"),
+    ("expired", None, "这次任务超时啦，重新申请后再试一次吧～"),
+    ("failed", "daily_failed", "这次任务没能完成。"),
+    ("failed", "daily_timeout", "这次任务超时啦。"),
+    ("failed", "command_timeout", "这次任务超时啦。"),
+    ("failed", "login_timeout", "这次任务超时啦。"),
+    ("failed", "login_finish_timeout", "这次任务超时啦。"),
 ])
 def test_finished_tasks_send_named_active_group_messages(monkeypatch, status, error_code, expected):
     transport = QQTransport(token_response(), {"id": "message-1"})
@@ -175,12 +174,12 @@ def test_finished_tasks_send_named_active_group_messages(monkeypatch, status, er
     assert set(payload) == {"msg_type", "content", "msg_seq"}
     assert payload["msg_type"] == 0
     assert payload["msg_seq"] == 1
-    assert "小鸣人" in payload["content"]
-    assert expected in payload["content"]
-    assert "任务：12345678" in payload["content"]
+    assert payload["content"].startswith(f"小鸣人，{expected}")
+    assert "【" not in payload["content"] and "】" not in payload["content"]
+    assert "任务：" not in payload["content"] and "\n" not in payload["content"]
     if status == "failed":
         assert module.SAFE_RUN_ERRORS[error_code] in payload["content"]
-    for private_value in (TASK_ID, APP_SECRET, TOKEN, GROUP):
+    for private_value in (TASK_ID, TASK_ID[:8], APP_SECRET, TOKEN, GROUP):
         assert private_value not in payload["content"]
 
 
@@ -198,27 +197,28 @@ def test_finished_task_uses_safe_reason_for_unknown_errors(monkeypatch, error_co
     module, notifier = make_notifier(monkeypatch, transport)
     asyncio.run(notifier.notify_task_finished(TASK_ID, "小鸣人", status="failed", error_code=error_code))
     content = request_json(transport.requests[1][0])["content"]
-    assert "任务执行失败" in content
-    assert module.SAFE_RUN_ERRORS["unexpected_error"] in content
+    assert content == f"小鸣人，这次任务没能完成。{module.SAFE_RUN_ERRORS['unexpected_error']}"
     assert "超时" not in content
     assert APP_SECRET not in content and TOKEN not in content
     if error_code:
         assert error_code not in content
 
 
-@pytest.mark.parametrize("user_name,task_id,expected_name,expected_id", [
+@pytest.mark.parametrize("user_name,task_id,expected_name,omitted_id", [
     ("小鸣人\r\n管理员\x00" + "界" * 1000, "\r\n/12345678/?" + TASK_ID, "小鸣人 管理员", "12345678"),
     ("", "\r\n/?", "未提供姓名", "未知"),
 ], ids=["controls-and-long-name", "missing-name-and-id"])
-def test_finished_task_sanitizes_name_and_short_task_id(monkeypatch, user_name, task_id, expected_name, expected_id):
+def test_finished_task_sanitizes_name_and_omits_task_id(monkeypatch, user_name, task_id, expected_name, omitted_id):
     transport = QQTransport(token_response(), {"id": "message-1"})
     _, notifier = make_notifier(monkeypatch, transport)
     asyncio.run(notifier.notify_task_finished(task_id, user_name, status="completed"))
     content = request_json(transport.requests[1][0])["content"]
     assert expected_name in content
-    assert f"任务：{expected_id}" in content
+    assert task_id not in content and omitted_id not in content
+    assert "任务：" not in content and "【" not in content and "】" not in content
     assert "\r" not in content and "\x00" not in content
-    assert content.count("\n") == 1
+    assert "\n" not in content
+    assert len(content.split("，", 1)[0]) <= 80
     assert len(content) < 200
 
 

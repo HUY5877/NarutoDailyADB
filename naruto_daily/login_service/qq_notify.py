@@ -24,17 +24,12 @@ class QQNotifyError(RuntimeError):
     """A notification failure containing no credentials or external response text."""
 
 
-def _notification_identity(task_id: str, user_name: str) -> tuple[str, str]:
+def _notification_name(user_name: str) -> str:
     printable_name = "".join(
         character if character.isprintable() else " "
         for character in (user_name or "")
     )
-    name = " ".join(printable_name.split())[:80] or "未提供姓名"
-    short_id = "".join(
-        character for character in task_id
-        if character.isalnum() or character in "-_"
-    )[:8] or "未知"
-    return name, short_id
+    return " ".join(printable_name.split())[:80] or "未提供姓名"
 
 
 def _post_json(url: str, payload: dict, *, token: str = "") -> dict:
@@ -152,10 +147,13 @@ class QQGroupNotifier:
         token = await self._access_token()
         if expires_at_ms is not None and time() * 1000 >= expires_at_ms:
             raise QQNotifyError('QR code expired before notification')
-        name, short_id = _notification_identity(task_id, user_name)
-        state = "已刷新" if refreshed else "已生成"
+        name = _notification_name(user_name)
+        content = (
+            f"{name}，二维码已经刷新啦！快打开登录页面扫新的码吧～"
+            if refreshed else f"{name}，你的二维码准备好啦！快打开登录页面扫码吧～"
+        )
         await self._send_message(
-            f"【火影忍者登录】{name} 的二维码{state}，请打开登录页面扫码。\n任务：{short_id}",
+            content,
             token=token,
         )
 
@@ -166,19 +164,19 @@ class QQGroupNotifier:
         if status not in {"completed", "failed", "expired"}:
             return
 
-        name, short_id = _notification_identity(task_id, user_name)
+        name = _notification_name(user_name)
         if status == "completed":
-            result = "日常任务已全部完成。"
+            result = "日常任务全部搞定啦！辛苦啦～"
         elif status == "expired":
-            result = "任务已超时，本次任务已结束，请重新申请。"
+            result = "这次任务超时啦，重新申请后再试一次吧～"
         else:
             safe_code = error_code if error_code in SAFE_RUN_ERRORS else "unexpected_error"
-            timeout = "（超时）" if safe_code.endswith("_timeout") else ""
-            result = f"任务执行失败{timeout}。{SAFE_RUN_ERRORS[safe_code]}"
+            result = "这次任务超时啦。" if safe_code.endswith("_timeout") else "这次任务没能完成。"
+            result += SAFE_RUN_ERRORS[safe_code]
 
         token = await self._access_token()
         await self._send_message(
-            f"【火影忍者日常】{name} 的{result}\n任务：{short_id}",
+            f"{name}，{result}",
             token=token,
         )
 
