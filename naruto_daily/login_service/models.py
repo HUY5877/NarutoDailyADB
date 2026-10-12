@@ -9,6 +9,7 @@ import re
 import time
 
 from .user_options import UserOptions, parse_user_options
+from .login_types import DEFAULT_LOGIN_TYPE, parse_login_type
 
 
 UUID_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", re.IGNORECASE)
@@ -59,12 +60,13 @@ class TaskRecord:
     user_options: UserOptions = field(default_factory=parse_user_options)
     login_timeout_seconds: int | None = None
     queue_expires_at: str | None = None
+    login_type: str = DEFAULT_LOGIN_TYPE
     _qr_notifications: set[str] = field(default_factory=set, repr=False, compare=False)
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {
             "id": self.id, "status": self.status, "createdAt": self.created_at,
-            "expiresAt": self.expires_at, "simulation": True,
+            "expiresAt": self.expires_at, "simulation": True, "loginType": self.login_type,
         }
         if self.error:
             view["error"] = self.error
@@ -98,7 +100,7 @@ def parse_submission(body: object) -> TaskRecord:
         raise HttpError(400, "Expected UUID id, 64-character hex accessToken and ISO timestamps")
     expires = _validate_timestamps(created_at, expires_at)
     return TaskRecord(task_id.lower(), token, created_at, expires_at, expires,
-                      user_options=_user_options(body))
+                      user_options=_user_options(body), login_type=_login_type(body))
 
 
 def _user_options(body: dict) -> UserOptions:
@@ -106,6 +108,13 @@ def _user_options(body: dict) -> UserOptions:
         return parse_user_options(body.get("userOptions", {}))
     except ValueError:
         raise TaskValidationError("invalid_task_payload", "Invalid user options") from None
+
+
+def _login_type(body: dict) -> str:
+    try:
+        return parse_login_type(body.get("loginType", DEFAULT_LOGIN_TYPE))
+    except ValueError:
+        raise TaskValidationError("invalid_task_payload", "Invalid login type") from None
 
 
 def parse_queue_task(body: object, key_prefix: str) -> TaskRecord:
@@ -126,4 +135,4 @@ def parse_queue_task(body: object, key_prefix: str) -> TaskRecord:
     if login_timeout is not None and (type(login_timeout) is not int or login_timeout != 600):
         raise TaskValidationError("invalid_task_payload", "Invalid login occupancy timeout")
     return TaskRecord(task_id, "", created_at, expires_at, expires,
-                      user_options=_user_options(body), login_timeout_seconds=login_timeout)
+                      user_options=_user_options(body), login_timeout_seconds=login_timeout, login_type=_login_type(body))

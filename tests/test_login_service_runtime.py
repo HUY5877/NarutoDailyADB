@@ -569,7 +569,7 @@ def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_relea
                 "package": "example.game", "commandTimeout": 23,
                 "dailyConfigPath": str(runtime.config.daily_config_path),
                 "dailyTimeoutSeconds": runtime.config.daily_timeout_seconds,
-                "userOptions": {"equipmentStamina": True},
+                "userOptions": {"equipmentStamina": True}, "loginType": "android_qq",
             }
             assert spawned["command"][-2:] == ["-m", "naruto_daily.login_service.ldplayer_worker"]
             assert "REDIS_URL" not in spawned["kwargs"]["env"]

@@ -65,8 +65,8 @@ def test_worker_runs_ldplayer_and_qr_navigation_protocol(monkeypatch):
             calls.append(("launch", instance, package, deadline))
 
     class Device:
-        def __init__(self, adb_path, serial, deadline, command_timeout=20, *, game_package):
-            calls.append(("device", adb_path, serial, deadline, command_timeout, game_package))
+        def __init__(self, adb_path, serial, deadline, command_timeout=20, *, game_package, login_type):
+            calls.append(("device", adb_path, serial, deadline, command_timeout, game_package, login_type))
 
     def fetch(device):
         calls.append(("fetch", device.__class__.__name__))
@@ -93,7 +93,7 @@ def test_worker_runs_ldplayer_and_qr_navigation_protocol(monkeypatch):
         ("allocate", TASK_ID, deadline),
         ("start", "instance", deadline),
         ("launch", "instance", "com.tencent.naruto", deadline),
-        ("device", Path("C:/LDPlayer/adb.exe"), "emulator-5570", deadline, 23.0, "com.tencent.naruto"),
+        ("device", Path("C:/LDPlayer/adb.exe"), "emulator-5570", deadline, 23.0, "com.tencent.naruto", "android_qq"),
         ("fetch", "Device"),
     ]
 
@@ -292,7 +292,7 @@ def daily_dependencies(calls):
             calls.append("launch")
 
     class Device:
-        def __init__(self, adb_path, serial, deadline, command_timeout, *, game_package):
+        def __init__(self, adb_path, serial, deadline, command_timeout, *, game_package, login_type):
             assert serial == "emulator-5570"
             assert game_package == "com.tencent.naruto"
 

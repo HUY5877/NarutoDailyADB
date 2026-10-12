@@ -26,6 +26,7 @@ naruto-login-service = "naruto_daily.login_service.__main__:main"
     "login_add_account.png", "login_game_back.png", "login_other_login.png",
     "login_qr_heading.png", "login_scan_login.png", "login_web_qr_heading.png",
     "login_web_qr_instruction.png", "login_web_qr_expired.png",
+    "login_qq_ios.png", "login_wechat_android.png", "login_wechat_ios.png", "login_wechat_qr_instruction.png", "login_wechat_qr_cancel.png",
 ]
 "naruto_daily.multimodal" = ["README.md"]
 "naruto_daily.multimodal.agent" = ["README.md"]

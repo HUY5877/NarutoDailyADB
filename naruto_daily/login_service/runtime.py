@@ -487,6 +487,7 @@ class LoginRuntime:
             "dailyConfigPath": str(self.config.daily_config_path),
             "dailyTimeoutSeconds": self.config.daily_timeout_seconds,
             "userOptions": record.user_options,
+            "loginType": record.login_type,
             **({'refreshQueueKey': self.config.redis_queue_key} if record.login_timeout_seconds else {}),
         }
         return await self._run_child(

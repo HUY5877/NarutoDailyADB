@@ -21,6 +21,7 @@ from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS, DailyDeadlineEx
 
 from .log_events import forward_task_logs
 from .user_options import parse_user_options
+from .login_types import DEFAULT_LOGIN_TYPE, LOGIN_LABELS, parse_login_type
 
 
 _MAX_INPUT_BYTES = 16_384
@@ -163,6 +164,7 @@ def main(
         ) = _validate(message, clock())
         daily_options = _daily_options(message)
         user_options = parse_user_options(message.get("userOptions", {}))
+        login_type = parse_login_type(message.get("loginType", DEFAULT_LOGIN_TYPE))
         if watchdog is not None:
             watchdog.cancel()
     except Exception:
@@ -222,7 +224,7 @@ def main(
 
         phase = "qr"
         _send(output_stream, {"type": "stage", "status": "preparing_qr"})
-        device = LoginDevice(manager.adb_path, serial, deadline, command_timeout, game_package=package)
+        device = LoginDevice(manager.adb_path, serial, deadline, command_timeout, game_package=package, login_type=login_type)
         png = fetch_login_qr(device)
         if (not isinstance(png, bytes) or not png.startswith(_PNG_SIGNATURE)
                 or len(png) > _MAX_PNG_BYTES):
@@ -243,7 +245,7 @@ def main(
                     if is_authorized():
                         return
                     _send(output_stream, {'type': 'refreshing', 'requestId': request_id})
-                    logging.getLogger(__name__).info('收到本任务的刷新指令，重新获取 QQ 登录二维码')
+                    logging.getLogger(__name__).info('收到本任务的刷新指令，重新获取%s登录二维码', LOGIN_LABELS[login_type])
                     replacement = refresh_login_qr(device, is_authorized=is_authorized)
                     if replacement is not None:
                         _send(output_stream, {'type': 'qr', 'requestId': request_id,
