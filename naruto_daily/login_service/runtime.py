@@ -457,9 +457,18 @@ class LoginRuntime:
             type(index) is not int or type(total) is not int or not 0 <= index <= total <= 100_000
         ):
             raise ValueError("Invalid task log progress")
+        milestone = event.get('secretRealmCompletedAt')
+        if 'secretRealmCompletedAt' in event:
+            if (not isinstance(milestone, str) or milestone != timestamp
+                    or record.daily_started_at is None or record.daily_status != 'running_daily'
+                    or level != 'INFO'):
+                raise ValueError('Invalid secret realm completion event')
+            if record.secret_realm_completed_at is not None:
+                return
+            record.secret_realm_completed_at = milestone
         # Public logs describe stages and action boundaries. Repeated screenshot,
         # similarity, polling and ADB coordinate INFO messages remain internal.
-        if level == "INFO" and index is None:
+        if level == "INFO" and index is None and milestone is None:
             return
         if self._run_reporter is not None:
             self._run_reporter.emit(record, message=message, level=level, timestamp=timestamp,

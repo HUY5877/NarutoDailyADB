@@ -628,6 +628,94 @@ def test_parent_keeps_action_boundaries_and_warnings_but_omits_low_level_info():
     ]
 
 
+def test_secret_realm_completion_is_first_timestamp_and_does_not_change_running_status():
+    from types import SimpleNamespace
+
+    reported = []
+    runtime = SimpleNamespace(_run_reporter=SimpleNamespace(emit=lambda record, **event: reported.append(event)))
+    record = parse_queue_task(body(), 'login')
+    record.daily_started_at = 1_800_000_000.0
+    record.daily_status = 'running_daily'
+    record.execution_deadline = record.daily_started_at + 3_000
+    first = '2027-01-15T08:00:01.000Z'
+    for stamp in (first, '2027-01-15T08:00:05.000Z'):
+        LoginRuntime._accept_log(runtime, record, {
+            'type': 'log', 'time': stamp, 'level': 'INFO', 'message': '首次秘境成功结算',
+            'secretRealmCompletedAt': stamp,
+        })
+    assert record.secret_realm_completed_at == first
+    assert record.daily_status == 'running_daily'
+    assert record.execution_deadline == 1_800_003_000.0
+    assert len(reported) == 1
+
+
+@pytest.mark.parametrize('changes, started, status', [
+    ({'secretRealmCompletedAt': None}, True, 'running_daily'),
+    ({'secretRealmCompletedAt': True}, True, 'running_daily'),
+    ({'secretRealmCompletedAt': '2027-01-15T08:00:02.000Z'}, True, 'running_daily'),
+    ({'time': '2027-02-30T08:00:01.000Z', 'secretRealmCompletedAt': '2027-02-30T08:00:01.000Z'}, True, 'running_daily'),
+    ({'level': 'ERROR'}, True, 'running_daily'),
+    ({}, False, 'running_daily'), ({}, True, 'finishing_login'), ({}, True, 'failed'),
+])
+def test_invalid_or_out_of_phase_secret_completion_is_rejected(changes, started, status):
+    from types import SimpleNamespace
+
+    record = parse_queue_task(body(), 'login')
+    record.daily_started_at = 1_800_000_000.0 if started else None
+    record.daily_status = status
+    runtime = SimpleNamespace(_run_reporter=None)
+    event = {
+        'type': 'log', 'time': '2027-01-15T08:00:01.000Z', 'level': 'INFO', 'message': '秘境成功',
+        'secretRealmCompletedAt': '2027-01-15T08:00:01.000Z',
+    } | changes
+    with pytest.raises(ValueError):
+        LoginRuntime._accept_log(runtime, record, event)
+    assert record.secret_realm_completed_at is None
+
+
+@pytest.mark.parametrize('terminal, code', [
+    ('failed', 'daily_timeout'), ('failed', 'daily_failed'), ('interrupted', 'worker_stopped'),
+    ('completed', None),
+])
+def test_redis_run_preserves_secret_completion_when_execution_stops(terminal, code):
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        reporter = RedisRunReporter(cfg, queue)
+        reporter.start()
+        try:
+            record.daily_status = 'running_daily'
+            record.daily_started_at = 1_800_000_000.0
+            reporter.emit(record, status='running_daily')
+            await drain(reporter)
+            run_key, _, _ = keys(cfg, record)
+            assert 'secretRealmCompletedAt' not in json.loads(await client.get(run_key))
+            runtime = object.__new__(LoginRuntime)
+            runtime._run_reporter = reporter
+            first = '2027-01-15T08:00:01.000Z'
+            runtime._accept_log(record, {
+                'type': 'log', 'time': first, 'level': 'INFO', 'message': '秘境已成功结算',
+                'secretRealmCompletedAt': first,
+            })
+            reporter.emit(record, message='继续消耗秘境挑战券')
+            await drain(reporter)
+            running = json.loads(await client.get(run_key))
+            assert running['status'] == 'running_daily'
+            assert running['secretRealmCompletedAt'] == first
+            reporter.emit(record, status=terminal, error_code=code)
+            await drain(reporter)
+            final = json.loads(await client.get(run_key))
+            assert final['status'] == terminal
+            assert final.get('errorCode') == code
+            assert final['secretRealmCompletedAt'] == first
+            assert final['finishedAt'] is not None
+        finally:
+            await reporter.close()
+            await client.aclose()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("changes", [
     {"message": ""}, {"message": "x" * 1001}, {"time": "2026-02-30T12:00:00Z"},
     {"time": "2026-09-24T12:00:00+00:00"}, {"level": "DEBUG"},

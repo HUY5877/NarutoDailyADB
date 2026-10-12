@@ -54,6 +54,7 @@ class TaskRecord:
     qr_published: bool = False
     daily_status: str | None = None
     daily_started_at: float | None = None
+    secret_realm_completed_at: str | None = None
     daily_error_code: str | None = None
     authorized_at: float | None = None
     execution_deadline: float | None = None

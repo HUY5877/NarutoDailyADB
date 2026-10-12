@@ -167,6 +167,8 @@ class RedisRunReporter:
             state.pop("errorCode", None)
         if record.daily_started_at is not None:
             state["startedAt"] = iso_time(record.daily_started_at)
+        if record.secret_realm_completed_at is not None:
+            state.setdefault('secretRealmCompletedAt', record.secret_realm_completed_at)
         if record.authorized_at is not None:
             state["authorizedAt"] = iso_time(record.authorized_at)
         if error_code is not None:

@@ -160,6 +160,8 @@ class ProtocolLogHandler(logging.Handler):
             if type(index) is int and type(total) is int and 0 <= index <= total:
                 event["actionIndex"] = index
                 event["actionTotal"] = total
+            if getattr(record, 'secret_realm_completed', None) is True and error is None and event['level'] == 'INFO':
+                event['secretRealmCompletedAt'] = event['time']
             self._send_event(event)
         except Exception:
             # Logging is best effort, including formatting and broken output pipes.
