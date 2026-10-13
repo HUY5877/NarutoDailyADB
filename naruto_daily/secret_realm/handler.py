@@ -5,7 +5,7 @@ import logging
 import time
 from pathlib import Path
 
-from naruto_daily.battle import run_battle
+from naruto_daily.battle import BattleSummary, run_battle
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.execution import current_execution, stage_timeout
 from naruto_daily.common.visual import VisualError, find_template_in_png
@@ -171,22 +171,31 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
         client.tap(*confirmed.deploy_center)
         LOGGER.info('已点击出战，等待 %g 秒加载并检查继续挑战提示；加载完成前不再点击出战', action['load_wait_seconds'])
         wait_after_deploy(images, action, confirmed_tickets=confirmed.tickets)
-        preparation = prepare_secret_battle(images, model, action)
-        result_confirmed = preparation is BattlePreparation.FINISHED
-        if preparation is BattlePreparation.READY:
-            # 秘境结算仅停留约20秒，缩短连点窗口以便回房间前识别结束。
-            battle_summary = run_battle(client, action['battle'], template_matcher=template_matcher,
-                                        asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18,
-                                        end_detector=_ninja_selection_end)
-            # 保留战斗层的结束证据；更换忍者页仍只允许识别并点击该页返回。
-            result_confirmed = (battle_summary is not None
-                                and battle_summary.end_target != '秘境更换忍者页')
-            if (battle_summary is not None and battle_summary.end_target in {
-                    action['result_marker']['name'], action['reward_overlay']['name']}):
-                report_first_success()
-            if result_confirmed:
-                LOGGER.info('战斗层已确认结束（%s），结算优先查找返回键，未匹配则点击空白处',
-                            battle_summary.end_target)
+        preparation = BattlePreparation.READY
+
+        def check_realm(png):
+            nonlocal preparation
+            preparation = prepare_secret_battle(images, model, action, png=png)
+            if preparation is BattlePreparation.EXITED:
+                return BattleSummary(0, '秘境已主动退出')
+            if preparation is BattlePreparation.FINISHED:
+                return BattleSummary(0, '秘境已确认结束')
+            return None
+
+        # 战斗模块在首轮当前帧确认名称之后才允许连点；已结束直接交给结算。
+        battle_summary = run_battle(client, action['battle'], template_matcher=template_matcher,
+                                    asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18,
+                                    end_detector=_ninja_selection_end, before_attack=check_realm)
+        # 保留战斗层的结束证据；更换忍者页仍只允许识别并点击该页返回。
+        result_confirmed = (preparation is BattlePreparation.FINISHED or
+                            preparation is not BattlePreparation.EXITED and battle_summary is not None
+                            and battle_summary.end_target != '秘境更换忍者页')
+        if (battle_summary is not None and battle_summary.end_target in {
+                action['result_marker']['name'], action['reward_overlay']['name']}):
+            report_first_success()
+        if result_confirmed:
+            LOGGER.info('战斗层已确认结束（%s），结算优先查找返回键，未匹配则点击空白处',
+                        battle_summary.end_target)
         finish_secret_result(client, images, action,
                              exited_battle=preparation is BattlePreparation.EXITED,
                              result_confirmed=result_confirmed, on_success=report_first_success)

@@ -83,6 +83,9 @@ def test_first_success_reports_once_and_remaining_tickets_continue(
         return preparation
 
     def battle(*args, **kwargs):
+        prepared = kwargs['before_attack'](args[0].screenshot())
+        if prepared is not None:
+            return prepared
         client.frame = result_frame
         return BattleSummary(0, end_target)
 

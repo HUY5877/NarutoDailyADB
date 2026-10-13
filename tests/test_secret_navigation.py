@@ -118,6 +118,9 @@ def execute(monkeypatch, scenario):
     action['load_wait_seconds'] = 0
     monkeypatch.setattr(handler, 'MultimodalClient', lambda *a, **kw: scenario)
     def battle(*args, **kwargs):
+        prepared = kwargs['before_attack'](args[0].screenshot())
+        if prepared is not None:
+            return prepared
         if scenario.realm == '毒风秘境':
             assert scenario.reach_after is not None and scenario.moves >= scenario.reach_after, '解封前不能攻击'
             assert [e for e in scenario.events if e[0] != 'screenshot'][-1] == ('navigation', True), \
