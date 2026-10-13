@@ -371,11 +371,13 @@ def test_secret_completion_stops_real_runner_and_preserves_worker_success_protoc
         assert not any(event['type'] == 'daily_completed' for event in events)
 
 
-@pytest.mark.parametrize("options,enabled", [
-    (None, True), ({}, True), ({"equipmentStamina": True}, True), ({"equipmentStamina": False}, False),
+@pytest.mark.parametrize("options,enabled,once", [
+    (None, True, False), ({}, True, False), ({"equipmentStamina": True}, True, False),
+    ({"equipmentStamina": False}, False, False), ({'secretRealmOnce': True}, True, True),
+    ({'equipmentStamina': False, 'secretRealmOnce': True}, False, True),
 ])
 def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_login_finish(
-    monkeypatch, tmp_path, options, enabled,
+    monkeypatch, tmp_path, options, enabled, once,
 ):
     now = 1_800_000_000.0
     clock = [now]
@@ -394,7 +396,7 @@ def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_l
             assert kwargs == {
                 "config_path": config_path, "adb_path": Path("C:/LDPlayer/adb.exe"),
                 "serial": "emulator-5570", "command_timeout": 23,
-                "user_options": {"equipmentStamina": enabled},
+                "user_options": {"equipmentStamina": enabled, 'secretRealmOnce': once},
             }
             self.logged_in = False
 
@@ -445,6 +447,8 @@ def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_l
 @pytest.mark.parametrize("options", [
     None, [], False, "false", 0, {"equipmentStamina": None}, {"equipmentStamina": 0},
     {"equipmentStamina": "false"}, {"equipmentStamina": False, "unknown": True},
+    {'secretRealmOnce': None}, {'secretRealmOnce': 'false'}, {'secretRealmOnce': 0},
+    {'secretRealmOnce': 1}, {'secretRealmOnce': []}, {'secretRealmOnce': {}},
 ])
 def test_invalid_user_options_fail_before_driver_initialization(monkeypatch, options):
     loaded = []

@@ -141,8 +141,8 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
 
 
 def handle_secret_realm(client, action, *, template_matcher=find_template_in_png,
-                        asset_root=Path('.'), sleep=time.sleep):
-    """循环挑战；仅在房间确认剩余挑战券为0时正常返回，结束本次任务。"""
+                        asset_root=Path('.'), sleep=time.sleep, secret_realm_once=False):
+    """循环挑战；券为0或按用户设置完成首次成功并回房时正常返回。"""
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     _enter_room(client, images, action)
     model = MultimodalClient(action['multimodal'], asset_root=asset_root)
@@ -153,7 +153,8 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
         nonlocal first_success_reported
         if not first_success_reported:
             first_success_reported = True
-            LOGGER.info('已确认首次秘境探险成功结算，日常任务已初步完成，继续消耗剩余秘境挑战券',
+            LOGGER.info('已确认首次秘境探险成功结算，日常任务已初步完成，%s',
+                        '结算收尾后结束本次任务' if secret_realm_once else '继续消耗剩余秘境挑战券',
                         extra={'secret_realm_completed': True})
 
     while True:
@@ -203,5 +204,12 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
             LOGGER.info('已主动退出本次秘境；回房间重新读券后继续')
         else:
             completed += 1
+        if secret_realm_once and first_success_reported:
+            # 结算返回大厅时可能只刚点击建房；退出前再确认实际已回房，不再读券或出战。
+            images.wait_for(action['deploy_button'], timeout_seconds=action['timeout_seconds'],
+                            poll_seconds=action['poll_seconds'])
+            LOGGER.info('已按用户设置完成首次秘境探险并确认回房，结束本次日常任务')
+            return completed
+        if preparation is not BattlePreparation.EXITED:
             LOGGER.info('秘境第%d场已结束，等待 %g 秒刷新房间后重新读券；当前券数大于0即可继续', completed, action['post_click_wait_seconds'])
         images.sleep(action['post_click_wait_seconds'])

@@ -138,7 +138,7 @@ class DailySession:
 
     def _runner(self) -> ActionRunner:
         return ActionRunner(self.client, sleep=self._sleep, template_matcher=self._match,
-                            asset_root=self.asset_root)
+                            asset_root=self.asset_root, user_options=self.user_options)
 
     def wait_for_authorization(self, deadline: float, *, on_wait=None) -> None:
         """观察扫码后的明确页面，立即交接；按钮操作留给登录收尾。"""

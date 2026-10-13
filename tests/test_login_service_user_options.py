@@ -22,6 +22,9 @@ INVALID_OPTIONS = [
     {"equipmentStamina": None}, {"equipmentStamina": "false"},
     {"equipmentStamina": 0}, {"equipmentStamina": 1},
     {"equipmentStamina": []}, {"equipmentStamina": {}},
+    {'secretRealmOnce': None}, {'secretRealmOnce': 'false'},
+    {'secretRealmOnce': 0}, {'secretRealmOnce': 1},
+    {'secretRealmOnce': []}, {'secretRealmOnce': {}},
     {"unknownOption": True}, {"equipmentStamina": False, "unknownOption": True},
 ]
 
@@ -49,9 +52,9 @@ def parse_queue(body):
 def test_user_options_defaults_are_independent():
     first = parse_user_options()
     second = parse_user_options({})
-    assert first == second == {"equipmentStamina": True}
+    assert first == second == {"equipmentStamina": True, 'secretRealmOnce': False}
     first["equipmentStamina"] = False
-    assert second == parse_user_options() == {"equipmentStamina": True}
+    assert second == parse_user_options() == {"equipmentStamina": True, 'secretRealmOnce': False}
 
 
 @pytest.mark.parametrize("value", INVALID_OPTIONS)
@@ -63,29 +66,30 @@ def test_user_options_parser_rejects_invalid_values(value):
 @pytest.mark.parametrize("parse", [parse_queue, parse_http])
 @pytest.mark.parametrize("options", [{}, {"userOptions": {}}])
 def test_legacy_tasks_default_to_equipment_stamina_enabled(parse, options):
-    assert parse(queue_body() | options).user_options == {"equipmentStamina": True}
+    assert parse(queue_body() | options).user_options == {"equipmentStamina": True, 'secretRealmOnce': False}
 
 
 @pytest.mark.parametrize("parse", [parse_queue, parse_http])
 @pytest.mark.parametrize("enabled", [True, False])
-def test_explicit_options_are_preserved_without_sharing_input_or_records(parse, enabled):
-    supplied = {"equipmentStamina": enabled}
+@pytest.mark.parametrize('once', [True, False])
+def test_explicit_options_are_preserved_without_sharing_input_or_records(parse, enabled, once):
+    supplied = {"equipmentStamina": enabled, 'secretRealmOnce': once}
     body = queue_body() | {"userOptions": supplied}
     first, second = parse(body), parse(body)
     assert first.user_options == second.user_options == supplied
     assert first.user_options is not supplied
     assert first.user_options is not second.user_options
     first.user_options["equipmentStamina"] = not enabled
-    assert supplied == second.user_options == {"equipmentStamina": enabled}
+    assert supplied == second.user_options == {"equipmentStamina": enabled, 'secretRealmOnce': once}
 
 
 def test_task_record_defaults_do_not_share_mutable_options():
     body = queue_body()
     args = (body["id"], "", body["createdAt"], body["expiresAt"], 0)
     first, second = TaskRecord(*args), TaskRecord(*args)
-    assert first.user_options == second.user_options == {"equipmentStamina": True}
+    assert first.user_options == second.user_options == {"equipmentStamina": True, 'secretRealmOnce': False}
     first.user_options["equipmentStamina"] = False
-    assert second.user_options == {"equipmentStamina": True}
+    assert second.user_options == {"equipmentStamina": True, 'secretRealmOnce': False}
 
 
 @pytest.mark.parametrize("value", INVALID_OPTIONS)
@@ -104,8 +108,10 @@ def test_http_submission_rejects_invalid_options(value):
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-def test_runtime_passes_complete_options_to_daily_child(monkeypatch, enabled):
-    record = parse_queue(queue_body() | {"userOptions": {"equipmentStamina": enabled}})
+@pytest.mark.parametrize('once', [True, False])
+def test_runtime_passes_complete_options_to_daily_child(monkeypatch, enabled, once):
+    options = {"equipmentStamina": enabled, 'secretRealmOnce': once}
+    record = parse_queue(queue_body() | {"userOptions": options})
     config = ServiceConfig(ldplayer_console_path=Path("unused-dnconsole.exe"))
     # The runtime never starts: injected storage and child transport keep this
     # dispatch contract test entirely in memory, without devices or services.
@@ -124,10 +130,12 @@ def test_runtime_passes_complete_options_to_daily_child(monkeypatch, enabled):
     assert command[-2:] == ["-m", "naruto_daily.login_service.ldplayer_worker"]
     assert daily is True
     assert message["id"] == record.id
-    assert message["userOptions"] == {"equipmentStamina": enabled}
+    assert message["userOptions"] == options
+    assert 'secretRealmOnce' not in message
 
 
-def test_redis_claim_and_requeue_keep_disabled_equipment_stamina():
+@pytest.mark.parametrize('once', [True, False])
+def test_redis_claim_and_requeue_keep_complete_user_options(once):
     fakeredis = pytest.importorskip("fakeredis.aioredis")
     pytest.importorskip("lupa")
 
@@ -137,7 +145,8 @@ def test_redis_claim_and_requeue_keep_disabled_equipment_stamina():
             config = ServiceConfig(redis_url="redis://unused.invalid", redis_queue_key="test:options:tasks")
             queue = RedisTaskQueue(config, client=client)
             next_worker = RedisTaskQueue(config, client=client)
-            body = queue_body() | {"userOptions": {"equipmentStamina": False}}
+            options = {"equipmentStamina": False, 'secretRealmOnce': once}
+            body = queue_body() | {"userOptions": options}
             session = {
                 "id": body["id"], "status": "queued", "createdAt": body["createdAt"],
                 "expiresAt": body["expiresAt"], "simulation": True, "tokenHash": "ab" * 32,
@@ -147,13 +156,21 @@ def test_redis_claim_and_requeue_keep_disabled_equipment_stamina():
             await client.lpush(config.redis_queue_key, payload)
             record = await queue.pop()
             assert record is not None
-            assert record.user_options == {"equipmentStamina": False}
+            assert record.user_options == options
             assert await queue.requeue(record)
             assert await client.lrange(config.redis_queue_key, 0, -1) == [payload]
             reclaimed = await next_worker.pop()
             assert reclaimed is not None
-            assert reclaimed.user_options == {"equipmentStamina": False}
+            assert reclaimed.user_options == options
         finally:
             await client.aclose()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('legacy', [{}, {'equipmentStamina': True}, {'equipmentStamina': False}])
+def test_old_equipment_only_options_default_to_continuing_secret_realm(legacy):
+    assert parse_user_options(legacy) == {
+        'equipmentStamina': legacy.get('equipmentStamina', True), 'secretRealmOnce': False,
+    }
+    assert 'secretRealmOnce' not in legacy
