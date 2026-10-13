@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import threading
 import time
 from typing import Any
 from uuid import UUID, uuid4
@@ -49,9 +48,6 @@ class _ListedInstance:
 
 
 class LDPlayerManager:
-    _locks_guard = threading.Lock()
-    _locks: dict[Path, threading.RLock] = {}
-
     def __init__(
         self,
         console_path: Path,
@@ -75,8 +71,6 @@ class LDPlayerManager:
         self.state_dir = Path(state_dir)
         self.command_timeout = float(command_timeout)
         self._state_path = (self.state_dir / "bindings.json").resolve()
-        with self._locks_guard:
-            self._lock = self._locks.setdefault(self._state_path, threading.RLock())
 
     @staticmethod
     def _task(task_id: str) -> tuple[str, str]:
@@ -136,9 +130,8 @@ class LDPlayerManager:
 
     @contextmanager
     def _exclusive(self, deadline: float):
-        remaining = self._remaining(deadline)
-        if not self._lock.acquire(timeout=remaining):
-            raise LDPlayerError("The LDPlayer operation deadline expired while waiting for the manager lock.")
+        """Serialize threads and processes through separately opened file handles."""
+        self._remaining(deadline)
         handle = None
         locked = False
         try:
@@ -195,7 +188,6 @@ class LDPlayerManager:
                     except OSError:
                         pass
                 handle.close()
-            self._lock.release()
 
     def _list(self, deadline: float) -> list[_ListedInstance]:
         output = self._run([self.console_path, "list2"], deadline, "instance listing")

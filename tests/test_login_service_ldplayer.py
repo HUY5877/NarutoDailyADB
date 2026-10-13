@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import json
 import multiprocessing
 from pathlib import Path
@@ -426,6 +427,54 @@ def test_allocate_serializes_concurrent_requests_for_same_task(tmp_path, monkeyp
 
     assert results == [LDPlayerInstance(NAME, 8, None)] * 2
     assert fake.copy_count == 1
+
+
+def test_three_threads_allocate_distinct_pool_slots_without_losing_bindings(tmp_path, monkeypatch):
+    console = tmp_path / "LDPlayer9" / "ldconsole.exe"
+    fake = FakeLDPlayer(console)
+    fake.instances = {f"pool-{index}": [index, 0] for index in range(3)}
+    monkeypatch.setattr("naruto_daily.login_service.ldplayer.subprocess.run", fake)
+    services = [LDPlayerManager(console, "", tmp_path / "state", pool_indices=(0, 1, 2))
+                for _ in range(3)]
+    task_ids = [TASK_ID, "22222222-2222-4222-8222-222222222222",
+                "33333333-3333-4333-8333-333333333333"]
+    gate = threading.Barrier(3)
+    save_state = LDPlayerManager._save_state
+
+    def delayed_save(service, bindings):
+        # Make stale-snapshot overwrites observable if state access is not exclusive.
+        time.sleep(0.02)
+        save_state(service, bindings)
+
+    monkeypatch.setattr(LDPlayerManager, "_save_state", delayed_save)
+
+    def allocate(pair):
+        service, task_id = pair
+        gate.wait(timeout=5)
+        return service.allocate(task_id, time.time() + 5)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        instances = list(executor.map(allocate, zip(services, task_ids)))
+
+    assert {instance.index for instance in instances} == {0, 1, 2}
+    bindings = json.loads((tmp_path / "state" / "bindings.json").read_text("utf-8"))["bindings"]
+    assert set(bindings) == set(task_ids)
+    assert {binding["index"] for binding in bindings.values()} == {0, 1, 2}
+
+
+def test_waiting_for_another_thread_obeys_deadline_and_releases_lock(tmp_path):
+    console = tmp_path / "LDPlayer9" / "ldconsole.exe"
+    holder = LDPlayerManager(console, "clean-template", tmp_path / "state")
+    contender = LDPlayerManager(console, "clean-template", tmp_path / "state")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with holder._exclusive(time.time() + 5):
+            waiting = executor.submit(contender.allocate, TASK_ID, time.time() + 0.05)
+            with pytest.raises(LDPlayerError, match="deadline"):
+                waiting.result(timeout=2)
+        # A timed-out waiter must not leave the state locked for later operations.
+        with contender._exclusive(time.time() + 5):
+            assert not (tmp_path / "state" / "bindings.json").exists()
 
 
 def test_allocate_serializes_copy_and_preserves_bindings_across_processes(tmp_path):
