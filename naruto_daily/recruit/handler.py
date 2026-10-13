@@ -118,6 +118,48 @@ def _click_confirmed_target(
         images.sleep(delay)
 
 
+def _confirm_recruit_result(
+    client, action: dict, *, images: ImageRecognition,
+    timeout_seconds: float, poll_seconds: float,
+    pre_click_wait: float, post_click_wait: float,
+) -> bool:
+    """忍者展示是可选的第一层，普通结果确定是必需的最后一层。"""
+    options = dict(images=images, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+                   pre_click_wait=pre_click_wait, post_click_wait=post_click_wait)
+    result_target = action["result_confirm"]
+    if "ninja_result_confirm" not in action:
+        return _click_confirmed_target(client, result_target, **options)
+
+    targets = [action["ninja_result_confirm"], result_target]
+    deadline = images.elapsed + stage_timeout(timeout_seconds)
+    while images.elapsed < deadline:
+        LOGGER.info('识别招募结果页面：获得忍者时先关闭展示页，再关闭普通结果页')
+        index, _ = images.either(targets, deadline=deadline)
+        if index is not None:
+            images.sleep(pre_click_wait)
+            if images.elapsed >= deadline:
+                break
+            # 点击前同时复查两层，页面切换时按最新截图选择按钮。
+            index, results = images.either(targets, deadline=deadline)
+            if images.elapsed >= deadline:
+                break
+            if index is not None:
+                center, score = results[index]
+                LOGGER.info('再次确认%s，相似度 %.3f，点击坐标：(%d, %d)',
+                            targets[index]['name'], score, *center)
+                client.tap(*center)
+                images.sleep(post_click_wait)
+                if len(targets) == 2 and index == 0:
+                    LOGGER.info('获得忍者展示页已关闭，等待招募结果动画结束，再确认普通结果页')
+                    targets = [result_target]
+                    continue
+                return True
+        if images.elapsed >= deadline:
+            break
+        images.sleep(min(poll_seconds, deadline - images.elapsed))
+    raise VisualError('等待招募结果最终确定按钮超时，未完成结果确认')
+
+
 def handle_free_recruit(
     client, action: dict, *, template_matcher: Callable = find_template_in_png,
     asset_root: Path = Path("."), sleep: Callable[[float], None] = time.sleep,
@@ -162,7 +204,7 @@ def handle_free_recruit(
         if not click_free_recruit(client, action["free_button"], category=name, guard=guard,
                                   model=model, max_calls=action["multimodal"]["max_calls"], **options):
             continue
-        _click_confirmed_target(client, action["result_confirm"], **options)
+        _confirm_recruit_result(client, action, **options)
         clicks[key] = 1
         LOGGER.info("%s免费次数处理完成", name)
     return RecruitSummary(clicks["advanced"], clicks["ordinary"])
