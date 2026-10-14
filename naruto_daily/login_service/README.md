@@ -94,9 +94,13 @@ worker 在任务开始时从自己的有效 Redis 会话读取 `userId`，通过
 
 固定池的 `bindings.json` 使用版本 2，`bindings` 按实例编号保存，例如配置 `LDPLAYER_POOL_INDICES=0,2` 时只有 `"0"` 和 `"2"` 两个元素。每个元素保存本机实际实例名、ADB serial、当前 `taskId` 和 `state`；空闲为 `idle`，分配后为 `reserved`，二维码发布后为 `qr_ready`。关闭完成后恢复 `idle` 并清空 `taskId`，不累计已结束任务。任务历史和重新领取资格由 Redis 管理，旧任务的迟到清理不会操作已分配给新任务的实例。
 
-实例编号来自每台电脑自己的 `.env`，名称从雷电 `list2` 读取，serial 在启动时查询；新电脑会自动生成本机状态文件，不需要复制其他电脑的 `bindings.json`。首次读取旧版状态时，在文件锁内自动迁移：保留正在占用的任务，合并已释放历史。修改池配置时可以删除空闲槽位或加入新实例；移除仍被占用的实例、占用记录冲突或实例被改名时会报错并保留原文件。升级前应正常停止旧 worker，再启动更新后的服务；旧进程不能继续使用新版状态格式。
+配置固定池后，通过 `启动扫码服务.cmd` 启动时，服务入口先读取本机 `.env` 和进程环境中的 `LDPLAYER_POOL_INDICES`、雷电控制台路径与状态目录，查询 `ldconsole list2` 确认实际实例，再覆盖 `bindings.json`：只保留本机配置的编号和实际名称，每个槽位统一为 `idle`，`taskId` 和 `serial` 均为 `null`。这一步在 Cloudflare、模型网关和 Redis 配置加载之前完成，不依赖云配置。实例编号和名称不硬编码，serial 在任务启动实例时查询；新电脑无需复制其他电脑的绑定文件。
 
-若旧服务器已停止 worker、确认实例没有正在执行的任务，也可以用仓库根目录的 `bindings.json` 全空闲模板直接替换本机 `${LDPLAYER_STATE_DIR}/bindings.json`。默认状态目录可执行 `Copy-Item -LiteralPath .\bindings.json -Destination .\.data\login-service\ldplayer\bindings.json -Force`；自定义状态目录需改成该机器的实际路径。模板预置 `0`–`31`，全部为 `idle`，没有任务归属或 serial；首次读取时只保留本机配置的编号，自动补齐模板之外的配置编号，并从本机雷电填入实际名称。多余编号不会触发模拟器操作。替换会清空原有占用归属，因此正在执行任务时应使用自动迁移，不能覆盖为空闲模板。
+启动重置只在服务启动入口执行，任务子 worker、领取任务和 `pool_admin list` 不执行；查看或领取不会把现有占用清空。升级前应正常停止旧服务，再使用启动入口运行更新后的服务。
+
+单独使用实例池管理器读取旧版状态时，仍在文件锁内自动迁移并保留正在占用的任务，合并已释放历史；移除仍被占用的实例、占用记录冲突或实例被改名时会报错并保留原文件。这是管理器读取状态的兼容行为，与服务启动入口重建空闲槽位不同。
+
+仓库根目录的 `bindings.json` 全空闲模板可保留作手动初始化参考，正常启动无需人工替换。若要手动覆盖 `${LDPLAYER_STATE_DIR}/bindings.json`，须先停止 worker、确认实例没有正在执行的任务，并核对本机实际状态目录；模板的预置编号不限制本机 `LDPLAYER_POOL_INDICES` 配置。
 
 客户端在其自己的环境中启动或部署。Python worker 所在机器需要能够连接 Redis 和 OSS，并在网站处理登录申请期间保持运行。网站/Vercel 和 Python 使用同一 Redis、数据库、队列、OSS Bucket、地域及对象前缀；客户端不需要配置指向本机 Python 的 `LOGIN_SERVICE_URL`。
 

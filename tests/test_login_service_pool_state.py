@@ -331,3 +331,80 @@ def test_cleanup_refuses_to_release_owner_if_instance_changes_after_quit(tmp_pat
         "日常登录甲", task_id=TASK_ID, state="qr_ready",
     )
     assert fake.calls.count((fake.console, "quit", "--name", "日常登录甲")) == 1
+
+
+@pytest.mark.parametrize("old_state", ["legacy", "conflicting", "broken", "missing"])
+def test_reset_pool_rebuilds_idle_slots_without_parsing_old_state(tmp_path, monkeypatch, old_state):
+    service, fake = fake_pool(tmp_path, monkeypatch)
+    fake.instances["日常登录甲"][1] = 1
+    fake.instances["手机 - 备用乙"][1] = 2
+    before_instances = {name: values[:] for name, values in fake.instances.items()}
+    if old_state == "legacy":
+        write_state(tmp_path, {"bindings": {
+            TASK_ID: legacy_binding(99, "以前服务器上的实例", "qr_ready", "emulator-9999"),
+        }})
+    elif old_state == "conflicting":
+        write_state(tmp_path, {"version": 2, "bindings": {
+            "4": slot("以前的名字", task_id=TASK_ID, state="reserved"),
+            "17": slot("另一个旧名字", task_id=TASK_ID, state="qr_ready"),
+        }})
+    elif old_state == "broken":
+        state_path(tmp_path).parent.mkdir()
+        state_path(tmp_path).write_bytes(b"\xff{broken old state")
+
+    service.reset_pool()
+
+    assert read_state(tmp_path) == {
+        "version": 2,
+        "bindings": {
+            "4": slot("日常登录甲"),
+            "17": slot("手机 - 备用乙"),
+            "39": slot("现有实例丙"),
+        },
+    }
+    assert fake.instances == before_instances
+    assert fake.calls == [(fake.console, "list2")]
+    assert not list((tmp_path / "state").glob(".bindings-*.tmp"))
+
+
+def test_reset_pool_missing_instance_preserves_original_state(tmp_path, monkeypatch):
+    service, fake = fake_pool(tmp_path, monkeypatch)
+    original = write_state(tmp_path, {"version": 2, "bindings": {
+        "4": slot("日常登录甲", task_id=TASK_ID, state="qr_ready", serial="emulator-5784"),
+    }})
+    del fake.instances["现有实例丙"]
+
+    with pytest.raises(LDPlayerError, match="unavailable"):
+        service.reset_pool()
+
+    assert state_path(tmp_path).read_bytes() == original
+    assert fake.calls == [(fake.console, "list2")]
+
+
+def test_reset_pool_rejects_clone_manager_without_device_operations(tmp_path, monkeypatch):
+    _, fake = fake_pool(tmp_path, monkeypatch)
+    service = LDPlayerManager(Path(fake.console), "clone-template", tmp_path / "state")
+
+    with pytest.raises(LDPlayerError, match="fixed pool"):
+        service.reset_pool()
+
+    assert not fake.calls
+    assert not state_path(tmp_path).exists()
+
+
+def test_new_manager_and_task_allocation_do_not_reset_existing_owner(tmp_path, monkeypatch):
+    service, fake = fake_pool(tmp_path, monkeypatch)
+    service.allocate(TASK_ID, time.time() + 10)
+    service.mark_ready(TASK_ID)
+    original = state_path(tmp_path).read_bytes()
+    calls_before = len(fake.calls)
+
+    restarted = LDPlayerManager(Path(fake.console), "", tmp_path / "state",
+                               pool_indices=(4, 17, 39))
+
+    assert state_path(tmp_path).read_bytes() == original
+    assert len(fake.calls) == calls_before
+    assert restarted.allocate(SECOND_TASK, time.time() + 10).index == 17
+    assert read_state(tmp_path)["bindings"]["4"] == slot(
+        "日常登录甲", task_id=TASK_ID, state="qr_ready",
+    )

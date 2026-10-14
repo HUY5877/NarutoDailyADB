@@ -279,6 +279,25 @@ class LDPlayerManager:
                 pass
             raise LDPlayerError("Could not save LDPlayer binding state; check the state directory.") from None
 
+    def reset_pool(self) -> None:
+        """Rebuild idle slots for an explicitly started worker, ignoring old task state."""
+        if not self.pool_indices:
+            raise LDPlayerError("Only a configured LDPlayer fixed pool can be reset.")
+        deadline = time.time() + self.command_timeout
+        with self._exclusive(deadline):
+            rows_by_index = {row.index: row for row in self._list(deadline)}
+            bindings: dict[str, dict[str, Any]] = {}
+            for index in self.pool_indices:
+                row = rows_by_index.get(index)
+                if row is None:
+                    raise LDPlayerError(
+                        "Configured LDPlayer pool instance is unavailable; check this machine's pool indices."
+                    )
+                bindings[str(index)] = {
+                    "name": row.name, "serial": None, "taskId": None, "state": "idle",
+                }
+            self._save_state(bindings, pool=True)
+
     def _pool_state(self, deadline: float) -> tuple[dict[str, dict[str, Any]], list[_ListedInstance]]:
         """Read/migrate slots while the caller holds bindings.lock; never discard an active owner."""
         try:

@@ -230,9 +230,9 @@ DAILY_CONFIG_PATH=config.example.json
 - 每个实例预装游戏并完成资源更新，交给 worker 前退出已有账号到登录页并停止实例；不要让实例池接管正在手动游玩的实例。worker 会启动、操作并在结束后关闭它们，不删除池实例；同一个实例不能同时交给多个任务或人工操作。
 - worker 使用控制台同目录下的 `adb.exe`，并以分配实例的 serial 和 ADB 路径覆盖日常 JSON 的对应字段。
 - `DAILY_CONFIG_PATH` 使用默认值 `config.example.json`，任务改动直接维护该文件。任务 JSON 和完整 `assets/` 必须同时保留。
-- 状态目录默认 `.data/login-service/ldplayer`，不要删除它来强行解除占用。只查看占用可运行下面的 `list`；释放实例是另一个操作，应核实具体任务后按模块文档处理。
-- 固定池的 `bindings.json` 按本机配置的实例编号保存当前状态，空闲槽位为 `idle`、`taskId: null`，不会随历史任务数量增长。编号来自本机 `.env`，名称和 serial 从本机雷电读取；新电脑自动生成状态，不复制其他电脑的状态目录。旧版按任务 ID 保存的记录会自动迁移，正在占用的任务不会被当作历史删除；升级时先正常停止旧 worker。
-- 仓库根目录 `bindings.json` 是全空闲迁移模板，可在旧 worker 已停止且实例没有执行任务时，复制覆盖该机器 `${LDPLAYER_STATE_DIR}/bindings.json`；自定义状态目录必须核对实际路径。模板预置 `0`–`31`，多余编号会按本机池配置裁剪，缺少的配置编号自动补齐；不要在有任务占用时用模板清空归属。
+- 状态目录默认 `.data/login-service/ldplayer`，无需手动删除或替换绑定文件。通过 `启动扫码服务.cmd` 启动时，服务入口先读取本机 `.env` 和进程环境中的 `LDPLAYER_POOL_INDICES`、雷电控制台路径与状态目录，查询 `ldconsole list2` 确认实际实例，再覆盖为全空闲槽位：`state: idle`、`taskId: null`、`serial: null`。这一步在 Cloudflare、模型网关和 Redis 配置加载之前完成，不硬编码实例编号或名称；serial 在任务启动实例时查询。
+- 固定池的 `bindings.json` 按实例编号保存当前状态，不随历史任务数量增长。任务子 worker、领取任务和下面的 `list` 命令不执行启动重置；单独使用实例池管理器读取旧版状态时仍会自动迁移并保留正在占用任务的归属。升级前先正常停止旧服务。
+- 仓库根目录的全空闲 `bindings.json` 模板仅供可选手动初始化，正常使用启动入口无需复制；手动替换须先停止 worker、确认实例没有任务并核对实际状态目录。新电脑直接按本机配置初始化，不复制其他电脑的状态目录。
 
 ```powershell
 .\.venv\Scripts\python.exe -m naruto_daily.login_service.pool_admin list

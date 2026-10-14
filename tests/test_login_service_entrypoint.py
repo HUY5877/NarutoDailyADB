@@ -15,6 +15,8 @@ from naruto_daily.login_service import config as service_config
 @pytest.fixture(autouse=True)
 def isolated_entrypoint(monkeypatch):
     monkeypatch.delenv("REDIS_URL", raising=False)
+    for name in ("EMULATOR_DRIVER", "LDPLAYER_POOL_INDICES", "LDPLAYER_CONSOLE_PATH", "LDPLAYER_STATE_DIR"):
+        monkeypatch.delenv(name, raising=False)
 
     def unexpected_web_start(*args, **kwargs):
         pytest.fail("The worker entrypoint must never initialize a local web service")
@@ -152,3 +154,104 @@ def test_missing_channels_fails_at_startup_before_worker_runs(tmp_path, monkeypa
         entrypoint.main([])
     assert error.value.code == 1
     assert 'YUWAN_API_KEY' in caplog.text
+
+
+def test_cmd_entrypoint_resets_local_pool_before_cloud_config_and_worker(tmp_path, monkeypatch):
+    import json
+    from naruto_daily.login_service.ldplayer import LDPlayerManager
+    from naruto_daily.multimodal import gateway
+
+    console = tmp_path / "LDPlayer9" / "ldconsole.exe"
+    console.parent.mkdir()
+    console.write_bytes(b"")
+    env_file = tmp_path / "machine.env"
+    env_file.write_text(
+        "EMULATOR_DRIVER=ldplayer\nLDPLAYER_CONSOLE_PATH=LDPlayer9/ldconsole.exe\n"
+        "LDPLAYER_POOL_INDICES=4,17\nLDPLAYER_STATE_DIR=machine-state\n", encoding="utf-8-sig",
+    )
+    path = tmp_path / "machine-state" / "bindings.json"
+    path.parent.mkdir()
+    path.write_text("corrupted old bindings", encoding="utf-8")
+    events = []
+
+    def list_only(manager, arguments, _deadline, action):
+        assert arguments == [console.resolve(), "list2"]
+        assert action == "instance listing"
+        events.append("list2")
+        return b"4,phone-a,0,0,1,0,0\n17,phone-b,0,0,0,0,0\n99,other-phone,0,0,0,0,0\n"
+
+    def initialize(actual_path):
+        assert actual_path == env_file
+        assert json.loads(path.read_text("utf-8")) == {
+            "version": 2, "bindings": {
+                "4": {"name": "phone-a", "serial": None, "taskId": None, "state": "idle"},
+                "17": {"name": "phone-b", "serial": None, "taskId": None, "state": "idle"},
+            },
+        }
+        events.append("cloud")
+        monkeypatch.setenv("REDIS_URL", "redis://test.invalid/0")
+
+    def config():
+        events.append("config")
+        return SimpleNamespace(redis_url="redis://test.invalid/0")
+
+    async def run(config):
+        events.append("worker")
+
+    monkeypatch.setattr(LDPlayerManager, "_run", list_only)
+    monkeypatch.setattr(entrypoint.environment, "initialize_environment", initialize)
+    monkeypatch.setattr(service_config, "load_config", config)
+    monkeypatch.setattr(gateway, "initialize_gateway", lambda: events.append("gateway"))
+    monkeypatch.setattr(entrypoint, "run_worker", run)
+
+    entrypoint.main(["--env-file", str(env_file)])
+
+    assert events == ["list2", "cloud", "config", "gateway", "worker"]
+    # A new invocation of the same command also clears a previous task owner.
+    path.write_text("stale bindings from the previous process", encoding="utf-8")
+    entrypoint.main(["--env-file", str(env_file)])
+    assert events == ["list2", "cloud", "config", "gateway", "worker"] * 2
+
+
+def test_pool_startup_process_environment_overrides_local_file(tmp_path, monkeypatch):
+    from naruto_daily.login_service.ldplayer import LDPlayerManager
+
+    console = tmp_path / "ldconsole.exe"
+    console.write_bytes(b"")
+    env_file = tmp_path / "machine.env"
+    env_file.write_text("EMULATOR_DRIVER=mock\nLDPLAYER_POOL_INDICES=0,1\n", encoding="utf-8")
+    monkeypatch.setenv("EMULATOR_DRIVER", "ldplayer")
+    monkeypatch.setenv("LDPLAYER_POOL_INDICES", "4, 39")
+    monkeypatch.setenv("LDPLAYER_CONSOLE_PATH", str(console))
+    monkeypatch.setenv("LDPLAYER_STATE_DIR", "custom-state")
+    managers = []
+    monkeypatch.setattr(LDPlayerManager, "reset_pool", lambda manager: managers.append(manager))
+
+    entrypoint.reset_pool_on_startup(env_file)
+
+    assert len(managers) == 1
+    assert managers[0].pool_indices == (4, 39)
+    assert managers[0].state_dir == tmp_path / "custom-state"
+
+
+@pytest.mark.parametrize("indices", ["", "4,x", "4,4"])
+def test_invalid_or_empty_pool_startup_does_not_call_device(tmp_path, monkeypatch, indices):
+    from naruto_daily.login_service.ldplayer import LDPlayerError, LDPlayerManager
+
+    console = tmp_path / "ldconsole.exe"
+    console.write_bytes(b"")
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        f"EMULATOR_DRIVER=ldplayer\nLDPLAYER_POOL_INDICES={indices}\n"
+        f"LDPLAYER_CONSOLE_PATH={console}\n", encoding="utf-8",
+    )
+
+    def unexpected_reset(manager):
+        pytest.fail("Invalid or empty indices must not reach pool/device reset")
+
+    monkeypatch.setattr(LDPlayerManager, "reset_pool", unexpected_reset)
+    if indices:
+        with pytest.raises((entrypoint.environment.EnvironmentConfigError, LDPlayerError)):
+            entrypoint.reset_pool_on_startup(env_file)
+    else:
+        entrypoint.reset_pool_on_startup(env_file)
