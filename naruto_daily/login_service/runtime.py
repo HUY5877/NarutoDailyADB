@@ -689,9 +689,6 @@ class LoginRuntime:
     def _mark_ldplayer_ready(self, task_id: str) -> None:
         self._ldplayer_manager().mark_ready(task_id)
 
-    def _prepare_ldplayer_retry(self, task_id: str) -> None:
-        self._ldplayer_manager().prepare_retry(task_id)
-
     async def _cleanup_ldplayer(self, task_id: str) -> bool:
         try:
             await asyncio.to_thread(self._close_ldplayer, task_id)
@@ -724,17 +721,14 @@ class LoginRuntime:
             logger.info("Task %s: 失败现场保留时间已到，开始关闭模拟器", record.id)
 
     async def _release_and_requeue(self, record: TaskRecord) -> bool:
+        if (record.qr_published or record.authorized_at is not None
+                or record.daily_started_at is not None):
+            return False
         self._set_daily_status(record, "interrupted", error_code="worker_stopped")
         if self.config.emulator_driver == "ldplayer":
             if not await self._cleanup_ldplayer(record.id):
                 self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
                 return False
-            if self.config.ldplayer_pool_indices:
-                try:
-                    await asyncio.to_thread(self._prepare_ldplayer_retry, record.id)
-                except Exception:
-                    logger.warning("Could not prepare LDPlayer pool task %s for retry", record.id)
-                    return False
         if self._run_reporter is not None:
             self._run_reporter.emit(
                 record, status="interrupted", error_code="worker_stopped", level="WARNING",
@@ -942,6 +936,10 @@ class LoginRuntime:
             if child is not None:
                 self._kill(child)
             interruption_reported = False
+            requeue_on_exit = requeue_on_exit and not (
+                record.qr_published or record.authorized_at is not None
+                or record.daily_started_at is not None
+            )
             if requeue_on_exit:
                 interruption_reported = await self._release_and_requeue(record)
             elif self.config.emulator_driver == "ldplayer" and not keep_ldplayer:

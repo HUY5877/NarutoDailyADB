@@ -167,10 +167,10 @@ def test_pool_allocates_distinct_fixed_instances_and_reports_full(tmp_path, monk
         service.allocate(third_task, time.time() + 10)
     assert not any(call[1] in {"copy", "rename", "remove"} for call in fake.calls if call[0] == fake.console)
     bindings = json.loads((tmp_path / "state" / "bindings.json").read_text("utf-8"))["bindings"]
-    assert bindings[TASK_ID] == {
-        "index": 0, "mode": "pool", "name": "existing-zero", "serial": None, "state": "reserved",
+    assert bindings["0"] == {
+        "name": "existing-zero", "serial": None, "state": "reserved", "taskId": TASK_ID,
     }
-    assert bindings[second_task]["index"] == 2
+    assert bindings["2"]["taskId"] == second_task
 
 
 def test_pool_ready_binding_survives_restart_and_remains_reserved(tmp_path, monkeypatch):
@@ -186,7 +186,7 @@ def test_pool_ready_binding_survives_restart_and_remains_reserved(tmp_path, monk
     assert restarted.allocate(TASK_ID, time.time() + 10) == instance
     assert not restarted.has_capacity()
     state = json.loads((tmp_path / "state" / "bindings.json").read_text("utf-8"))
-    assert state["bindings"][TASK_ID]["state"] == "qr_ready"
+    assert state["bindings"]["0"]["state"] == "qr_ready"
     assert not any(call[1] == "quit" for call in fake.calls if call[0] == fake.console)
 
 
@@ -203,60 +203,30 @@ def test_pool_close_releases_only_after_quit_and_old_task_cannot_reacquire_taken
     assert service.has_capacity()
     second_task = "22222222-2222-4222-8222-222222222222"
     assert service.allocate(second_task, time.time() + 10).index == 0
-    with pytest.raises(LDPlayerError, match="released"):
+    with pytest.raises(LDPlayerPoolFull):
         service.allocate(TASK_ID, time.time() + 10)
     bindings = json.loads((tmp_path / "state" / "bindings.json").read_text("utf-8"))["bindings"]
-    assert bindings[TASK_ID]["state"] == "released"
-    assert bindings[second_task]["state"] == "reserved"
+    assert set(bindings) == {"0"}
+    assert bindings["0"]["state"] == "reserved"
+    assert bindings["0"]["taskId"] == second_task
 
 
-def test_prepare_retry_allows_only_closed_unready_task_to_rent_again(tmp_path, monkeypatch):
+@pytest.mark.parametrize("qr_ready", [False, True])
+def test_pool_release_clears_owner_without_retaining_task_history(tmp_path, monkeypatch, qr_ready):
     console = tmp_path / "LDPlayer9" / "ldconsole.exe"
     fake = FakeLDPlayer(console)
     fake.instances = {"existing-zero": [0, 1]}
     service = pool_manager(tmp_path, monkeypatch, fake, (0,))
     service.allocate(TASK_ID, time.time() + 10)
+    if qr_ready:
+        service.mark_ready(TASK_ID)
     service.close(TASK_ID)
 
-    service.prepare_retry(TASK_ID)
-    service.prepare_retry(TASK_ID)
-
     assert service.has_capacity()
-    binding = json.loads((tmp_path / "state" / "bindings.json").read_text("utf-8"))["bindings"][TASK_ID]
-    assert binding["state"] == "retryable"
-    assert binding["releasedFrom"] == "reserved"
-    retried = service.allocate(TASK_ID, time.time() + 10)
-    assert retried == LDPlayerInstance("existing-zero", 0, None, TASK_ID)
-    binding = json.loads((tmp_path / "state" / "bindings.json").read_text("utf-8"))["bindings"][TASK_ID]
-    assert binding["state"] == "reserved"
-    assert "releasedFrom" not in binding
-
-
-def test_prepare_retry_refuses_task_that_already_published_qr(tmp_path, monkeypatch):
-    console = tmp_path / "LDPlayer9" / "ldconsole.exe"
-    fake = FakeLDPlayer(console)
-    fake.instances = {"existing-zero": [0, 0]}
-    service = pool_manager(tmp_path, monkeypatch, fake, (0,))
-    service.allocate(TASK_ID, time.time() + 10)
-    service.mark_ready(TASK_ID)
-    service.close(TASK_ID)
-
-    with pytest.raises(LDPlayerError, match="ready"):
-        service.prepare_retry(TASK_ID)
-    with pytest.raises(LDPlayerError, match="released"):
-        service.allocate(TASK_ID, time.time() + 10)
-
-
-def test_prepare_retry_is_idempotent_before_a_pool_binding_exists(tmp_path, monkeypatch):
-    console = tmp_path / "LDPlayer9" / "ldconsole.exe"
-    fake = FakeLDPlayer(console)
-    fake.instances = {"existing-zero": [0, 0]}
-    service = pool_manager(tmp_path, monkeypatch, fake, (0,))
-
-    service.prepare_retry(TASK_ID)
-
-    assert service.has_capacity()
-    assert not (tmp_path / "state" / "bindings.json").exists()
+    bindings = json.loads((tmp_path / "state" / "bindings.json").read_text("utf-8"))["bindings"]
+    assert bindings == {"0": {"name": "existing-zero", "serial": None, "taskId": None, "state": "idle"}}
+    next_task = "22222222-2222-4222-8222-222222222222"
+    assert service.allocate(next_task, time.time() + 10) == LDPlayerInstance("existing-zero", 0, None, next_task)
 
 
 def test_old_pool_instance_object_cannot_control_slot_after_reassignment(tmp_path, monkeypatch):
@@ -276,7 +246,7 @@ def test_old_pool_instance_object_cannot_control_slot_after_reassignment(tmp_pat
     calls_before_old_launch = len(fake.calls)
     with pytest.raises(LDPlayerError, match="owner"):
         service.launch_game(old_instance, "com.tencent.naruto", time.time() + 10)
-    assert len(fake.calls) == calls_before_old_launch
+    assert fake.calls[calls_before_old_launch:] == [(fake.console, "list2")]
 
     assert service.start(current_instance, time.time() + 10) == "emulator-5570"
     current_instance.serial = None  # persisted binding serial is an equivalent trusted source
@@ -441,10 +411,10 @@ def test_three_threads_allocate_distinct_pool_slots_without_losing_bindings(tmp_
     gate = threading.Barrier(3)
     save_state = LDPlayerManager._save_state
 
-    def delayed_save(service, bindings):
+    def delayed_save(service, bindings, **options):
         # Make stale-snapshot overwrites observable if state access is not exclusive.
         time.sleep(0.02)
-        save_state(service, bindings)
+        save_state(service, bindings, **options)
 
     monkeypatch.setattr(LDPlayerManager, "_save_state", delayed_save)
 
@@ -458,8 +428,8 @@ def test_three_threads_allocate_distinct_pool_slots_without_losing_bindings(tmp_
 
     assert {instance.index for instance in instances} == {0, 1, 2}
     bindings = json.loads((tmp_path / "state" / "bindings.json").read_text("utf-8"))["bindings"]
-    assert set(bindings) == set(task_ids)
-    assert {binding["index"] for binding in bindings.values()} == {0, 1, 2}
+    assert set(bindings) == {"0", "1", "2"}
+    assert {binding["taskId"] for binding in bindings.values()} == set(task_ids)
 
 
 def test_waiting_for_another_thread_obeys_deadline_and_releases_lock(tmp_path):

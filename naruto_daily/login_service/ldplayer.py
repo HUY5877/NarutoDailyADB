@@ -24,6 +24,15 @@ _SERIAL = re.compile(r"[A-Za-z0-9._:-]+")
 _SIZE = re.compile(r"(\d+)x(\d+)")
 
 
+def _binding_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate binding key")
+        result[key] = value
+    return result
+
+
 class LDPlayerError(RuntimeError):
     """A safe, actionable LDPlayer failure suitable for task status output."""
 
@@ -222,7 +231,7 @@ class LDPlayerManager:
         if not self._state_path.exists():
             return {}
         try:
-            document = json.loads(self._state_path.read_text("utf-8"))
+            document = json.loads(self._state_path.read_text("utf-8"), object_pairs_hook=_binding_object)
             bindings = document["bindings"]
             if not isinstance(bindings, dict):
                 raise ValueError
@@ -252,11 +261,12 @@ class LDPlayerManager:
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError, LDPlayerError):
             raise LDPlayerError("LDPlayer binding state is invalid; restore the service state backup.") from None
 
-    def _save_state(self, bindings: dict[str, dict[str, Any]]) -> None:
+    def _save_state(self, bindings: dict[str, dict[str, Any]], *, pool: bool = False) -> None:
         try:
             self.state_dir.mkdir(parents=True, exist_ok=True)
             temporary = self.state_dir / f".bindings-{uuid4().hex}.tmp"
-            payload = json.dumps({"bindings": bindings}, sort_keys=True, separators=(",", ":"))
+            document = {"version": 2, "bindings": bindings} if pool else {"bindings": bindings}
+            payload = json.dumps(document, ensure_ascii=not pool, sort_keys=True, separators=(",", ":"))
             with temporary.open("w", encoding="utf-8", newline="\n") as handle:
                 handle.write(payload)
                 handle.flush()
@@ -269,6 +279,85 @@ class LDPlayerManager:
                 pass
             raise LDPlayerError("Could not save LDPlayer binding state; check the state directory.") from None
 
+    def _pool_state(self, deadline: float) -> tuple[dict[str, dict[str, Any]], list[_ListedInstance]]:
+        """Read/migrate slots while the caller holds bindings.lock; never discard an active owner."""
+        try:
+            document = (json.loads(self._state_path.read_text("utf-8"), object_pairs_hook=_binding_object)
+                        if self._state_path.exists() else {"bindings": {}})
+            if not isinstance(document, dict) or not isinstance(document.get("bindings"), dict):
+                raise ValueError
+            version = document.get("version")
+            slots: dict[str, dict[str, Any]] = {}
+            owners: set[str] = set()
+            if version is None:
+                # Legacy task history is needed only to recover current owners.
+                # Retry admission and terminal task history are handled by Redis.
+                legacy = self._load_state()
+                for task_id, binding in legacy.items():
+                    if binding.get("mode", "clone") != "pool":
+                        raise ValueError
+                    if binding["state"] not in {"reserved", "qr_ready"}:
+                        continue
+                    key = str(binding["index"])
+                    if key in slots:
+                        raise ValueError
+                    slots[key] = {"name": binding["name"], "serial": binding.get("serial"),
+                                  "taskId": task_id, "state": binding["state"]}
+            elif type(version) is int and version == 2:
+                slots = document["bindings"]
+            else:
+                raise ValueError
+            for key, binding in slots.items():
+                if (not isinstance(key, str) or not key.isdecimal() or str(int(key)) != key
+                        or not isinstance(binding, dict)
+                        or set(binding) != {"name", "serial", "taskId", "state"}
+                        or not isinstance(binding["name"], str) or not binding["name"]
+                        or binding["state"] not in {"idle", "reserved", "qr_ready"}
+                        or binding["serial"] is not None and (
+                            not isinstance(binding["serial"], str)
+                            or not _SERIAL.fullmatch(binding["serial"])
+                        )):
+                    raise ValueError
+                task_id = binding["taskId"]
+                if binding["state"] == "idle":
+                    if task_id is not None:
+                        raise ValueError
+                else:
+                    if self._task(task_id)[0] != task_id or task_id in owners:
+                        raise ValueError
+                    owners.add(task_id)
+                    if int(key) not in self.pool_indices:
+                        raise LDPlayerError("An active LDPlayer slot is outside the configured pool; release it before changing pool indices.")
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            raise LDPlayerError("LDPlayer pool binding state is invalid; restore the service state backup.") from None
+
+        rows = self._list(deadline)
+        rows_by_index = {row.index: row for row in rows}
+        configured: dict[str, dict[str, Any]] = {}
+        for index in self.pool_indices:
+            row = rows_by_index.get(index)
+            if row is None:
+                raise LDPlayerError("Configured LDPlayer pool instance is unavailable; check this machine's pool indices.")
+            key = str(index)
+            binding = slots.get(key)
+            if binding is not None and binding["state"] != "idle":
+                if binding["name"] != row.name:
+                    raise LDPlayerError("Bound LDPlayer pool instance was renamed; restore the task binding before continuing.")
+                configured[key] = binding
+            else:
+                configured[key] = {
+                    "name": row.name,
+                    "serial": binding["serial"] if binding and binding["name"] == row.name else None,
+                    "taskId": None, "state": "idle",
+                }
+        if version != 2 or configured != slots:
+            self._save_state(configured, pool=True)
+        return configured, rows
+
+    @staticmethod
+    def _pool_task(slots: dict[str, dict[str, Any]], task_id: str):
+        return next(((key, slot) for key, slot in slots.items() if slot["taskId"] == task_id), (None, None))
+
     @staticmethod
     def _check_managed(row: _ListedInstance) -> None:
         if row.index == 0:
@@ -280,9 +369,9 @@ class LDPlayerManager:
         task_id, expected_name = self._task(task_id)
         self._remaining(deadline)
         with self._exclusive(deadline):
-            bindings = self._load_state()
             if self.pool_indices:
-                return self._allocate_pool(task_id, bindings, deadline)
+                return self._allocate_pool(task_id, deadline)
+            bindings = self._load_state()
             binding = bindings.get(task_id)
             if binding is not None and binding.get("mode", "clone") != "clone":
                 raise LDPlayerError("Login task is bound to an LDPlayer pool; use the configured pool manager.")
@@ -340,55 +429,29 @@ class LDPlayerManager:
                     return LDPlayerInstance(created.name, created.index)
                 time.sleep(min(0.2, self._remaining(deadline)))
 
-    @staticmethod
-    def _pool_occupancy(bindings: dict[str, dict[str, Any]]) -> dict[int, str]:
-        occupied: dict[int, str] = {}
-        for task_id, binding in bindings.items():
-            if (binding.get("mode") != "pool"
-                    or binding.get("state") in {"released", "retryable"}):
-                continue
-            index = binding["index"]
-            if index in occupied:
-                raise LDPlayerError("LDPlayer pool state assigns one instance to multiple active tasks.")
-            occupied[index] = task_id
-        return occupied
-
     def _allocate_pool(
         self,
         task_id: str,
-        bindings: dict[str, dict[str, Any]],
         deadline: float,
     ) -> LDPlayerInstance:
-        binding = bindings.get(task_id)
-        occupied = self._pool_occupancy(bindings)
-        rows = self._list(deadline)
+        bindings, rows = self._pool_state(deadline)
         rows_by_index = {row.index: row for row in rows}
-        if binding is not None and binding.get("state") != "retryable":
-            if binding.get("mode") != "pool":
-                raise LDPlayerError("Login task is bound to a cloned LDPlayer instance.")
-            if binding["state"] == "released":
-                raise LDPlayerError("This login task released its pool instance and cannot reserve it again.")
-            if binding["index"] not in self.pool_indices:
-                raise LDPlayerError("Login task binding is outside the configured LDPlayer pool.")
-            row = rows_by_index.get(binding["index"])
-            if row is None or row.name != binding["name"]:
-                raise LDPlayerError("Bound LDPlayer pool instance is unavailable or was renamed.")
+        key, binding = self._pool_task(bindings, task_id)
+        if binding is not None:
+            row = rows_by_index[int(key)]
             return LDPlayerInstance(row.name, row.index, binding.get("serial"), task_id)
 
-        free = [index for index in self.pool_indices if index not in occupied]
+        free = [index for index in self.pool_indices if bindings[str(index)]["state"] == "idle"]
         if not free:
             raise LDPlayerPoolFull("All LDPlayer login instances are busy; retry later.")
-        row = next((rows_by_index[index] for index in free if index in rows_by_index), None)
-        if row is None:
-            raise LDPlayerError("No free configured LDPlayer pool instance was found; check the pool indices.")
-        bindings[task_id] = {
+        row = rows_by_index[free[0]]
+        bindings[str(row.index)] = {
             "name": row.name,
-            "index": row.index,
             "serial": None,
-            "mode": "pool",
+            "taskId": task_id,
             "state": "reserved",
         }
-        self._save_state(bindings)
+        self._save_state(bindings, pool=True)
         return LDPlayerInstance(row.name, row.index, None, task_id)
 
     def has_capacity(self) -> bool:
@@ -396,38 +459,26 @@ class LDPlayerManager:
             return True
         deadline = time.time() + self.command_timeout
         with self._exclusive(deadline):
-            bindings = self._load_state()
-            occupied = self._pool_occupancy(bindings)
-            free = [index for index in self.pool_indices if index not in occupied]
-            if not free:
-                return False
-            available = {row.index for row in self._list(deadline)}
-            return any(index in available for index in free)
+            bindings, _ = self._pool_state(deadline)
+            return any(slot["state"] == "idle" for slot in bindings.values())
 
     def pool_status(self) -> list[dict[str, object]]:
         if not self.pool_indices:
             return []
         deadline = time.time() + self.command_timeout
         with self._exclusive(deadline):
-            bindings = self._load_state()
-            occupied = self._pool_occupancy(bindings)
-            rows_by_index = {row.index: row for row in self._list(deadline)}
+            bindings, rows = self._pool_state(deadline)
+            rows_by_index = {row.index: row for row in rows}
             status: list[dict[str, object]] = []
             for index in self.pool_indices:
                 row = rows_by_index.get(index)
                 if row is None:
                     raise LDPlayerError("Configured LDPlayer pool instance is unavailable.")
-                task_id = occupied.get(index)
-                if task_id is None:
-                    status.append({"name": row.name, "index": index, "taskId": None, "state": "idle"})
-                    continue
-                binding = bindings[task_id]
-                if binding["name"] != row.name:
-                    raise LDPlayerError("Bound LDPlayer pool instance was renamed.")
+                binding = bindings[str(index)]
                 status.append({
                     "name": row.name,
                     "index": index,
-                    "taskId": task_id,
+                    "taskId": binding["taskId"],
                     "state": binding["state"],
                 })
             return status
@@ -436,76 +487,52 @@ class LDPlayerManager:
         task_id, _ = self._task(task_id)
         deadline = time.time() + self.command_timeout
         with self._exclusive(deadline):
-            bindings = self._load_state()
-            binding = bindings.get(task_id)
-            if binding is None or binding.get("mode") != "pool":
+            bindings, _ = self._pool_state(deadline)
+            _, binding = self._pool_task(bindings, task_id)
+            if binding is None:
                 raise LDPlayerError("Login task has no active LDPlayer pool binding.")
             if binding["state"] not in {"reserved", "qr_ready"}:
                 raise LDPlayerError("This login task does not hold an active LDPlayer pool instance.")
             binding["state"] = "qr_ready"
-            self._save_state(bindings)
-
-    def prepare_retry(self, task_id: str) -> None:
-        task_id, _ = self._task(task_id)
-        deadline = time.time() + self.command_timeout
-        with self._exclusive(deadline):
-            bindings = self._load_state()
-            binding = bindings.get(task_id)
-            if binding is None:
-                return
-            if binding.get("mode") != "pool":
-                raise LDPlayerError("Login task has no LDPlayer pool binding to retry.")
-            if binding["state"] == "retryable":
-                return
-            if binding["state"] != "released":
-                raise LDPlayerError("Close the LDPlayer pool instance before preparing a retry.")
-            if binding.get("releasedFrom") != "reserved":
-                raise LDPlayerError("A QR-ready login task cannot be prepared for retry.")
-            binding["state"] = "retryable"
-            self._save_state(bindings)
+            self._save_state(bindings, pool=True)
 
     def _tracked(
         self, instance: LDPlayerInstance, deadline: float,
     ) -> tuple[str, dict[str, Any], _ListedInstance, str]:
         if not isinstance(instance, LDPlayerInstance):
             raise LDPlayerError("Refusing to operate on an unmanaged LDPlayer instance.")
+        if self.pool_indices:
+            bindings, rows = self._pool_state(deadline)
+            key = str(instance.index)
+            binding = bindings.get(key)
+            if (binding is None or instance.task_id is None
+                    or binding["taskId"] != instance.task_id
+                    or binding["state"] not in {"reserved", "qr_ready"}
+                    or binding["name"] != instance.name):
+                raise LDPlayerError("LDPlayer pool instance owner no longer holds this slot.")
+            row = next(candidate for candidate in rows if candidate.index == instance.index)
+            return key, bindings, row, "pool"
         bindings = self._load_state()
-        binding = bindings.get(instance.task_id) if instance.task_id is not None else None
-        if binding is not None and binding.get("mode") == "pool":
-            task_id = instance.task_id
-            if (binding.get("state") not in {"reserved", "qr_ready"}
-                    or binding.get("name") != instance.name
-                    or binding.get("index") != instance.index):
-                raise LDPlayerError("LDPlayer pool instance owner no longer holds this slot.")
-            if instance.index not in self.pool_indices:
-                raise LDPlayerError("LDPlayer pool binding is outside the configured pool.")
-            row = next((candidate for candidate in self._list(deadline)
-                        if candidate.index == instance.index), None)
-            if row is None or row.name != binding["name"]:
-                raise LDPlayerError("Bound LDPlayer pool instance is unavailable or was renamed.")
-            mode = "pool"
-        else:
-            if instance.task_id is not None:
-                raise LDPlayerError("LDPlayer pool instance owner no longer holds this slot.")
-            if _MANAGED_NAME.fullmatch(instance.name) is None:
-                raise LDPlayerError("Refusing to operate on an unmanaged LDPlayer instance.")
-            task_id = instance.name.removeprefix("nd-")
-            binding = bindings.get(task_id)
-            if (binding is None or binding.get("mode", "clone") != "clone"
-                    or binding.get("name") != instance.name):
-                raise LDPlayerError("Managed LDPlayer binding was not found; allocate the task again.")
-            row = self._find(self._list(deadline), instance.name)
-            if row is None:
-                raise LDPlayerError("Managed LDPlayer instance was not found; allocate the task again.")
-            self._check_managed(row)
-            mode = "clone"
+        if instance.task_id is not None:
+            raise LDPlayerError("LDPlayer pool instance owner no longer holds this slot.")
+        if _MANAGED_NAME.fullmatch(instance.name) is None:
+            raise LDPlayerError("Refusing to operate on an unmanaged LDPlayer instance.")
+        task_id = instance.name.removeprefix("nd-")
+        binding = bindings.get(task_id)
+        if (binding is None or binding.get("mode", "clone") != "clone"
+                or binding.get("name") != instance.name):
+            raise LDPlayerError("Managed LDPlayer binding was not found; allocate the task again.")
+        row = self._find(self._list(deadline), instance.name)
+        if row is None:
+            raise LDPlayerError("Managed LDPlayer instance was not found; allocate the task again.")
+        self._check_managed(row)
         instance.index = row.index
         binding["index"] = row.index
-        return task_id, bindings, row, mode
+        return task_id, bindings, row, "clone"
 
     def start(self, instance: LDPlayerInstance, deadline: float) -> str:
         with self._exclusive(deadline):
-            task_id, bindings, current, mode = self._tracked(instance, deadline)
+            binding_key, bindings, current, mode = self._tracked(instance, deadline)
             if not current.running:
                 self._run(
                     [self.console_path, "launch", "--name", instance.name],
@@ -523,7 +550,8 @@ class LDPlayerManager:
                         else:
                             self._check_managed(current)
                         instance.index = current.index
-                        bindings[task_id]["index"] = current.index
+                        if mode == "clone":
+                            bindings[binding_key]["index"] = current.index
                         if current.running:
                             break
                     time.sleep(min(0.2, self._remaining(deadline)))
@@ -584,18 +612,18 @@ class LDPlayerManager:
                     ) from None
 
             instance.serial = serial
-            bindings[task_id]["serial"] = serial
-            self._save_state(bindings)
+            bindings[binding_key]["serial"] = serial
+            self._save_state(bindings, pool=mode == "pool")
             return serial
 
     def launch_game(self, instance: LDPlayerInstance, package: str, deadline: float) -> None:
         if not isinstance(package, str) or _PACKAGE.fullmatch(package) is None:
             raise LDPlayerError("Invalid Android package name; check the game package setting.")
         with self._exclusive(deadline):
-            task_id, bindings, current, _ = self._tracked(instance, deadline)
+            binding_key, bindings, current, _ = self._tracked(instance, deadline)
             if not current.running:
                 raise LDPlayerError("Managed LDPlayer is not running; start it before launching the game.")
-            serial = bindings[task_id].get("serial")
+            serial = bindings[binding_key].get("serial")
             if (not isinstance(serial, str) or serial == "unknown"
                     or _SERIAL.fullmatch(serial) is None):
                 raise LDPlayerError("Start the managed LDPlayer before launching the game.")
@@ -621,20 +649,13 @@ class LDPlayerManager:
         task_id, expected_name = self._task(task_id)
         deadline = time.time() + self.command_timeout
         with self._exclusive(deadline):
-            bindings = self._load_state()
-            binding = bindings.get(task_id)
-            if binding is None:
-                return
-            if binding.get("mode") == "pool":
-                if binding["state"] in {"released", "retryable"}:
+            if self.pool_indices:
+                bindings, rows = self._pool_state(deadline)
+                key, binding = self._pool_task(bindings, task_id)
+                if binding is None:
                     return
-                released_from = binding["state"]
-                if binding["index"] not in self.pool_indices:
-                    raise LDPlayerError("Login task binding is outside the configured LDPlayer pool.")
-                current = next((row for row in self._list(deadline)
-                                if row.index == binding["index"]), None)
-                if current is None or current.name != binding["name"]:
-                    raise LDPlayerError("Bound LDPlayer pool instance is unavailable or was renamed.")
+                index = int(key)
+                current = next(row for row in rows if row.index == index)
                 if current.running:
                     self._run(
                         [self.console_path, "quit", "--name", current.name],
@@ -643,14 +664,24 @@ class LDPlayerManager:
                     )
                     while True:
                         current = next((row for row in self._list(deadline)
-                                        if row.index == binding["index"]), None)
-                        if current is None or not current.running:
+                                        if row.index == index), None)
+                        if current is None:
+                            raise LDPlayerError("Bound LDPlayer pool instance disappeared during cleanup.")
+                        if current.name != binding["name"]:
+                            raise LDPlayerError("Bound LDPlayer pool instance was renamed during cleanup.")
+                        if not current.running:
                             break
                         time.sleep(min(0.2, self._remaining(deadline)))
-                binding["state"] = "released"
-                binding["releasedFrom"] = released_from
-                self._save_state(bindings)
+                binding["state"] = "idle"
+                binding["taskId"] = None
+                self._save_state(bindings, pool=True)
                 return
+            bindings = self._load_state()
+            binding = bindings.get(task_id)
+            if binding is None:
+                return
+            if binding.get("mode", "clone") != "clone":
+                raise LDPlayerError("Login task is bound to a fixed pool; use its configured pool manager.")
             if binding.get("name") != expected_name:
                 raise LDPlayerError("LDPlayer binding does not match the login task; restore service state.")
             current = self._find(self._list(deadline), expected_name)

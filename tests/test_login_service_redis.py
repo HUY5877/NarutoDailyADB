@@ -441,6 +441,36 @@ def test_requeue_preserves_original_payload_ttl_and_session_credentials():
     asyncio.run(scenario())
 
 
+def test_published_qr_refresh_cannot_requeue_even_with_original_payload():
+    async def scenario():
+        client = fake_client()
+        try:
+            queue = RedisTaskQueue(config(), client=client)
+            body = task_body()
+            key, payload = await enqueue(client, body)
+            record = await queue.pop()
+            assert await queue.set_status(record, "qr_ready")
+            record.qr_published = True
+            stored = json.loads(await client.get(key))
+            stored.update(status="preparing_qr", refreshRequestId=str(uuid4()))
+            await client.set(key, json.dumps(stored), keepttl=True)
+            record.status = "preparing_qr"
+            record._queue_payload = payload
+            before = await client.get(key)
+            ttl_before = await client.pttl(key)
+
+            assert not await queue.requeue(record)
+
+            assert await client.get(key) == before
+            assert await client.llen(config().redis_queue_key) == 0
+            assert 0 < await client.pttl(key) <= ttl_before
+            assert record.status == "preparing_qr"
+            assert record._queue_payload == payload
+        finally:
+            await client.aclose()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("kind", ["list_wrong_type", "missing", "no_ttl", "semantic_expiry", "terminal", "metadata"])
 def test_requeue_and_updates_do_not_mutate_invalid_sessions(kind):
     async def scenario():

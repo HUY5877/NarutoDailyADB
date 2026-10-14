@@ -481,7 +481,7 @@ return session.userId
         return bool(changed)
 
     async def requeue(self, record: TaskRecord) -> bool:
-        if record._queue_payload is None:
+        if record.qr_published or record._queue_payload is None:
             return False
         changed = await self._call(
             "eval", _REQUEUE_SCRIPT, 2, self._session_key(record), self.config.redis_queue_key,
