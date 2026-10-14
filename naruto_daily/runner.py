@@ -94,6 +94,10 @@ class ActionRunner:
                 LOGGER.info("模拟运行，不发送输入")
                 continue
             action_type = action["type"]
+            if self.user_options['secretRealmMode'] == 'skip' and action_type in {
+                    'enter_secret_realm', 'handle_secret_realm'}:
+                LOGGER.info('已按用户设置跳过秘境探险动作，继续其余日常')
+                continue
             if skip_action_type is not None:
                 if action_type == skip_action_type:
                     LOGGER.info("%s今日已完成，跳过对应页面处理", completed_card_name)
@@ -188,7 +192,7 @@ class ActionRunner:
             elif action_type == "handle_secret_realm":
                 handle_secret_realm(self.client, action, template_matcher=self.template_matcher,
                                     asset_root=self.asset_root, sleep=self.sleep,
-                                    secret_realm_once=self.user_options['secretRealmOnce'])
+                                    secret_realm_once=self.user_options['secretRealmMode'] == 'once')
                 # 秘境处理器正常返回代表已用完券，或已按用户设置完成首次成功及结算收尾。
                 action_count = index
                 LOGGER.info('秘境处理已完成，结束本次任务，跳过后续 %d 个动作', len(actions) - index)

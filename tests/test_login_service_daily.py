@@ -129,23 +129,24 @@ def test_scan_and_daily_reuse_one_serial_and_complete_existing_all_order(tmp_pat
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-@pytest.mark.parametrize('once', [True, False])
-def test_equipment_option_changes_only_equipment_route_and_keeps_other_daily_actions(tmp_path, enabled, once):
+@pytest.mark.parametrize('mode', ['once', 'all', 'skip'])
+def test_equipment_option_changes_only_equipment_route_and_keeps_other_daily_actions(tmp_path, enabled, mode):
     # Multiple actions represent equipment menu navigation, material processing
     # and returning to the main screen. Disabling must remove the whole route.
     equipment_actions = [{"type": "tap", "x": 100 + index, "y": 0} for index in range(3)]
-    options = {"equipmentStamina": enabled, 'secretRealmOnce': once}
+    options = {"equipmentStamina": enabled, 'secretRealmMode': mode}
     session, clock, calls = session_for(
         tmp_path, change=lambda p: p["tasks"].update(equipment_upgrade=equipment_actions),
         user_options=options,
     )
     assert session.settings.tasks["equipment_upgrade"] == equipment_actions
-    assert options == {"equipmentStamina": enabled, 'secretRealmOnce': once}
+    assert options == {"equipmentStamina": enabled, 'secretRealmMode': mode}
     assert session._runner().user_options == options
     session.wait_for_login(clock() + 300)
     login_calls = len(calls)
     expected_actions = [
         action for name in TASK_ORDER if name != "login" and (enabled or name != "equipment_upgrade")
+        and (mode != 'skip' or name != 'secret_realm')
         for action in session.settings.tasks.get(name, [])
     ]
     assert session.run_daily(clock() + 300) == len(expected_actions)

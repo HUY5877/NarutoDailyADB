@@ -25,6 +25,13 @@ INVALID_OPTIONS = [
     {'secretRealmOnce': None}, {'secretRealmOnce': 'false'},
     {'secretRealmOnce': 0}, {'secretRealmOnce': 1},
     {'secretRealmOnce': []}, {'secretRealmOnce': {}},
+    {'secretRealmMode': None}, {'secretRealmMode': True}, {'secretRealmMode': False},
+    {'secretRealmMode': 0}, {'secretRealmMode': []}, {'secretRealmMode': {}},
+    {'secretRealmMode': 'ONCE'}, {'secretRealmMode': ''}, {'secretRealmMode': 'other'},
+    {'secretRealmMode': 'once', 'secretRealmOnce': False},
+    {'secretRealmMode': 'all', 'secretRealmOnce': True},
+    {'secretRealmMode': 'skip', 'secretRealmOnce': True},
+    {'secretRealmMode': 'skip', 'secretRealmOnce': False},
     {"unknownOption": True}, {"equipmentStamina": False, "unknownOption": True},
 ]
 
@@ -52,9 +59,9 @@ def parse_queue(body):
 def test_user_options_defaults_are_independent():
     first = parse_user_options()
     second = parse_user_options({})
-    assert first == second == {"equipmentStamina": True, 'secretRealmOnce': False}
+    assert first == second == {"equipmentStamina": True, 'secretRealmMode': 'all'}
     first["equipmentStamina"] = False
-    assert second == parse_user_options() == {"equipmentStamina": True, 'secretRealmOnce': False}
+    assert second == parse_user_options() == {"equipmentStamina": True, 'secretRealmMode': 'all'}
 
 
 @pytest.mark.parametrize("value", INVALID_OPTIONS)
@@ -66,30 +73,30 @@ def test_user_options_parser_rejects_invalid_values(value):
 @pytest.mark.parametrize("parse", [parse_queue, parse_http])
 @pytest.mark.parametrize("options", [{}, {"userOptions": {}}])
 def test_legacy_tasks_default_to_equipment_stamina_enabled(parse, options):
-    assert parse(queue_body() | options).user_options == {"equipmentStamina": True, 'secretRealmOnce': False}
+    assert parse(queue_body() | options).user_options == {"equipmentStamina": True, 'secretRealmMode': 'all'}
 
 
 @pytest.mark.parametrize("parse", [parse_queue, parse_http])
 @pytest.mark.parametrize("enabled", [True, False])
-@pytest.mark.parametrize('once', [True, False])
-def test_explicit_options_are_preserved_without_sharing_input_or_records(parse, enabled, once):
-    supplied = {"equipmentStamina": enabled, 'secretRealmOnce': once}
+@pytest.mark.parametrize('mode', ['once', 'all', 'skip'])
+def test_explicit_options_are_preserved_without_sharing_input_or_records(parse, enabled, mode):
+    supplied = {"equipmentStamina": enabled, 'secretRealmMode': mode}
     body = queue_body() | {"userOptions": supplied}
     first, second = parse(body), parse(body)
     assert first.user_options == second.user_options == supplied
     assert first.user_options is not supplied
     assert first.user_options is not second.user_options
     first.user_options["equipmentStamina"] = not enabled
-    assert supplied == second.user_options == {"equipmentStamina": enabled, 'secretRealmOnce': once}
+    assert supplied == second.user_options == {"equipmentStamina": enabled, 'secretRealmMode': mode}
 
 
 def test_task_record_defaults_do_not_share_mutable_options():
     body = queue_body()
     args = (body["id"], "", body["createdAt"], body["expiresAt"], 0)
     first, second = TaskRecord(*args), TaskRecord(*args)
-    assert first.user_options == second.user_options == {"equipmentStamina": True, 'secretRealmOnce': False}
+    assert first.user_options == second.user_options == {"equipmentStamina": True, 'secretRealmMode': 'all'}
     first.user_options["equipmentStamina"] = False
-    assert second.user_options == {"equipmentStamina": True, 'secretRealmOnce': False}
+    assert second.user_options == {"equipmentStamina": True, 'secretRealmMode': 'all'}
 
 
 @pytest.mark.parametrize("value", INVALID_OPTIONS)
@@ -108,9 +115,9 @@ def test_http_submission_rejects_invalid_options(value):
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-@pytest.mark.parametrize('once', [True, False])
-def test_runtime_passes_complete_options_to_daily_child(monkeypatch, enabled, once):
-    options = {"equipmentStamina": enabled, 'secretRealmOnce': once}
+@pytest.mark.parametrize('mode', ['once', 'all', 'skip'])
+def test_runtime_passes_complete_options_to_daily_child(monkeypatch, enabled, mode):
+    options = {"equipmentStamina": enabled, 'secretRealmMode': mode}
     record = parse_queue(queue_body() | {"userOptions": options})
     config = ServiceConfig(ldplayer_console_path=Path("unused-dnconsole.exe"))
     # The runtime never starts: injected storage and child transport keep this
@@ -132,10 +139,11 @@ def test_runtime_passes_complete_options_to_daily_child(monkeypatch, enabled, on
     assert message["id"] == record.id
     assert message["userOptions"] == options
     assert 'secretRealmOnce' not in message
+    assert 'secretRealmMode' not in message
 
 
-@pytest.mark.parametrize('once', [True, False])
-def test_redis_claim_and_requeue_keep_complete_user_options(once):
+@pytest.mark.parametrize('mode', ['once', 'all', 'skip'])
+def test_redis_claim_and_requeue_keep_complete_user_options(mode):
     fakeredis = pytest.importorskip("fakeredis.aioredis")
     pytest.importorskip("lupa")
 
@@ -145,7 +153,7 @@ def test_redis_claim_and_requeue_keep_complete_user_options(once):
             config = ServiceConfig(redis_url="redis://unused.invalid", redis_queue_key="test:options:tasks")
             queue = RedisTaskQueue(config, client=client)
             next_worker = RedisTaskQueue(config, client=client)
-            options = {"equipmentStamina": False, 'secretRealmOnce': once}
+            options = {"equipmentStamina": False, 'secretRealmMode': mode}
             body = queue_body() | {"userOptions": options}
             session = {
                 "id": body["id"], "status": "queued", "createdAt": body["createdAt"],
@@ -171,6 +179,26 @@ def test_redis_claim_and_requeue_keep_complete_user_options(once):
 @pytest.mark.parametrize('legacy', [{}, {'equipmentStamina': True}, {'equipmentStamina': False}])
 def test_old_equipment_only_options_default_to_continuing_secret_realm(legacy):
     assert parse_user_options(legacy) == {
-        'equipmentStamina': legacy.get('equipmentStamina', True), 'secretRealmOnce': False,
+        'equipmentStamina': legacy.get('equipmentStamina', True), 'secretRealmMode': 'all',
     }
     assert 'secretRealmOnce' not in legacy
+
+
+@pytest.mark.parametrize('parse', [parse_queue, parse_http])
+@pytest.mark.parametrize('once', [True, False])
+@pytest.mark.parametrize('equipment', [True, False])
+def test_legacy_bool_is_normalized_to_mode_without_mutating_original_json(parse, once, equipment):
+    legacy = {'equipmentStamina': equipment, 'secretRealmOnce': once}
+    record = parse(queue_body() | {'userOptions': legacy})
+    assert record.user_options == {
+        'equipmentStamina': equipment, 'secretRealmMode': 'once' if once else 'all',
+    }
+    assert legacy == {'equipmentStamina': equipment, 'secretRealmOnce': once}
+    assert 'secretRealmOnce' not in record.user_options
+
+
+@pytest.mark.parametrize('once, mode', [(True, 'once'), (False, 'all')])
+def test_matching_old_and_new_mode_fields_are_compatible(once, mode):
+    assert parse_user_options({'secretRealmOnce': once, 'secretRealmMode': mode}) == {
+        'equipmentStamina': True, 'secretRealmMode': mode,
+    }

@@ -77,7 +77,7 @@ def test_once_with_no_tickets_normally_finishes_the_whole_daily(monkeypatch, cou
     events = []
     with forward_task_logs(events.append):
         summary = ActionRunner(scenario, template_matcher=matcher, sleep=lambda _: None,
-                               user_options={'secretRealmOnce': True}).run([
+                               user_options={'secretRealmMode': 'once'}).run([
             {'type': 'tap', 'x': 10, 'y': 10}, secret_action(), {'type': 'tap', 'x': 999, 'y': 999},
         ])
     assert summary.action_count == 2
@@ -93,6 +93,7 @@ def test_once_with_no_tickets_normally_finishes_the_whole_daily(monkeypatch, cou
 @pytest.mark.parametrize('options, rounds, ticket_reads', [
     (None, 2, 5), ({'equipmentStamina': False}, 2, 5),
     ({'secretRealmOnce': False}, 2, 5), ({'secretRealmOnce': True}, 1, 2),
+    ({'secretRealmMode': 'all'}, 2, 5), ({'secretRealmMode': 'once'}, 1, 2),
 ])
 def test_once_success_finishes_all_actions_after_return_to_room(monkeypatch, options, rounds, ticket_reads):
     scenario = Scenario([SUCCESS, SUCCESS])
@@ -111,7 +112,7 @@ def test_once_success_finishes_all_actions_after_return_to_room(monkeypatch, opt
     assert scenario.events.count(('tap', 209, 1010)) == rounds
     milestones = [event for event in events if 'secretRealmCompletedAt' in event]
     assert len(milestones) == 1
-    if options and options.get('secretRealmOnce'):
+    if options and (options.get('secretRealmOnce') or options.get('secretRealmMode') == 'once'):
         assert '结算收尾后结束本次任务' in milestones[0]['message']
         assert '继续消耗' not in milestones[0]['message']
     else:
@@ -163,7 +164,7 @@ def test_success_without_room_cleanup_still_fails_instead_of_reporting_task_comp
     events = []
     with forward_task_logs(events.append), pytest.raises(VisualError, match='结算返回房间超时'):
         ActionRunner(scenario, template_matcher=matcher, sleep=lambda _: None,
-                     user_options={'secretRealmOnce': True}).run([config])
+                     user_options={'secretRealmMode': 'once'}).run([config])
     assert sum('secretRealmCompletedAt' in event for event in events) == 1
     assert not any(event['message'].startswith('执行结束') for event in events)
     assert scenario.events.count(('tap', 1787, 920)) == 1
@@ -201,7 +202,7 @@ def test_daily_session_passes_once_option_and_keeps_equipment_choice(monkeypatch
     scenario = Scenario([SUCCESS, SUCCESS])
     install(monkeypatch, scenario)
     config = secret_action()
-    options = {'equipmentStamina': equipment, 'secretRealmOnce': True}
+    options = {'equipmentStamina': equipment, 'secretRealmMode': 'once'}
     session, clock, _ = session_for(
         tmp_path, user_options=options,
         change=lambda payload: payload['tasks'].update(secret_realm=[deepcopy(config)]),

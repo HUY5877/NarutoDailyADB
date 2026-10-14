@@ -60,16 +60,22 @@ class DailySession:
         self.settings = load_settings(self.config_path, skip_account_login=True)
         self.user_options = parse_user_options({} if user_options is None else user_options)
         self._login_actions = deepcopy(self.settings.tasks["login"])
+        selected_settings = self.settings
+        skipped_tasks = {}
+        if not self.user_options["equipmentStamina"]:
+            skipped_tasks['equipment_upgrade'] = []
+            LOGGER.info("已按用户设置跳过装备栏体力刷取（扫荡、合成、装备和进阶）")
+        skip_secret = self.user_options['secretRealmMode'] == 'skip'
+        if skip_secret:
+            # Remove the entire route, including entry, room handling and its return navigation.
+            skipped_tasks.update(secret_realm=[], secret_realm_farm=[])
+            LOGGER.info('已按用户设置跳过整个秘境探险线路，继续其余日常')
+        if skipped_tasks:
+            selected_settings = replace(self.settings, tasks={**self.settings.tasks, **skipped_tasks})
         if task_name == "all":
-            selected_settings = self.settings
-            if not self.user_options["equipmentStamina"]:
-                # Skip the whole equipment route, including menu navigation and
-                # material synthesis/upgrade; all other task groups keep their order.
-                selected_settings = replace(self.settings, tasks={**self.settings.tasks, "equipment_upgrade": []})
-                LOGGER.info("已按用户设置跳过装备栏体力刷取（扫荡、合成、装备和进阶）")
             actions = build_all(selected_settings)
         elif task_name == "secret_realm_farm":
-            actions = build_task(self.settings, task_name)
+            actions = list(self._login_actions) if skip_secret else build_task(selected_settings, task_name)
         else:
             raise ConfigError(f"不支持的扫码后任务：{task_name}")
         self._daily_actions = actions[len(self._login_actions):]

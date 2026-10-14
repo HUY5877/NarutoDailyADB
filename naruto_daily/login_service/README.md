@@ -123,14 +123,19 @@ TypeScript 后端通过 `LPUSH` 投递，Python 先用 `LINDEX -1` 查看最早�
   "expiresAt": "2026-09-23T08:02:00.000Z",
   "objectKey": "login/客户端生成的 UUID/qr.png",
   "userOptions": {
-    "equipmentStamina": true
+    "equipmentStamina": true,
+    "secretRealmMode": "all"
   }
 }
 ```
 
 示例时间戳仅说明结构，实际任务必须使用当前创建时间和有效的过期时间。队列消息不携带明文访问凭证。
 
-`userOptions` 统一承载用户附加参数，并作为完整 JSON 对象从队列经父进程传给执行子进程。`equipmentStamina` 控制装备栏体力刷取：`true` 执行原有装备材料扫荡、合成、装备和进阶流程；`false` 跳过整个 `equipment_upgrade` 任务组，包括装备菜单导航，其他日常及其顺序保持不变。旧消息省略 `userOptions` 或传 `{}` 时默认开启，显式 `false` 不会被默认值覆盖。独立刷秘境线路原本不包含装备任务，不受此选项影响。`null`、数组、未知选项和非布尔值均按无效任务拒绝，不启动模拟器。客户端和 worker 更新后需重启常驻 worker 才会消费此参数；此前已运行的任务继续使用其启动时的选项。
+`userOptions` 统一承载用户附加参数，并作为完整 JSON 对象从队列经父进程传给执行子进程，不拆成独立字段或 Redis key。`equipmentStamina` 控制装备栏体力刷取：`true` 执行原有装备材料扫荡、合成、装备和进阶流程；`false` 跳过整个 `equipment_upgrade` 任务组，包括装备菜单导航。缺省时默认开启。独立刷秘境线路原本不包含装备任务，不受此选项影响。
+
+`secretRealmMode` 只接受 `once`、`all`、`skip`，默认 `all`。`once` 在首次明确成功结算并完成返回房间收尾后结束整个日常；进入房间时或出战前复查发现券为 0，也正常结束。失败结算和主动退出不会触发首次成功，仍按原逻辑恢复并继续挑战。`all` 保持用完剩余挑战券的既有循环；`skip` 跳过整个秘境任务组，包括入口、房间和返回导航，其余日常照常执行，独立刷秘境线路则仅保留登录。`skip` 不生成秘境首次成功标记；`once`、`all` 在可靠成功结算后仍上报 `secretRealmCompletedAt`，零券不伪造此标记。
+
+旧 `secretRealmOnce: true` 兼容为 `once`，`false` 或省略兼容为 `all`；规范化后的对象只保留 `secretRealmMode`。新旧字段同时出现时须表达同一种模式，否则拒绝任务。`null`、数组、未知选项、非法模式和非布尔的旧字段或装备字段均按无效任务拒绝，不启动模拟器。三种模式均不改变最多 50 分钟的总执行时限。更新后由用户重启常驻 worker 才会消费新参数；此前已运行的任务继续使用启动时的选项。
 
 对应会话位于 `${REDIS_QUEUE_KEY}:sessions:${id}`，例如 `naruto:login:tasks:sessions:<UUID>`。客户端先创建会话，Python 回写处理阶段时保留客户端的 `tokenHash` 和原有 TTL，不延长会话有效期。
 
