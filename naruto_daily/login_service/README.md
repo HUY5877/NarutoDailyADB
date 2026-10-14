@@ -24,17 +24,15 @@ python -m venv .venv
 Copy-Item .env.example .env
 ```
 
-已有 `.env` 时直接编辑，不要重复复制覆盖。根目录 `.env` 保存 Cloudflare 连接凭据、可选鱼玩渠道和雷电机器参数：
+已有 `.env` 时直接编辑，不要重复复制覆盖。根目录 `.env` 保存 Cloudflare 连接凭据和雷电机器参数：
 
 ```dotenv
 CLOUDFLARE_API_TOKEN=your-read-only-token
 CLOUDFLARE_ACCOUNT_ID=your-account-id
 CLOUDFLARE_KV_NAMESPACE_ID=your-namespace-id
-# YUWAN_API_KEY=your-yuwan-key
-# YUWAN_MODEL=your-yuwan-model
 ```
 
-Token 需要目标账户的 Workers KV Storage Read 权限。启动通过官方 `cloudflare` SDK 列出命名空间全部 key，分页并分批读取纯文本值，读取完整后注入环境变量。失败停止启动，不使用半份配置。至少启用一个模型渠道（KV 或本地鱼玩），并在 KV 中配置以下服务参数（每行对应一项 KV）：
+Token 需要目标账户的 Workers KV Storage Read 权限。启动通过官方 `cloudflare` SDK 列出命名空间全部 key，分页并分批读取纯文本值，读取完整后注入环境变量。失败停止启动，不使用半份配置。在 KV 中配置 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和以下服务参数（每行对应一项 KV）：
 
 ```dotenv
 REDIS_URL=redis://127.0.0.1:6379/0
@@ -56,7 +54,7 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 
 服务入口和实例池管理命令 `python -m naruto_daily.login_service.pool_admin` 默认使用根目录 `.env` 中的 Cloudflare 连接凭据，不依赖启动工作目录；`--env-file <路径>` 可指定另一份本地配置。连接凭据及机器参数允许进程环境覆盖，KV 中的业务配置覆盖同名进程值。日常任务通过 `DAILY_CONFIG_PATH` 加载 JSON。
 
-DeepSeek、Redis 和 OSS 统一从 KV 读取，不回退到本地文件。鱼玩是例外：本地 `YUWAN_API_KEY` 非空时优先使用本地 key 和 `YUWAN_MODEL`，否则使用 KV 的鱼玩配置。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次模型 HTTP 尝试通过同一 Redis 的 `INCR` 计数轮询渠道，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
+DeepSeek、Redis 和 OSS 统一从 KV 读取，不回退到本地文件。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次模型 HTTP 尝试通过同一 Redis 的 `INCR` 计数轮询渠道，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
 
 QQ群出码通知也由本 worker 发送。在同一个 Cloudflare KV 命名空间配置 `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID`，并配置网站正在使用的 PostgreSQL 连接串 `DATABASE_URL`。三个 QQ 配置必须同时填写；全部留空则关闭通知，启用通知时必须有数据库配置。这四项只从 KV 读取，不回退到本地 `.env`，也不传给任务子进程。网站客户端的 Vercel 环境变量与本项目的 KV 是不同配置来源，可复用同一个数据库连接串；数据库账号只需有 `naruto_login.users` 表的查询权限。
 
@@ -104,7 +102,7 @@ worker 在任务开始时从自己的有效 Redis 会话读取 `userId`，通过
 
 客户端在其自己的环境中启动或部署。Python worker 所在机器需要能够连接 Redis 和 OSS，并在网站处理登录申请期间保持运行。网站/Vercel 和 Python 使用同一 Redis、数据库、队列、OSS Bucket、地域及对象前缀；客户端不需要配置指向本机 Python 的 `LOGIN_SERVICE_URL`。
 
-新客户端发送 `loginTimeoutSeconds: 600`。任务排队时仍受队列 `expiresAt` 约束；领取、分配实例时固定设置 `loginStartedAt` 和 `loginExpiresAt`，会话与账号锁同步保留 10 分钟。准备游戏和等待扫码共用这段占用时间，刷新二维码不续期。10 分钟内未授权即终止子进程并立即关闭实例，不再额外保留 60 秒。旧客户端省略此字段时仍沿用原队列截止时间。观察到扫码后的二次授权页、开始游戏页或游戏主界面后，子进程立即发送 `authorized`，不等待点击按钮及点击前后的延时。子进程同时发送本次执行的绝对截止时间 `executionDeadline`，父子进程共用同一截止时间。后续授权按钮操作、加载、清弹窗、额外主界面核验和全部日常任务共享最多50分钟，进入主界面或切换任务时不重新计时，也不再受二维码期限限制。各阶段不再单独设置时间预算；普通图片识别和当前鱼玩 OpenAI 兼容导航的模型单次请求最多30秒，只有HTTP 200算成功，其他状态（包括400、401、403）、网络异常和超时均等待10秒、重新截图继续重试，直到成功、取消或总时限到达。到达总截止时间后父进程终止执行子进程，保留模拟器现场60秒且继续占用实例，随后关闭并释放。二维码和客户端会话仍按原 TTL 过期，不续期。
+新客户端发送 `loginTimeoutSeconds: 600`。任务排队时仍受队列 `expiresAt` 约束；领取、分配实例时固定设置 `loginStartedAt` 和 `loginExpiresAt`，会话与账号锁同步保留 10 分钟。准备游戏和等待扫码共用这段占用时间，刷新二维码不续期。10 分钟内未授权即终止子进程并立即关闭实例，不再额外保留 60 秒。旧客户端省略此字段时仍沿用原队列截止时间。观察到扫码后的二次授权页、开始游戏页或游戏主界面后，子进程立即发送 `authorized`，不等待点击按钮及点击前后的延时。子进程同时发送本次执行的绝对截止时间 `executionDeadline`，父子进程共用同一截止时间。后续授权按钮操作、加载、清弹窗、额外主界面核验和全部日常任务共享最多50分钟，进入主界面或切换任务时不重新计时，也不再受二维码期限限制。各阶段不再单独设置时间预算；普通图片识别和 OpenAI 兼容导航的模型单次请求最多30秒，只有HTTP 200算成功，其他状态（包括400、401、403）、网络异常和超时均等待10秒、重新截图继续重试，直到成功、取消或总时限到达。到达总截止时间后父进程终止执行子进程，保留模拟器现场60秒且继续占用实例，随后关闭并释放。二维码和客户端会话仍按原 TTL 过期，不续期。
 
 日常执行中的页面、按钮和数值未确认时，会在同一总截止时间内等待并重新截图，不因 JSON 中的旧识别次数、阶段轮数或局部等待上限提前结束。领奖或合成已经点击后，只观察结果更新；未确认时不重复领取同一份奖励或重复合成，也不把缺失数值、未结束动画当作成功。明确没有可领取奖励、挑战次数或可用体力时正常结束相应任务；总时限到达、取消、ADB 故障或本地配置错误仍会停止。
 
