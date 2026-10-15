@@ -62,7 +62,7 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 
 服务入口和实例池管理命令 `python -m naruto_daily.login_service.pool_admin` 默认使用根目录 `.env` 中的 Cloudflare 连接凭据，不依赖启动工作目录；`--env-file <路径>` 可指定另一份本地配置。连接凭据及机器参数允许进程环境覆盖，KV 中的业务配置覆盖同名进程值。日常任务通过 `DAILY_CONFIG_PATH` 加载 JSON。
 
-Redis、OSS、数据库和隔离路径统一从选定 KV namespace 读取，不回退到本地文件。模型密钥和模型名也放在同一 namespace，本地模型覆盖仅保留兼容能力。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次生成模型 HTTP 尝试通过同一 Redis 的配置计数器执行 `INCR`，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
+Redis、OSS、数据库和隔离路径统一从选定 KV namespace 读取，不回退到本地文件。JEV、DeepSeek 的 key/model 放在该 namespace；鱼玩 `YUWAN_API_KEY` / `YUWAN_MODEL` 按原约定成对保存在本地 `.env`，由父进程启动时解析并传给任务子进程。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次生成模型 HTTP 尝试通过同一 Redis 的配置计数器执行 `INCR`，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
 
 QQ 通知使用选定 namespace 的普通 `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID` 和 `DATABASE_URL` 字段，不再使用本地 `TEST_JEV_*` 变量。当前测试 namespace 的三项 QQ 值留空，因此不主动发群消息。启用时三项机器人配置必须同时填写，并有测试数据库配置；worker 只查询选定数据库的 `users` 表获取用户名。这些配置不传给任务子进程。
 

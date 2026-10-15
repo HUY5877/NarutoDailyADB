@@ -18,8 +18,8 @@
 | 配置位置 | 当前用途 |
 | --- | --- |
 | 根目录 `config.example.json` | 服务共用的屏幕尺寸、完整任务配置和资源引用；执行时由 worker 覆盖 ADB 路径和 serial |
-| 根目录 `.env` | `APP_ENV`、Cloudflare Token/account 与各环境 namespace ID、雷电和 worker 的机器参数 |
-| Cloudflare KV | `hyrz`（prod）与 `hyrz-test`（test）各自保存模型、Redis、OSS 等普通变量名配置；启动只读取选定 namespace |
+| 根目录 `.env` | `APP_ENV`、Cloudflare Token/account 与各环境 namespace ID、本地鱼玩 `YUWAN_API_KEY` / `YUWAN_MODEL`、雷电和 worker 的机器参数 |
+| Cloudflare KV | `hyrz`（prod）与 `hyrz-test`（test）各自保存 JEV/DeepSeek、Redis、OSS 等普通变量名配置；启动只读取选定 namespace |
 | 雷电每个实例的设置 | 安卓分辨率、DPI、ADB 调试；实例池中的每个实例都必须一致 |
 
 本项目无需为了 Python worker 安装 Node.js，也无需安装 Android Studio。使用雷电安装目录自带的 `adb.exe`，通过完整路径调用即可，无需修改系统 `PATH`。
@@ -184,9 +184,11 @@ CLOUDFLARE_API_TOKEN=用户提供的只读Token
 CLOUDFLARE_ACCOUNT_ID=用户的32位十六进制账户ID
 CLOUDFLARE_KV_NAMESPACE_ID_PROD=正式hyrz的32位十六进制namespaceID
 CLOUDFLARE_KV_NAMESPACE_ID_TEST=测试hyrz-test的32位十六进制namespaceID
+YUWAN_API_KEY=本机鱼玩密钥
+YUWAN_MODEL=鱼玩模型名
 ```
 
-Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限。`APP_ENV` 只接受 `prod` / `test`，省略时为 `prod`。prod 优先使用 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，兼容旧 `CLOUDFLARE_KV_NAMESPACE_ID`；test 必须显式配置 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`，不能回退正式 ID。这里的中文均为待填写说明，不是可运行凭据；扫码服务不要求 `LOGIN_ACCOUNT_NAME`。
+Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限。`APP_ENV` 只接受 `prod` / `test`，省略时为 `prod`。prod 优先使用 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，兼容旧 `CLOUDFLARE_KV_NAMESPACE_ID`；test 必须显式配置 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`，不能回退正式 ID。鱼玩 key/model 按原约定在本机成对填写，修改后重启，任务子进程继承父进程解析结果。这里的中文均为待填写说明，不是可运行凭据；扫码服务不要求 `LOGIN_ACCOUNT_NAME`。
 
 ### Cloudflare KV
 
@@ -287,7 +289,7 @@ New-Item -ItemType Directory -Force .\artifacts | Out-Null
 | 多个在线设备 | 核对实例池索引、任务绑定和对应 serial；worker 必须操作分配到的实例 |
 | 分辨率错误或点击偏移 | 每个实例的 1920×1080、DPI 240、方向、尺寸/密度覆盖及原始截图 |
 | 缺少 Cloudflare 凭据或 KV 读取失败 | `APP_ENV`、共用 Token/account、所选 namespace ID、Token 权限、网络及该 namespace 的 key 格式与必填配置 |
-| 没有有效模型渠道或缺少 Redis | KV 中的 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `REDIS_URL` |
+| 没有有效模型渠道或缺少 Redis | 本地 `.env` 的 `YUWAN_API_KEY` / `YUWAN_MODEL`、KV 中的 `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` 和 `REDIS_URL` |
 | 扫码显示模拟二维码 | `EMULATOR_DRIVER` 是否实际设为 `ldplayer`；是否被进程环境或 KV 覆盖 |
 | worker 找不到游戏或池实例 | 实际包名、`list2` 索引、每个实例的安装状态和显示配置 |
 | worker 启动后没有任务 | 客户端与 worker 是否使用相同 Redis 数据库和队列；不要盲目重建实例或删除状态 |

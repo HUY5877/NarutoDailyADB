@@ -11,7 +11,7 @@ JEV_API_KEY=your-model-key
 JEV_MODEL=typesafe/jev-1.14
 ```
 
-启动仅加载所选 namespace 的普通变量名，修改后重启 worker。测试环境缺少 namespace ID 或配置时不读取正式 namespace。兼容入口仍允许本地 JEV 配置覆盖所选环境（进程变量优先于 `.env`）；当前工作区不配置本地模型密钥，统一使用 KV。显式的本地空 JEV 值也会覆盖云端值，因此不要在 `.env` 留旧的空占位项。任务子进程只继承父进程解析结果，不再次拉取 KV 或读取本地文件。缺少 JEV 密钥时，选择场景明确报错，不回退到生成模型。
+启动仅加载所选 namespace 的普通变量名，修改后重启 worker。测试环境缺少 namespace ID 或配置时不读取正式 namespace。兼容入口仍允许本地 JEV 配置覆盖所选环境（进程变量优先于 `.env`）；当前 JEV 配置保存在 KV。显式的本地空 JEV 值也会覆盖云端值，因此不要在 `.env` 留旧的空占位项。任务子进程只继承父进程解析结果，不再次拉取 KV 或读取本地文件。缺少 JEV 密钥时，选择场景明确报错，不回退到生成模型。
 
 `decisions.py` 固定请求 `https://openrouter.ai/api/alpha/decisions`，发送图片、判定条件和一个 `choice` 问题，并携带图片功能请求头。JEV 只返回候选标签，程序验证标签后深拷贝本地结果，不能让 JEV 生成 JSON、坐标或解释。模型请求和异常日志不包含密钥、图片、提示词或上游响应原文。
 
@@ -26,7 +26,7 @@ JEV_MODEL=typesafe/jev-1.14
 
 ## 配置
 
-在选定 Cloudflare namespace 中配置生成渠道的 key、模型名、Redis 和路由计数器，以下为测试示例，每行对应一项 KV：
+在选定 Cloudflare namespace 中配置 DeepSeek 的 key、模型名、Redis 和路由计数器，以下为测试示例，每行对应一项 KV：
 
 ```dotenv
 DEEPSEEK_API_KEY=your-model-key
@@ -40,13 +40,15 @@ MULTIMODAL_ROUTING_COUNTER_KEY=naruto:multimodal-test-jev:route:sequence
 | 鱼玩 | `https://llm-proxy.yuwan-game.com/v1` | `YUWAN_API_KEY` | `YUWAN_MODEL` |
 | DeepSeek 官方 | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` |
 
+鱼玩按原约定在 worker 本地 `.env` 配置 `YUWAN_API_KEY` 和 `YUWAN_MODEL`，启用时两项须成对填写；修改后重启 worker。任务子进程继承父进程解析后的鱼玩配置，不重新读取本地文件。
+
 DeepSeek 使用 `/chat/completions`，地址依据[官方 API 文档](https://api-docs.deepseek.com/)。模型名是独立配置项，示例名称可按该渠道提供的多模态模型修改。
 
 DeepSeek 官方不支持在思考模式下强制或指定工具，详见[请求参数文档](https://api-docs.deepseek.com/api/create-chat-completion)。路由层仅对该渠道此类导航请求关闭思考模式，保留工具约束；普通图片识别沿用原参数，重试切到其他兼容渠道时不会继承 DeepSeek 官方参数适配。
 
 启动时只按去除首尾空白后的 key 是否非空确定有效渠道，不请求上游验证 key、模型或额度。有效渠道必须填写模型名；没有有效渠道或缺少 `REDIS_URL` 时明确报配置错误。只配置一个渠道也正常参与 Redis 计数。
 
-表中的变量名即每个 namespace 内的实际 KV key。DeepSeek、Redis 和路由计数器不回退到本地 `.env`；鱼玩仍兼容本地成对的 key/model 覆盖。根目录 `.env` 配置 `APP_ENV`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 和对应的 `CLOUDFLARE_KV_NAMESPACE_ID_PROD` / `CLOUDFLARE_KV_NAMESPACE_ID_TEST`，详见[项目配置说明](../../README.md)与[完整字段表](../../docs/test-jev-client-protocol.md#cloudflare-配置)。
+DeepSeek、Redis 和路由计数器使用所选 namespace 中的同名 KV key，不回退到本地 `.env`。根目录 `.env` 还需配置 `APP_ENV`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 和对应的 `CLOUDFLARE_KV_NAMESPACE_ID_PROD` / `CLOUDFLARE_KV_NAMESPACE_ID_TEST`，详见[项目配置说明](../../README.md)与[完整字段表](../../docs/test-jev-client-protocol.md#cloudflare-配置)。
 
 服务启动只拉取一次所选 KV namespace，读取全部成功后初始化网关。有效渠道列表在本次启动中固定，修改配置后重启服务；任务子进程继承父进程的 `APP_ENV`、模型配置、已解析 `REDIS_URL` 和 `MULTIMODAL_ROUTING_COUNTER_KEY`，不重复拉取云端。普通脚本访问模型也使用相同的启动加载流程。
 
