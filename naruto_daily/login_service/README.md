@@ -1,6 +1,6 @@
 # Python 扫码登录 worker
 
-本分支用于 `test-jev` 实验。即使读取与正式服务相同的 Cloudflare KV，也会强制隔离 Redis、OSS 和本地状态路径。测试网站须使用[客户端对接协议](../../docs/test-jev-client-protocol.md)，否则任务不会被本 worker 领取。正式 QQ 通知配置在本分支不生效。
+本分支用于 JEV 实验。worker 与测试网站都设置 `APP_ENV=test`，读取 Cloudflare 的 `hyrz-test` namespace；正式环境设置 `APP_ENV=prod`，读取现有 `hyrz` namespace。两个 namespace 内部使用相同的普通变量名。Redis 队列、OSS 前缀和本地状态目录直接采用选定配置，不按分支名追加后缀。配置字段和测试资源示例见[客户端对接协议](../../docs/test-jev-client-protocol.md)。
 
 本模块位于现有 `NarutoDailyADB` Python 项目中，作为常驻 Redis worker 接收扫码任务，并在扫码登录后复用原完整日常流程。`REDIS_URL` 为必填项；未配置或为空时会明确报错并以退出码 1 结束，**不开放 HTTP 端口**。
 
@@ -26,20 +26,26 @@ python -m venv .venv
 Copy-Item .env.example .env
 ```
 
-已有 `.env` 时直接编辑，不要重复复制覆盖。根目录 `.env` 保存 Cloudflare 连接凭据和雷电机器参数：
+已有 `.env` 时直接编辑，不要重复复制覆盖。根目录 `.env` 保存环境选择、Cloudflare 连接凭据和雷电机器参数：
 
 ```dotenv
+APP_ENV=test
 CLOUDFLARE_API_TOKEN=your-read-only-token
 CLOUDFLARE_ACCOUNT_ID=your-account-id
-CLOUDFLARE_KV_NAMESPACE_ID=your-namespace-id
+CLOUDFLARE_KV_NAMESPACE_ID_PROD=your-hyrz-namespace-id
+CLOUDFLARE_KV_NAMESPACE_ID_TEST=your-hyrz-test-namespace-id
 ```
 
-Token 需要目标账户的 Workers KV Storage Read 权限。启动通过官方 `cloudflare` SDK 列出命名空间全部 key，分页并分批读取纯文本值，读取完整后注入环境变量。失败停止启动，不使用半份配置。在 KV 中配置 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和以下服务参数（每行对应一项 KV）：
+Token 需要目标账户的 Workers KV Storage Read 权限。`APP_ENV` 仅接受 `prod` 或 `test`，省略时为 `prod`。Token 和 account 共用；prod 选择 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，兼容旧 `CLOUDFLARE_KV_NAMESPACE_ID`；test 必须提供 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`，不会借用正式 ID。启动通过官方 `cloudflare` SDK 只读取选定 namespace，分页并分批获取普通变量名的纯文本值，完整读取后原子注入环境变量。读取失败或必填资源缺失时停止启动，不回退另一个 namespace 或本地旧业务值。以下是 `hyrz-test` 内部的 KV 示例，每行对应一项普通 key；完整字段见[配置表](../../docs/test-jev-client-protocol.md#cloudflare-配置)：
 
 ```dotenv
 REDIS_URL=redis://127.0.0.1:6379/0
+REDIS_QUEUE_KEY=naruto:login-test-jev:tasks
+MULTIMODAL_ROUTING_COUNTER_KEY=naruto:multimodal-test-jev:route:sequence
+LDPLAYER_STATE_DIR=.data/login-service/ldplayer/test-jev
+OSS_KEY_PREFIX=login-test-jev
 OSS_REGION=oss-cn-shanghai
-OSS_BUCKET=your-private-bucket
+OSS_BUCKET=huy1-hyrz-test
 OSS_ACCESS_KEY_ID=your-access-key-id
 OSS_ACCESS_KEY_SECRET=your-access-key-secret
 ```
@@ -56,9 +62,9 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 
 服务入口和实例池管理命令 `python -m naruto_daily.login_service.pool_admin` 默认使用根目录 `.env` 中的 Cloudflare 连接凭据，不依赖启动工作目录；`--env-file <路径>` 可指定另一份本地配置。连接凭据及机器参数允许进程环境覆盖，KV 中的业务配置覆盖同名进程值。日常任务通过 `DAILY_CONFIG_PATH` 加载 JSON。
 
-DeepSeek、Redis 和 OSS 统一从 KV 读取，不回退到本地文件。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次模型 HTTP 尝试通过同一 Redis 的 `INCR` 计数轮询渠道，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
+Redis、OSS、数据库和隔离路径统一从选定 KV namespace 读取，不回退到本地文件。模型密钥和模型名也放在同一 namespace，本地模型覆盖仅保留兼容能力。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次生成模型 HTTP 尝试通过同一 Redis 的配置计数器执行 `INCR`，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
 
-本分支默认关闭 QQ 群主动通知，并忽略共享 KV 中的 `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID` 和 `DATABASE_URL`，避免测试任务发往正式群或连接正式用户数据库。如需测试通知，在本地 `.env` 显式配置 `TEST_JEV_QQ_BOT_APP_ID`、`TEST_JEV_QQ_BOT_APP_SECRET`、`TEST_JEV_QQ_BOT_GROUP_OPENID` 和 `TEST_JEV_DATABASE_URL`，全部指向测试资源。三个 QQ 字段必须同时填写，启用时必须有测试数据库配置；数据库账号只需有测试网站 `naruto_login.users` 表的查询权限。这些配置不传给任务子进程。
+QQ 通知使用选定 namespace 的普通 `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID` 和 `DATABASE_URL` 字段，不再使用本地 `TEST_JEV_*` 变量。当前测试 namespace 的三项 QQ 值留空，因此不主动发群消息。启用时三项机器人配置必须同时填写，并有测试数据库配置；worker 只查询选定数据库的 `users` 表获取用户名。这些配置不传给任务子进程。
 
 worker 在任务开始时从自己的有效 Redis 会话读取 `userId`，通过只读、参数绑定的数据库查询取得一次 `username`，保存在 `runs.username` 并供通知复用。二维码上传 OSS 并成功发布 `qr_ready` 后，异步发送“用户名，你的二维码准备好啦！快打开登录页面扫码吧～”的群消息，通知不展示任务编号；初次生成及每个成功刷新各通知一次，过期二维码不再提醒。任务全部完成、超时或报错退出后再发送一次最终结果，失败原因使用安全提示；登录会话过期不影响结束通知。Ctrl+C、服务停止或任务取消不发送结束通知，模拟二维码生成也不会误报日常完成。数据库查询或 QQ 接口失败只记后台日志，不改变任务结果；查不到用户名时跳过提醒。连接、SQL 和 QQ 请求均有超时，通知不自动重试。机器人需要已加入目标群，且群主已开启主动消息权限；`group_openid` 是该机器人收到群事件时的群标识，并非 QQ 群号。无需保持 WebSocket 连接，也不需要客户端接入 QQ。
 
@@ -73,14 +79,14 @@ worker 在任务开始时从自己的有效 Redis 会话读取 `userId`，通过
 | 变量 | 默认值与用途 |
 | --- | --- |
 | `REDIS_URL` | 必填；未设置、为空或仅包含空白时，启动命令报错退出 |
-| `REDIS_QUEUE_KEY` | `naruto:login-test-jev:tasks`，必须与测试客户端相同；共享 KV 的正式值会被强制规范化 |
+| `REDIS_QUEUE_KEY` | 选定 KV namespace 必填；必须与客户端相同，代码不改写其值 |
 | `WORKER_CONCURRENCY` | `2`，同时运行的任务子进程数 |
-| `OSS_KEY_PREFIX` | `login-test-jev`，必须与测试客户端相同；自定义前缀首段也强制加后缀 |
+| `OSS_KEY_PREFIX` | 选定 KV namespace 必填；必须与客户端相同，代码不追加后缀 |
 | `MOCK_STEP_DELAY_MS` / `EMULATOR_DRIVER` | `600` / `mock`，模拟步骤延迟与驱动 |
 | `LDPLAYER_CONSOLE_PATH` | `ldplayer` 必填，雷电控制台程序的完整路径 |
 | `LDPLAYER_POOL_INDICES` | 空；推荐设为 `0,2`，使用逗号分隔的现有雷电实例索引，不复制实例 |
 | `LDPLAYER_TEMPLATE` | 仅复制模式必填；配置实例池时无需模板 |
-| `LDPLAYER_STATE_DIR` | `.data/login-service/ldplayer/test-jev`，任务与实例状态目录；相对项目根目录解析，显式绝对路径也幂等追加 `test-jev` 子目录 |
+| `LDPLAYER_STATE_DIR` | 选定 KV namespace 必填；任务、日志和实例状态目录，相对项目根目录解析，绝对路径原样使用 |
 | `LDPLAYER_PACKAGE` | `com.tencent.KiHan`，游戏 Android 包名 |
 | `LDPLAYER_COMMAND_TIMEOUT_SECONDS` | `20`，单条雷电控制台命令的超时秒数 |
 | `DAILY_CONFIG_PATH` | 项目根目录的 `config.example.json`；复用原日常任务配置，相对路径以项目根目录解析 |
@@ -94,7 +100,7 @@ worker 在任务开始时从自己的有效 Redis 会话读取 `userId`，通过
 
 固定池的 `bindings.json` 使用版本 2，`bindings` 按实例编号保存，例如配置 `LDPLAYER_POOL_INDICES=0,2` 时只有 `"0"` 和 `"2"` 两个元素。每个元素保存本机实际实例名、ADB serial、当前 `taskId` 和 `state`；空闲为 `idle`，分配后为 `reserved`，二维码发布后为 `qr_ready`。关闭完成后恢复 `idle` 并清空 `taskId`，不累计已结束任务。任务历史和重新领取资格由 Redis 管理，旧任务的迟到清理不会操作已分配给新任务的实例。
 
-配置固定池后，通过 `启动扫码服务.cmd` 启动时，服务入口先读取本机 `.env` 和进程环境中的 `LDPLAYER_POOL_INDICES`、雷电控制台路径与状态目录，查询 `ldconsole list2` 确认实际实例，再覆盖 `bindings.json`：只保留本机配置的编号和实际名称，每个槽位统一为 `idle`，`taskId` 和 `serial` 均为 `null`。这一步在 Cloudflare、模型网关和 Redis 配置加载之前完成，不依赖云配置。实例编号和名称不硬编码，serial 在任务启动实例时查询；新电脑无需复制其他电脑的绑定文件。
+配置固定池后，通过 `启动扫码服务.cmd` 启动时，服务入口先读取本机 `.env` 和进程环境，选择并完整加载 Cloudflare namespace，再使用解析后的状态目录、实例索引和雷电控制台路径重置实例登记。它查询 `ldconsole list2` 确认实际实例，再覆盖该目录中的 `bindings.json`：只保留本机配置的编号和实际名称，每个槽位统一为 `idle`，`taskId` 和 `serial` 均为 `null`。Cloudflare 加载失败时不会先重置本地登记。实例编号和名称不硬编码，serial 在任务启动实例时查询；新电脑无需复制其他电脑的绑定文件。
 
 启动重置只在服务启动入口执行，任务子 worker、领取任务和 `pool_admin list` 不执行；查看或领取不会把现有占用清空。升级前应正常停止旧服务，再使用启动入口运行更新后的服务。
 
@@ -102,7 +108,7 @@ worker 在任务开始时从自己的有效 Redis 会话读取 `userId`，通过
 
 仓库根目录的 `bindings.json` 全空闲模板可保留作手动初始化参考，正常启动无需人工替换。若要手动覆盖 `${LDPLAYER_STATE_DIR}/bindings.json`，须先停止 worker、确认实例没有正在执行的任务，并核对本机实际状态目录；模板的预置编号不限制本机 `LDPLAYER_POOL_INDICES` 配置。
 
-客户端在其自己的环境中启动或部署。Python worker 所在机器需要能够连接 Redis 和 OSS，并在网站处理登录申请期间保持运行。网站/Vercel 和 Python 使用同一 Redis、数据库、队列、OSS Bucket、地域及对象前缀；客户端不需要配置指向本机 Python 的 `LOGIN_SERVICE_URL`。
+客户端在其自己的环境中启动或部署。Python worker 所在机器需要能够连接 Redis 和 OSS，并在网站处理登录申请期间保持运行。每个环境内的网站/Vercel 和 Python 使用同一 Redis、数据库、队列、OSS Bucket、地域及对象前缀；测试 Bucket 为 `huy1-hyrz-test`，正式 Bucket 保持原配置。客户端不需要配置指向本机 Python 的 `LOGIN_SERVICE_URL`。
 
 新客户端发送 `loginTimeoutSeconds: 600`。任务排队时仍受队列 `expiresAt` 约束；领取、分配实例时固定设置 `loginStartedAt` 和 `loginExpiresAt`，会话与账号锁同步保留 10 分钟。准备游戏和等待扫码共用这段占用时间，刷新二维码不续期。10 分钟内未授权即终止子进程并立即关闭实例，不再额外保留 60 秒。旧客户端省略此字段时仍沿用原队列截止时间。观察到扫码后的二次授权页、开始游戏页或游戏主界面后，子进程立即发送 `authorized`，不等待点击按钮及点击前后的延时。子进程同时发送本次执行的绝对截止时间 `executionDeadline`，父子进程共用同一截止时间。后续授权按钮操作、加载、清弹窗、额外主界面核验和全部日常任务共享最多50分钟，进入主界面或切换任务时不重新计时，也不再受二维码期限限制。各阶段不再单独设置时间预算；普通图片识别和 OpenAI 兼容导航的模型单次请求最多30秒，只有HTTP 200算成功，其他状态（包括400、401、403）、网络异常和超时均等待10秒、重新截图继续重试，直到成功、取消或总时限到达。到达总截止时间后父进程终止执行子进程，保留模拟器现场60秒且继续占用实例，随后关闭并释放。二维码和客户端会话仍按原 TTL 过期，不续期。
 
@@ -112,7 +118,7 @@ worker 在任务开始时从自己的有效 Redis 会话读取 `userId`，通过
 
 ## Redis 消息和状态
 
-TypeScript 后端通过 `LPUSH` 投递，Python 先用 `LINDEX -1` 查看最早的任务并校验时间；通过后使用 Lua 原子核对队首内容、登记 worker 归属并 `RPOP`，多消费者只能有一个领取成功。队列为空或任务时间暂不符合条件时，每秒重试一次。默认队列为 `naruto:login-test-jev:tasks`，消息格式如下；`createdAt` 和 `expiresAt` 均为带时区的 ISO 8601 字符串：
+TypeScript 后端通过 `LPUSH` 投递，Python 先用 `LINDEX -1` 查看最早的任务并校验时间；通过后使用 Lua 原子核对队首内容、登记 worker 归属并 `RPOP`，多消费者只能有一个领取成功。队列为空或任务时间暂不符合条件时，每秒重试一次。队列由选定 namespace 的 `REDIS_QUEUE_KEY` 指定，下面消息示例使用当前测试 OSS 前缀；`createdAt` 和 `expiresAt` 均为带时区的 ISO 8601 字符串：
 
 ```json
 {
@@ -210,27 +216,27 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 
 配置 `LDPLAYER_POOL_INDICES=0,1,2`、`WORKER_CONCURRENCY=3` 时，最多有三个任务同时占用实例，等待扫码和执行日常都计入占用。第四个任务保持在 Redis 的 `queued` 状态，直到已有任务结束并释放槽位；排队期间仍遵守客户端会话 TTL。并发数不能扩大实际实例池容量，冷启动管理操作仍通过锁依次执行。
 
-真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，并通过子进程环境传入已解析的 `REDIS_URL`，供模型路由使用 `naruto:multimodal-test-jev:route:sequence` 计数器，并轮询本任务的测试二维码刷新指令；该地址不进入 JSON 协议或日志。规范化后的测试队列名和状态目录原样传给子进程。模型渠道 key 和模型名也通过子进程环境继承，子进程不重新拉取 KV、不重新读取本地模型 key；OSS 密钥和 Cloudflare Token 不传递。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
+真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，并通过子进程环境传入 `APP_ENV`、已解析的 `REDIS_URL`、`MULTIMODAL_ROUTING_COUNTER_KEY` 和模型渠道配置。子进程使用同一 namespace 的模型计数器及任务刷新 key；Redis 地址不进入 JSON 协议或日志。选定队列名和状态目录原样传给子进程，不重新拉取 KV，也不重新读取本地模型配置；OSS、数据库、QQ 密钥和 Cloudflare Token 不传递。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
 
 ## 对象存储
 
-扫码服务固定使用阿里云 OSS 保存二维码，对象键为 `login-test-jev/{id}/qr.png`。上传、读取、删除和过期清理统一走 OSS；启动时检查地域、Bucket 和访问密钥是否配置，缺少任一项都会停止启动。
+扫码服务使用阿里云 OSS 保存二维码，对象键为 `${OSS_KEY_PREFIX}/{id}/qr.png`，前缀来自选定 namespace。上传、读取、删除和过期清理统一走 OSS；启动时检查地域、Bucket 和访问密钥是否配置，缺少任一项都会停止启动。
 
-真实 OSS 使用 Python `oss2` SDK，在 Cloudflare KV 中逐项配置以下值，并与客户端使用同一 Bucket 和地域：
+真实 OSS 使用 Python `oss2` SDK，在 Cloudflare KV 中逐项配置以下测试值，并与测试客户端使用同一 Bucket 和地域；正式值独立保存在 `hyrz` namespace：
 
 ```dotenv
 OSS_REGION=oss-cn-shanghai
-OSS_BUCKET=your-private-bucket
+OSS_BUCKET=huy1-hyrz-test
 OSS_ACCESS_KEY_ID=your-access-key-id
 OSS_ACCESS_KEY_SECRET=your-access-key-secret
 # OSS_STS_TOKEN=your-temporary-token
 ```
 
-`OSS_KEY_PREFIX` 默认是 `login-test-jev`，表示 Bucket 内对象键的目录前缀，例如 `login-test-jev/{id}/qr.png`。读取到正式值 `login` 时也强制转为测试前缀；自定义 `login/qr` 规范化为 `login-test-jev/qr`，重复处理不重复添加后缀。测试客户端和 worker 必须一致，队列中的 `objectKey` 也应使用相同前缀。
+`OSS_KEY_PREFIX` 表示 Bucket 内对象键的目录前缀，必须在所选 namespace 显式配置，例如当前测试值为 `OSS_KEY_PREFIX=login-test-jev`。程序不会根据 `APP_ENV` 修改前缀值；测试客户端和 worker 必须一致，队列中的 `objectKey` 也应使用相同前缀。
 
 服务端拥有指定前缀的写入/读取/删除权限，客户端 TS 后端仅需读取权限；凭据可以不同。OSS 对象使用 HTTPS、私有 ACL、PNG 类型、`no-store` 和过期时间元数据。浏览器通过自己的后端读图片，不获得 OSS 密钥，也不需要 OSS CORS。
 
-真实 OSS 已完成二维码上传与客户端读取联调。过期元数据不等于云端生命周期规则，应配置此前缀的 Bucket 生命周期，兜底清理服务崩溃时的遗留对象。真实雷电仍通过 `EMULATOR_DRIVER=ldplayer` 启用。
+过期元数据不等于云端生命周期规则，应配置此前缀的 Bucket 生命周期，兜底清理服务崩溃时的遗留对象。环境配置完成不代表测试站已部署或实机验收；真实雷电需设置 `EMULATOR_DRIVER=ldplayer`，指定测试专用实例池，并实际核对出码、扫码、刷新和执行日志。
 
 ## 验证
 
@@ -239,7 +245,7 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 .\.venv\Scripts\python.exe -m pytest tests/test_login_service_runtime.py tests/test_login_service_http.py tests/test_login_service_storage.py tests/test_login_service_redis.py tests/test_login_service_worker.py tests/test_packaging.py
 ```
 
-Redis worker 的验证应包括 FIFO 消费、消息校验、会话状态与 TTL 保留、重连及关闭处理；HTTP 模式继续验证接口隔离、并发、PNG 输出、过期清理与 OSS 适配。实际网站联调需要客户端与 Python 使用同一 Redis 和 OSS 配置。
+Redis worker 的验证应包括 FIFO 消费、消息校验、会话状态与 TTL 保留、重连及关闭处理；HTTP 模式继续验证接口隔离、并发、PNG 输出、过期清理与 OSS 适配。实际网站联调需要同一环境内客户端与 Python 的 Redis 和 OSS 配置一致。
 
 ## 二维码刷新与实例占用
 

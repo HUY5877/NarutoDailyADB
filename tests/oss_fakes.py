@@ -1,6 +1,10 @@
 """OSS test configuration and an in-memory SDK bucket; no network requests."""
 
 OSS_ENV = {
+    "REDIS_QUEUE_KEY": "naruto:login:tasks",
+    "OSS_KEY_PREFIX": "login",
+    "MULTIMODAL_ROUTING_COUNTER_KEY": "naruto:multimodal:route:sequence",
+    "LDPLAYER_STATE_DIR": ".data/login-service/ldplayer",
     "OSS_REGION": "oss-cn-hangzhou",
     "OSS_BUCKET": "test-bucket",
     "OSS_ACCESS_KEY_ID": "test-id",

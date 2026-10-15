@@ -12,8 +12,8 @@ from test_login_service_worker import MemoryStorage, worker, fake_server, enqueu
 
 
 QQ_ENV = {
-    'TEST_JEV_QQ_BOT_APP_ID': '1900000001', 'TEST_JEV_QQ_BOT_APP_SECRET': 'private-qq-secret',
-    'TEST_JEV_QQ_BOT_GROUP_OPENID': 'A' * 32, 'TEST_JEV_DATABASE_URL': 'postgresql://user:private-db@db.invalid/naruto',
+    'QQ_BOT_APP_ID': '1900000001', 'QQ_BOT_APP_SECRET': 'private-qq-secret',
+    'QQ_BOT_GROUP_OPENID': 'A' * 32, 'DATABASE_URL': 'postgresql://user:private-db@db.invalid/naruto',
 }
 
 
@@ -21,7 +21,7 @@ def test_qq_configuration_requires_complete_credentials_and_database():
     config = load_config(OSS_ENV | QQ_ENV)
     assert config.qq_bot_app_id == '1900000001'
     assert config.qq_bot_group_openid == 'A' * 32
-    assert config.database_url == QQ_ENV['TEST_JEV_DATABASE_URL']
+    assert config.database_url == QQ_ENV['DATABASE_URL']
     assert 'private-qq-secret' not in repr(config)
     assert 'private-db' not in repr(config)
     assert not load_config(OSS_ENV).qq_bot_app_id

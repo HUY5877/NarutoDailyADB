@@ -50,6 +50,7 @@ def test_sdk_reads_all_pages_including_empty_page_and_batches_values(monkeypatch
         assert '/accounts/' + BOOTSTRAP['CLOUDFLARE_ACCOUNT_ID'] + '/' in request.url.path
         calls.append(request)
         if request.method == 'GET':
+            assert 'prefix' not in request.url.params
             cursor = request.url.params.get('cursor')
             if cursor is None:
                 return response([{'name': name} for name in list(values)[:101]], result_info={'cursor': 'next'})
@@ -102,9 +103,20 @@ def test_missing_non_text_or_invalid_values_fail_before_injection(monkeypatch, v
     assert 'NEW_SETTING' not in os.environ
 
 
-@pytest.mark.parametrize('name', ['bad-name', 'contains space', environment.INHERITED_CONFIG_MARKER, *kv.BOOTSTRAP_NAMES])
+@pytest.mark.parametrize('name', ['bad-name', 'contains space', 'APP_ENV', environment.INHERITED_CONFIG_MARKER, *kv.BOOTSTRAP_NAMES])
 def test_invalid_or_reserved_key_names_are_rejected(monkeypatch, name):
     install_sdk(monkeypatch, lambda request: response([{'name': name}], result_info={'cursor': ''}))
+    with pytest.raises(environment.EnvironmentConfigError, match='变量名'):
+        environment.initialize_environment()
+
+
+@pytest.mark.parametrize('returned_name', ['', 'prod_REDIS_URL', 'test:REDIS_URL'])
+def test_invalid_variable_is_rejected_before_values(monkeypatch, returned_name):
+    def handler(request):
+        assert request.method == 'GET'
+        return httpx.Response(200, json={'success': True, 'result': [{'name': returned_name}],
+                                        'result_info': {'cursor': ''}, 'errors': [], 'messages': []})
+    install_sdk(monkeypatch, handler)
     with pytest.raises(environment.EnvironmentConfigError, match='变量名'):
         environment.initialize_environment()
 
@@ -115,7 +127,7 @@ def test_repeated_cursor_fails_instead_of_looping_forever(monkeypatch):
         environment.initialize_environment()
 
 
-@pytest.mark.parametrize('name', kv.BOOTSTRAP_NAMES)
+@pytest.mark.parametrize('name', ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_KV_NAMESPACE_ID'])
 def test_missing_bootstrap_setting_fails_without_an_api_call(monkeypatch, name):
     monkeypatch.setattr(kv, 'Cloudflare', lambda **kwargs: pytest.fail('No API call with missing configuration'))
     settings = {key: value for key, value in BOOTSTRAP.items() if key != name}
@@ -142,7 +154,7 @@ def test_cloud_overrides_local_and_process_settings_and_clears_deleted_keys(monk
     assert initialize_gateway().channels[0].name == 'deepseek'
 
 
-def test_production_qq_and_database_credentials_are_ignored_and_not_in_child_environment(monkeypatch, tmp_path):
+def test_profile_qq_and_database_credentials_load_without_entering_child_environment(monkeypatch, tmp_path):
     names = ('QQ_BOT_APP_ID', 'QQ_BOT_APP_SECRET', 'QQ_BOT_GROUP_OPENID', 'DATABASE_URL')
     with (tmp_path / '.env').open('a', encoding='utf-8') as stream:
         stream.write('\n' + '\n'.join(f'{name}=stale-local-value' for name in names))
@@ -152,8 +164,8 @@ def test_production_qq_and_database_credentials_are_ignored_and_not_in_child_env
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: dict(remote))
     environment.initialize_environment(tmp_path / '.env')
     config = load_config()
-    assert config.qq_bot_app_id == config.qq_bot_app_secret == config.qq_bot_group_openid == ''
-    assert config.database_url is None
+    assert config.qq_bot_app_id == remote['QQ_BOT_APP_ID']
+    assert config.database_url == remote['DATABASE_URL']
     assert all(name not in environment.model_environment_for_child() for name in names)
     environment._initialized = False
     remote.clear()
@@ -163,16 +175,14 @@ def test_production_qq_and_database_credentials_are_ignored_and_not_in_child_env
 
 
 def test_startup_reports_missing_username_database_configuration(monkeypatch, tmp_path, caplog):
-    remote = {**OSS_ENV, 'REDIS_URL': 'redis://unused.invalid/0'}
-    with (tmp_path / '.env').open('a', encoding='utf-8') as stream:
-        stream.write('\nTEST_JEV_QQ_BOT_APP_ID=1900000001\n'
-                     'TEST_JEV_QQ_BOT_APP_SECRET=private-qq-secret\n'
-                     f'TEST_JEV_QQ_BOT_GROUP_OPENID={"A" * 32}\n')
+    remote = {**OSS_ENV, 'REDIS_URL': 'redis://unused.invalid/0',
+              'QQ_BOT_APP_ID': '1900000001', 'QQ_BOT_APP_SECRET': 'private-qq-secret',
+              'QQ_BOT_GROUP_OPENID': 'A' * 32}
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: dict(remote))
     with pytest.raises(SystemExit) as result:
         entrypoint.main(['--env-file', str(tmp_path / '.env')])
     assert result.value.code == 1
-    assert 'TEST_JEV_DATABASE_URL' in caplog.text
+    assert 'DATABASE_URL' in caplog.text
     assert 'private-qq-secret' not in caplog.text
 
 
@@ -181,7 +191,8 @@ def test_local_yuwan_key_and_model_are_loaded_and_override_cloud(monkeypatch, tm
     with (tmp_path / '.env').open('a', encoding='utf-8') as stream:
         stream.write('\nYUWAN_API_KEY=local-yuwan-key\nYUWAN_MODEL=local-yuwan-model\n')
     remote = {'DEEPSEEK_API_KEY': 'cloud-deepseek', 'DEEPSEEK_MODEL': 'cloud-deepseek-model',
-              'REDIS_URL': 'redis://cloud.invalid/0'}
+              'REDIS_URL': 'redis://cloud.invalid/0',
+              'MULTIMODAL_ROUTING_COUNTER_KEY': 'naruto:multimodal:route:sequence'}
     if cloud_yuwan:
         remote.update(YUWAN_API_KEY='cloud-yuwan', YUWAN_MODEL='cloud-yuwan-model')
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: dict(remote))
@@ -218,14 +229,19 @@ def test_local_yuwan_requires_its_own_model_before_publishing(monkeypatch, tmp_p
 
 def test_child_inherits_models_without_fetching_cloud_or_loading_local_secrets(monkeypatch, tmp_path):
     os.environ.update(YUWAN_API_KEY='inherited-key', YUWAN_MODEL='inherited-model',
+                      APP_ENV='test', MULTIMODAL_ROUTING_COUNTER_KEY='private-profile-counter',
                       OSS_ACCESS_KEY_SECRET='private-oss', CLOUDFLARE_API_TOKEN='private-cf')
     child = environment.model_environment_for_child()
     assert 'OSS_ACCESS_KEY_SECRET' not in child and 'CLOUDFLARE_API_TOKEN' not in child
     child['REDIS_URL'] = 'redis://inherited.invalid/1'
+    assert child['APP_ENV'] == 'test'
+    assert child['MULTIMODAL_ROUTING_COUNTER_KEY'] == 'private-profile-counter'
+    (tmp_path / '.env').write_text('APP_ENV=prod\nLOGIN_ACCOUNT_NAME=local-secret\n', encoding='utf-8')
     monkeypatch.setattr(os, 'environ', child)
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: pytest.fail('Child must reuse parent configuration'))
     assert environment.read_environment()['YUWAN_API_KEY'] == 'inherited-key'
     assert 'OSS_ACCESS_KEY_SECRET' not in environment.read_environment()
+    assert 'LOGIN_ACCOUNT_NAME' not in environment.read_environment()
 
 
 def test_entrypoint_fetches_kv_before_redis_validation_and_service_creation(monkeypatch):

@@ -40,7 +40,7 @@ def body():
         "version": 1, "id": task_id,
         "createdAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "expiresAt": (now + timedelta(seconds=60)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-        "objectKey": f"login-test-jev/{task_id}/qr.png",
+        "objectKey": f"login/{task_id}/qr.png",
     }
 
 
@@ -343,7 +343,7 @@ def test_progress_cannot_create_unclaimed_or_foreign_task_data():
     async def scenario():
         client, cfg = fake_client(), config()
         owner, stranger = RedisTaskQueue(cfg, client=client), RedisTaskQueue(cfg, client=client)
-        unclaimed = parse_queue_task(body(), "login-test-jev")
+        unclaimed = parse_queue_task(body(), "login")
         claimed = await claim(client, owner)
         reporter = RedisRunReporter(cfg, stranger)
         reporter.start()
@@ -701,7 +701,7 @@ def test_parent_keeps_action_boundaries_and_warnings_but_omits_low_level_info():
             reported.append(event)
 
     runtime = LoginRuntime(config(redis_url=None), MemoryStorage(), run_reporter=Reporter())
-    record = parse_queue_task(body(), "login-test-jev")
+    record = parse_queue_task(body(), "login")
     for event in [
         {"message": "截图匹配相似度 0.85", "level": "INFO"},
         {"message": "点击坐标 (10,20)", "level": "INFO"},
@@ -720,7 +720,7 @@ def test_secret_realm_completion_is_first_timestamp_and_does_not_change_running_
 
     reported = []
     runtime = SimpleNamespace(_run_reporter=SimpleNamespace(emit=lambda record, **event: reported.append(event)))
-    record = parse_queue_task(body(), 'login-test-jev')
+    record = parse_queue_task(body(), 'login')
     record.daily_started_at = 1_800_000_000.0
     record.daily_status = 'running_daily'
     record.execution_deadline = record.daily_started_at + 3_000
@@ -747,7 +747,7 @@ def test_secret_realm_completion_is_first_timestamp_and_does_not_change_running_
 def test_invalid_or_out_of_phase_secret_completion_is_rejected(changes, started, status):
     from types import SimpleNamespace
 
-    record = parse_queue_task(body(), 'login-test-jev')
+    record = parse_queue_task(body(), 'login')
     record.daily_started_at = 1_800_000_000.0 if started else None
     record.daily_status = status
     runtime = SimpleNamespace(_run_reporter=None)
@@ -815,7 +815,7 @@ def test_parent_rejects_invalid_log_metadata_before_publication(changes):
             pytest.fail("Invalid log reached the publisher")
 
     runtime = LoginRuntime(config(redis_url=None), MemoryStorage(), run_reporter=Reporter())
-    record = parse_queue_task(body(), "login-test-jev")
+    record = parse_queue_task(body(), "login")
     event = {"type": "log", "time": iso_time(), "level": "INFO", "message": "valid text"} | changes
     with pytest.raises(ValueError):
         runtime._accept_log(record, event)

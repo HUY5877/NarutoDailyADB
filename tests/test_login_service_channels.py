@@ -49,7 +49,7 @@ def wechat_frame():
 
 
 @pytest.mark.parametrize('channel', LOGIN_TYPES)
-@pytest.mark.parametrize('parser', [lambda body: parse_queue_task(body, 'login-test-jev'),
+@pytest.mark.parametrize('parser', [lambda body: parse_queue_task(body, 'login'),
                                      lambda body: parse_submission(body | {'accessToken': 'ab' * 32})])
 def test_channels_parse_and_legacy_defaults(channel, parser):
     assert parser(queue_body() | {'loginType': channel}).login_type == channel
@@ -59,7 +59,7 @@ def test_channels_parse_and_legacy_defaults(channel, parser):
 @pytest.mark.parametrize('invalid', [None, '', 'qq', 'ANDROID_QQ', 1, False, [], {}])
 def test_invalid_channels_rejected_before_device_operations(invalid):
     with pytest.raises(TaskValidationError, match='Invalid login type'):
-        parse_queue_task(queue_body() | {'loginType': invalid}, 'login-test-jev')
+        parse_queue_task(queue_body() | {'loginType': invalid}, 'login')
 
 
 @pytest.mark.parametrize('channel,button', [('android_qq', 'qq_android'), ('ios_qq', 'qq_ios'),
@@ -163,7 +163,7 @@ def test_worker_passes_channel_to_bound_device(monkeypatch, channel):
 @pytest.mark.parametrize('channel', LOGIN_TYPES)
 def test_claim_requeue_and_child_dispatch_preserve_channel(monkeypatch, channel, tmp_path):
     from naruto_daily.login_service.runtime import LoginRuntime
-    record = parse_queue_task(queue_body() | {'loginType': channel}, 'login-test-jev')
+    record = parse_queue_task(queue_body() | {'loginType': channel}, 'login')
     runtime = LoginRuntime(ServiceConfig(ldplayer_console_path=tmp_path/'ldconsole.exe'), object())
     async def child(bound, command, message, **kwargs):
         assert message['loginType'] == channel

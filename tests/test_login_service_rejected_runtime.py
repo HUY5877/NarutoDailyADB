@@ -49,7 +49,7 @@ def test_validation_failure_is_visible_without_reserving_an_instance_and_consume
                 "version": version, "id": task_id,
                 "createdAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                 "expiresAt": (now + timedelta(seconds=60)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                "objectKey": f"login-test-jev/{task_id}/qr.png",
+                "objectKey": f"login/{task_id}/qr.png",
             }
             session = {key: payload[key] for key in ("id", "createdAt", "expiresAt")}
             session.update(status="queued", simulation=True, tokenHash="ab" * 32)

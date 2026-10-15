@@ -47,7 +47,7 @@ def task_body(ttl=60):
         "version": 1, "id": task_id,
         "createdAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "expiresAt": (now + timedelta(seconds=ttl)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-        "objectKey": f"login-test-jev/{task_id}/qr.png",
+        "objectKey": f"login/{task_id}/qr.png",
     }
 
 

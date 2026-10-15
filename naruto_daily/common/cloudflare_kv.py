@@ -6,22 +6,33 @@ from typing import Mapping
 
 from cloudflare import Cloudflare
 
-from .environment import EnvironmentConfigError, INHERITED_CONFIG_MARKER
+from .environment import EnvironmentConfigError, INHERITED_CONFIG_MARKER, resolve_app_env
 
 
-BOOTSTRAP_NAMES = ('CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_KV_NAMESPACE_ID')
+BOOTSTRAP_NAMES = ('CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_KV_NAMESPACE_ID',
+                   'CLOUDFLARE_KV_NAMESPACE_ID_PROD', 'CLOUDFLARE_KV_NAMESPACE_ID_TEST')
 API_BASE_URL = 'https://api.cloudflare.com/client/v4'
 
 
 def fetch_environment(settings: Mapping[str, str]) -> dict[str, str]:
-    """List every page, then fetch text values in batches of at most 100."""
-    for name in BOOTSTRAP_NAMES:
+    """Read only the selected namespace, atomically, at most 100 values per batch."""
+    profile = resolve_app_env(settings)
+    for name in ('CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID'):
         if not settings.get(name, '').strip():
             raise EnvironmentConfigError(f'请配置 {name}，用于读取 Cloudflare KV')
+    namespace_name = 'CLOUDFLARE_KV_NAMESPACE_ID_' + profile.upper()
+    namespace = settings.get(namespace_name, '').strip()
+    if not namespace and profile == 'prod':
+        namespace = settings.get('CLOUDFLARE_KV_NAMESPACE_ID', '').strip()
+    if not namespace:
+        raise EnvironmentConfigError(f'请配置 {namespace_name}，用于读取 Cloudflare KV')
+    production_namespace = (settings.get('CLOUDFLARE_KV_NAMESPACE_ID_PROD', '').strip()
+                            or settings.get('CLOUDFLARE_KV_NAMESPACE_ID', '').strip())
+    if profile == 'test' and namespace.lower() == production_namespace.lower():
+        raise EnvironmentConfigError('测试和正式环境必须使用不同的 Cloudflare KV namespace')
     account = settings['CLOUDFLARE_ACCOUNT_ID'].strip()
-    namespace = settings['CLOUDFLARE_KV_NAMESPACE_ID'].strip()
     if any(re.fullmatch(r'[0-9a-fA-F]{32}', value) is None for value in (account, namespace)):
-        raise EnvironmentConfigError('CLOUDFLARE_ACCOUNT_ID 和 CLOUDFLARE_KV_NAMESPACE_ID 必须为 32 位十六进制 ID')
+        raise EnvironmentConfigError('CLOUDFLARE_ACCOUNT_ID 和所选 CLOUDFLARE_KV_NAMESPACE_ID 必须为 32 位十六进制 ID')
 
     try:
         with Cloudflare(api_token=settings['CLOUDFLARE_API_TOKEN'].strip(),
@@ -37,7 +48,7 @@ def fetch_environment(settings: Mapping[str, str]) -> dict[str, str]:
                 for key in page.result:
                     name = key.name
                     if (re.fullmatch(r'[A-Z_][A-Z0-9_]*', name) is None
-                            or name in (*BOOTSTRAP_NAMES, INHERITED_CONFIG_MARKER)):
+                            or name in (*BOOTSTRAP_NAMES, INHERITED_CONFIG_MARKER, 'APP_ENV')):
                         raise EnvironmentConfigError('Cloudflare KV 包含无效或保留的环境变量名')
                     names[name] = None
                 cursor = page.result_info.cursor if page.result_info else None

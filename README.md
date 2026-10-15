@@ -4,7 +4,7 @@
 
 当前分支为 `test-jev` 实验实现。主界面入口、战斗结束、秘境入口、丰饶结算、装备页面/材料动作和一乐外卖领取改用 JEV 多模态选择；程序先列出可选状态或当前截图的候选编号，再把选项还原为本地结果和坐标。昵称、数字 OCR、自由坐标和导航动作仍由现有生成模型处理。JEV 返回未知状态或非法选项时不授权点击，也不自动回退到生成模型。
 
-测试扫码客户端必须使用 `REDIS_QUEUE_KEY=naruto:login-test-jev:tasks` 和 `OSS_KEY_PREFIX=login-test-jev`。会话、账号锁、刷新、运行记录和日志全部继承测试前缀；即使共享 KV 仍配置正式前缀，本分支也会强制隔离。客户端消息和对接细节见[测试协议](docs/test-jev-client-protocol.md)。不要将正式模拟器实例分配给测试 worker。
+测试 worker 和扫码客户端均在各自 `.env` 设置 `APP_ENV=test`，读取 Cloudflare 的 `hyrz-test` namespace；正式环境使用 `APP_ENV=prod`，读取现有 `hyrz` namespace。两者内部使用相同的普通变量名，Redis 队列、日志、OSS 前缀、模型计数器和本地状态目录均由各自配置决定，代码不追加 `test-jev` 后缀。缺少测试配置时停止启动，不读取正式配置。客户端消息、当前配置示例和部署条件见[测试协议](docs/test-jev-client-protocol.md)。测试必须使用独立模拟器实例池。
 
 需要 Python 3.11+。模拟器必须设置为 **1920×1080 横屏、DPI 240**，并开启 ADB 本地连接。
 
@@ -29,10 +29,10 @@ if (-not (Test-Path .\.env)) {
 | 位置 | 需要填写的内容 |
 | --- | --- |
 | `config.example.json` | 服务共用的完整日常任务配置；保留现有任务和资源引用，屏幕尺寸保持 1920×1080，无需复制本地任务配置 |
-| 根目录 `.env` | `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_KV_NAMESPACE_ID`、`JEV_API_KEY`，以及雷电控制台路径和独立测试实例池等机器参数；`JEV_MODEL` 默认为 `typesafe/jev-1.14` |
-| Cloudflare KV | 分别保存纯文本 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`、`REDIS_URL` |
+| 根目录 `.env` | `APP_ENV=test`、共用的 Cloudflare Token/account、`CLOUDFLARE_KV_NAMESPACE_ID_TEST`，以及雷电控制台路径和测试专用实例池等机器参数 |
+| Cloudflare KV | `hyrz` 与 `hyrz-test` 两个 namespace 各自保存普通变量名的纯文本配置，例如 `REDIS_QUEUE_KEY`、`OSS_KEY_PREFIX`、`JEV_API_KEY` 和 `JEV_MODEL`。字段见[配置表](docs/test-jev-client-protocol.md#cloudflare-配置) |
 
-Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限。配置在启动时读取，修改后需重启；DeepSeek、Redis 和 OSS 不从本地 `.env` 回退。
+Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限，列出 key 和批量读取均须允许。`APP_ENV` 只能是 `prod` 或 `test`，省略时为 `prod`；JEV 测试工作区须显式设置 `test`。prod 选择 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，兼容旧 `CLOUDFLARE_KV_NAMESPACE_ID`；test 必须提供 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`。启动只读取选定 namespace，全部读取成功才发布配置，修改后需重启。Redis、OSS、数据库和隔离路径不从本地旧配置回退；模型本地覆盖仅为兼容入口，日常配置统一放在 KV。
 
 扫码服务还需配置 OSS、雷电控制台路径和实例池，见[扫码服务说明](naruto_daily/login_service/README.md)。服务按分配到的实例覆盖任务配置中的 ADB 路径和 `serial`。
 

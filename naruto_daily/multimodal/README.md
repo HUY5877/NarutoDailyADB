@@ -4,14 +4,14 @@
 
 ## JEV 选择判断
 
-在根目录被 Git 忽略的 `.env` 中配置：
+根目录 `.env` 设置 `APP_ENV=test` 并填写 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`；在测试 namespace `hyrz-test` 内配置以下普通 key，正式值保存在 `hyrz`：
 
 ```dotenv
-JEV_API_KEY=
+JEV_API_KEY=your-model-key
 JEV_MODEL=typesafe/jev-1.14
 ```
 
-本地 JEV 配置优先于共享 KV，显式进程变量优先于本地文件；任务子进程继承父进程解析的值。修改配置后重启 worker。缺少 JEV 密钥时，选择场景明确报错，不回退到生成模型。
+启动仅加载所选 namespace 的普通变量名，修改后重启 worker。测试环境缺少 namespace ID 或配置时不读取正式 namespace。兼容入口仍允许本地 JEV 配置覆盖所选环境（进程变量优先于 `.env`）；当前工作区不配置本地模型密钥，统一使用 KV。显式的本地空 JEV 值也会覆盖云端值，因此不要在 `.env` 留旧的空占位项。任务子进程只继承父进程解析结果，不再次拉取 KV 或读取本地文件。缺少 JEV 密钥时，选择场景明确报错，不回退到生成模型。
 
 `decisions.py` 固定请求 `https://openrouter.ai/api/alpha/decisions`，发送图片、判定条件和一个 `choice` 问题，并携带图片功能请求头。JEV 只返回候选标签，程序验证标签后深拷贝本地结果，不能让 JEV 生成 JSON、坐标或解释。模型请求和异常日志不包含密钥、图片、提示词或上游响应原文。
 
@@ -26,12 +26,13 @@ JEV_MODEL=typesafe/jev-1.14
 
 ## 配置
 
-在 Cloudflare KV 中配置 DeepSeek 的 key 和模型名，以下每行对应一项 KV：
+在选定 Cloudflare namespace 中配置生成渠道的 key、模型名、Redis 和路由计数器，以下为测试示例，每行对应一项 KV：
 
 ```dotenv
-DEEPSEEK_API_KEY=
-DEEPSEEK_MODEL=deepseek-flash
+DEEPSEEK_API_KEY=your-model-key
+DEEPSEEK_MODEL=your-multimodal-model
 REDIS_URL=redis://127.0.0.1:6379/0
+MULTIMODAL_ROUTING_COUNTER_KEY=naruto:multimodal-test-jev:route:sequence
 ```
 
 | 渠道 | 固定基础地址 | 密钥变量 | 模型变量 |
@@ -45,16 +46,16 @@ DeepSeek 官方不支持在思考模式下强制或指定工具，详见[请求�
 
 启动时只按去除首尾空白后的 key 是否非空确定有效渠道，不请求上游验证 key、模型或额度。有效渠道必须填写模型名；没有有效渠道或缺少 `REDIS_URL` 时明确报配置错误。只配置一个渠道也正常参与 Redis 计数。
 
-DeepSeek 和 Redis 只读取启动时从 Cloudflare KV 注入的环境变量，不回退到本地 `.env`。根目录 `.env` 还需配置 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 和 `CLOUDFLARE_KV_NAMESPACE_ID`，详见[项目配置说明](../../README.md)。
+表中的变量名即每个 namespace 内的实际 KV key。DeepSeek、Redis 和路由计数器不回退到本地 `.env`；鱼玩仍兼容本地成对的 key/model 覆盖。根目录 `.env` 配置 `APP_ENV`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 和对应的 `CLOUDFLARE_KV_NAMESPACE_ID_PROD` / `CLOUDFLARE_KV_NAMESPACE_ID_TEST`，详见[项目配置说明](../../README.md)与[完整字段表](../../docs/test-jev-client-protocol.md#cloudflare-配置)。
 
-服务启动只拉取一次 KV，读取全部成功后初始化网关。有效渠道列表在本次启动中固定，修改配置后重启服务；任务子进程继承父进程的模型配置和已解析 `REDIS_URL`，不重复拉取云端。普通脚本访问模型也使用相同的启动加载流程。
+服务启动只拉取一次所选 KV namespace，读取全部成功后初始化网关。有效渠道列表在本次启动中固定，修改配置后重启服务；任务子进程继承父进程的 `APP_ENV`、模型配置、已解析 `REDIS_URL` 和 `MULTIMODAL_ROUTING_COUNTER_KEY`，不重复拉取云端。普通脚本访问模型也使用相同的启动加载流程。
 
 DeepSeek 配置使用上表中的变量，key 留空即禁用该渠道。任务 JSON 的 `multimodal` 只需保留 `timeout_seconds` 和 `max_calls`，请删除旧的 URL、模型占位符；它们不再决定实际路由，也不再通过旧配置自动补齐。
 
 ## 请求流程
 
 1. 启动时按预定义顺序筛选有 key 的渠道，冻结有效列表和配置。
-2. 每次生成模型的实际 HTTP 尝试前执行一次原子 `INCR naruto:multimodal-test-jev:route:sequence`，与正式环境隔离。
+2. 每次生成模型的实际 HTTP 尝试前，对所选 namespace 的 `MULTIMODAL_ROUTING_COUNTER_KEY` 执行原子 `INCR`。当前测试值为 `naruto:multimodal-test-jev:route:sequence`，代码不固定 key 或追加后缀；缺少该配置时停止初始化。
 3. 用返回值对有效渠道数取模，作为有效列表的下标，同时替换 URL、Authorization 和请求体中的 `model`。
 4. 请求成功返回；非 200 或网络异常按现有规则等待并重试，下一次尝试再次 `INCR`。图片重试仍重新截图，导航历史和已执行的工具动作保留。
 

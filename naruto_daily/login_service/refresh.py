@@ -4,7 +4,7 @@ import json
 import logging
 import time
 
-from naruto_daily.common.namespace import isolate_redis_queue_key
+from naruto_daily.common.namespace import validate_redis_key
 from .models import UUID_PATTERN
 
 LOGGER = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class RefreshRequests:
                                     retry=Retry(NoBackoff(), 0))
         self.client = client
         self.task_id = task_id
-        self.key = f'{isolate_redis_queue_key(queue_key)}:refresh:{task_id}'
+        self.key = f'{validate_redis_key(queue_key)}:refresh:{task_id}'
         self.handled = None
         self.next_poll = 0.0
         self.next_warning = 0.0

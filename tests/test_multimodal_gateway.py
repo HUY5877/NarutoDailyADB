@@ -21,7 +21,9 @@ def settings(**overrides):
     return gateway.load_gateway_settings({
         'YUWAN_API_KEY': 'yuwan-private', 'YUWAN_MODEL': 'yuwan-vision',
         'DEEPSEEK_API_KEY': 'deepseek-private', 'DEEPSEEK_MODEL': 'deepseek-vision',
-        'REDIS_URL': 'redis://account:redis-private@test.invalid/0', **overrides,
+        'REDIS_URL': 'redis://account:redis-private@test.invalid/0',
+        'MULTIMODAL_ROUTING_COUNTER_KEY': 'naruto:multimodal:route:sequence',
+        **overrides,
     })
 
 
@@ -45,11 +47,18 @@ def test_keys_are_not_probed_or_format_validated_and_models_are_independent(conf
     ({'DEEPSEEK_MODEL': ''}, 'DEEPSEEK_MODEL'),
     ({'REDIS_URL': ''}, 'REDIS_URL'),
     ({'REDIS_URL': 'https://account:redis-private@wrong.test'}, 'REDIS_URL'),
+    ({'MULTIMODAL_ROUTING_COUNTER_KEY': ''}, 'MULTIMODAL_ROUTING_COUNTER_KEY'),
 ])
 def test_invalid_startup_configuration_fails_without_exposing_values(overrides, variable):
     with pytest.raises(environment.EnvironmentConfigError, match=variable) as caught:
         settings(**overrides)
     assert 'redis-private' not in str(caught.value)
+
+
+def test_missing_counter_never_uses_a_hardcoded_default():
+    with pytest.raises(environment.EnvironmentConfigError, match='MULTIMODAL_ROUTING_COUNTER_KEY'):
+        gateway.load_gateway_settings({'YUWAN_API_KEY': 'key', 'YUWAN_MODEL': 'model',
+                                       'REDIS_URL': 'redis://unused.invalid/0'})
 
 
 def test_disabled_channel_does_not_require_model():
@@ -63,7 +72,7 @@ def test_incr_then_modulo_is_shared_between_instances_and_async_calls(configured
     assert second.select().name == 'yuwan'
     assert asyncio.run(first.select_async()).name == 'deepseek'
     assert asyncio.run(second.select_async()).name == 'yuwan'
-    assert configured_environment.keys == [gateway.ROUTING_COUNTER_KEY] * 4
+    assert configured_environment.keys == [first.settings.routing_counter_key] * 4
 
 
 def test_routing_urls_stay_in_backend_while_business_logs_reach_client():
@@ -102,7 +111,7 @@ def test_distinct_redis_clients_and_event_loops_share_one_counter(monkeypatch):
     assert asyncio.run(first.select_async()).name == 'deepseek'
     assert second.select().name == 'yuwan'
     with fakeredis.FakeRedis(server=server) as client:
-        assert client.get(gateway.ROUTING_COUNTER_KEY) == b'4'
+        assert client.get(first.settings.routing_counter_key) == b'4'
 
 
 def test_concurrent_clients_do_not_read_then_write_counter(configured_environment):
@@ -111,7 +120,7 @@ def test_concurrent_clients_do_not_read_then_write_counter(configured_environmen
         selected = list(executor.map(lambda number: routers[number % 4].select().name, range(100)))
     assert selected.count('yuwan') == selected.count('deepseek') == 50
     assert configured_environment.value == 100
-    assert set(configured_environment.keys) == {gateway.ROUTING_COUNTER_KEY}
+    assert set(configured_environment.keys) == {routers[0].settings.routing_counter_key}
 
 
 def test_startup_snapshot_uses_injected_cloud_values_and_ignores_later_changes(tmp_path, monkeypatch, configured_environment):
