@@ -10,7 +10,7 @@ from .recognition import ImageRecognition
 from .visual import NonRetryableVisualError, VisualError, find_template_in_png
 from .execution import current_execution, retry_observation, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient, MultimodalRequestError
-from naruto_daily.multimodal.diagnostics import model_request_context
+from naruto_daily.multimodal.diagnostics import is_model_api_failure, model_request_context
 
 LOGGER = logging.getLogger('naruto_daily')
 
@@ -76,7 +76,8 @@ class ModelWorkflow:
                 LOGGER.info('[%s 第%d次] %s', name, attempt, parsed)
                 return parsed
             except MultimodalRequestError as exc:
-                LOGGER.error('[%s] 接口请求失败：%s；停止识别，不再叠加重试', name, exc)
+                LOGGER.error('[%s] 接口请求失败：%s；停止识别，不再叠加重试', name, exc,
+                             extra={'backend_only': is_model_api_failure(exc)})
                 raise
             except NonRetryableVisualError:
                 raise

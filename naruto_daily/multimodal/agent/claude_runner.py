@@ -14,6 +14,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     ResultMessage,
+    ResultError,
     TextBlock,
     ToolUseBlock,
     create_sdk_mcp_server,
@@ -23,7 +24,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from naruto_daily.common.visual import VisualError
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_sleep
-from naruto_daily.multimodal.diagnostics import model_request_context, safe_exception_details
+from naruto_daily.multimodal.diagnostics import (
+    is_model_api_failure, mark_model_api_failure, model_request_context, safe_exception_details,
+)
 from naruto_daily.multimodal.transport import MAX_REQUEST_RETRIES, request_budget
 from .completion_watch import CompletionDetected, CompletionWatch
 
@@ -248,6 +251,15 @@ def run_agent(client, model, goal: str, *, joystick, max_steps: int = 50,
     except (AgentError, DailyDeadlineExceeded):
         raise
     except Exception as exc:
-        LOGGER.error('导航模型调用失败：场景=导航/ClaudeSDK；%s', safe_exception_details(exc))
-        raise AgentError('导航模型请求或工具参数异常，已停止') from None
+        api_failure = is_model_api_failure(exc) or (
+            isinstance(exc, ResultError)
+            and (exc.terminal_reason == 'api_error'
+                 or type(exc.api_error_status) is int and 400 <= exc.api_error_status <= 599)
+        )
+        LOGGER.error('导航模型调用失败：场景=导航/ClaudeSDK；%s', safe_exception_details(exc),
+                     extra={'backend_only': api_failure})
+        error = AgentError('导航模型请求或工具参数异常，已停止')
+        if api_failure:
+            mark_model_api_failure(error)
+        raise error from None
 

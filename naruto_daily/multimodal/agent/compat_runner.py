@@ -8,11 +8,11 @@ import time
 from dataclasses import dataclass, replace
 from typing import Annotated, Callable, Literal
 
-from openai import AsyncOpenAI, OpenAIError
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, OpenAIError
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_ai import Agent, BinaryContent, ModelRetry, ToolOutput, ToolReturn
 from pydantic_ai.capabilities import Hooks
-from pydantic_ai.exceptions import AgentRunError
+from pydantic_ai.exceptions import AgentRunError, ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import ModelRequest, ToolCallPart, UserPromptPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
@@ -21,9 +21,20 @@ from pydantic_ai.usage import UsageLimits
 
 from naruto_daily.common.visual import VisualError
 from naruto_daily.common.execution import check_execution, current_execution, execution_sleep, DailyDeadlineExceeded
-from naruto_daily.multimodal.diagnostics import model_request_context, safe_exception_details
+from naruto_daily.multimodal.diagnostics import (
+    is_model_api_failure, mark_model_api_failure, model_request_context, safe_exception_details,
+)
 from naruto_daily.multimodal.transport import ModelAsyncClient, MultimodalRequestError, httpx
 from .completion_watch import CompletionDetected, CompletionWatch
+
+# Older SDKs may expose httpx errors, but current production dependencies only
+# require httpx2. Do not make the optional legacy package mandatory at startup.
+try:
+    from httpx import TransportError as LegacyTransportError
+except ImportError:
+    _LEGACY_TRANSPORT_ERRORS = ()
+else:
+    _LEGACY_TRANSPORT_ERRORS = (LegacyTransportError,)
 
 LOGGER = logging.getLogger('naruto_daily')
 Observation = Annotated[str, Field(strict=True, min_length=1, max_length=2000, pattern=r'\S')]
@@ -156,6 +167,31 @@ async def _refresh_navigation_request(request, png):
     headers = [(key, value) for key, value in request.headers.multi_items() if key.lower() != 'content-length']
     return httpx.Request(request.method, request.url, headers=headers,
                          content=json.dumps(payload).encode('utf-8'), extensions=dict(request.extensions))
+
+
+def _is_sdk_api_failure(error: BaseException) -> bool:
+    """Only unwrap known SDK envelopes; local tool failures stay public."""
+    seen = set()
+    while isinstance(error, BaseException) and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, (DailyDeadlineExceeded, CompletionDetected)):
+            return False
+        if is_model_api_failure(error):
+            return True
+        if isinstance(error, (APIStatusError, ModelHTTPError, httpx.TransportError) + _LEGACY_TRANSPORT_ERRORS):
+            return True
+        cause = error.__cause__
+        if isinstance(error, APIConnectionError):
+            # OpenAI wraps every send exception, including local refresh bugs.
+            if cause is None:
+                return True
+        elif isinstance(error, ModelAPIError):
+            if cause is None:
+                return True
+        elif type(error) not in (OpenAIError, AgentRunError):
+            return False
+        error = cause
+    return False
 
 
 def run_agent(
@@ -319,8 +355,13 @@ def run_agent(
             cause = cause.__cause__
         check_execution()
         # 供应商错误可能含请求信息，面向任务只暴露错误类别，不输出密钥或响应正文。
-        LOGGER.error('导航模型调用失败：场景=导航/兼容SDK；%s', safe_exception_details(exc))
-        raise AgentError('导航模型请求或工具参数异常，已停止') from None
+        api_failure = _is_sdk_api_failure(exc)
+        LOGGER.error('导航模型调用失败：场景=导航/兼容SDK；%s', safe_exception_details(exc),
+                     extra={'backend_only': api_failure})
+        error = AgentError('导航模型请求或工具参数异常，已停止')
+        if api_failure:
+            mark_model_api_failure(error)
+        raise error from None
 
 
 # 与统一导航入口共享公共类型。

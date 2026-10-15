@@ -84,6 +84,7 @@ def execution_sleep(seconds: float, sleep: Callable[[float], None] = time.sleep)
 def retry_observation(observe: Callable[[], T], *, name: str = "识别") -> T:
     """Retry only a read-only observation, recapturing its entire frame/metadata."""
     from naruto_daily.multimodal.transport import MultimodalRequestError
+    from naruto_daily.multimodal.diagnostics import is_model_api_failure
     from naruto_daily.common.visual import NonRetryableVisualError, VisualError
 
     while True:
@@ -99,7 +100,8 @@ def retry_observation(observe: Callable[[], T], *, name: str = "识别") -> T:
             if budget is None or not getattr(exc, "retryable", False):
                 raise
             remaining = budget.remaining()
-            LOGGER.warning("%s接口暂时失败；10 秒后重新截图重试，总时限剩余 %.2f 秒：%s", name, remaining, exc)
+            LOGGER.warning("%s接口暂时失败；10 秒后重新截图重试，总时限剩余 %.2f 秒：%s", name, remaining, exc,
+                           extra={'backend_only': is_model_api_failure(exc)})
             budget.sleep(10)
         except NonRetryableVisualError:
             raise

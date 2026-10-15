@@ -15,7 +15,7 @@ import numpy as np
 from .visual import VisualError, find_template_in_png
 from .execution import current_execution, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient
-from naruto_daily.multimodal.diagnostics import model_request_context
+from naruto_daily.multimodal.diagnostics import is_model_api_failure, model_request_context
 
 LOGGER = logging.getLogger('naruto_daily')
 MAIN_TARGETS = {
@@ -196,7 +196,8 @@ class MainScreenRecognition:
         except Exception as exc:
             elapsed = time.monotonic() - started
             LOGGER.error('主界面模型识别失败：目标=%s，异常类型=%s，已耗时 %.2f 秒，本次识别总预算 %.2f 秒，剩余预算 %.2f 秒',
-                         menu, type(exc).__name__, elapsed, budget, max(0.0, budget - elapsed))
+                         menu, type(exc).__name__, elapsed, budget, max(0.0, budget - elapsed),
+                         extra={'backend_only': is_model_api_failure(exc)})
             raise
         LOGGER.info('主界面模型识别：%s，%s，耗时 %.2f 秒',
                     target['name'], f'已确认 {center}' if center else '未确认', time.monotonic() - started)
