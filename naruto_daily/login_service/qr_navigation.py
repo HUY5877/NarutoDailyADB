@@ -265,11 +265,40 @@ def choose_action(frame: np.ndarray, xml: str, login_type: str = DEFAULT_LOGIN_T
     return None
 
 
+def find_startup_ad_close(frame: np.ndarray) -> LoginAction | None:
+    """Find the neutral gray/white ad X, independent of the advertised game."""
+    if frame.shape[:2] != (1080, 1920) or authorization_page(frame):
+        return None
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    template = _template('startup_ad_close')
+    best_score, best_point = .94, None
+    # Only the inside of the button is sampled: no artwork, logo or rounded
+    # corners whose background changes with the advertisement. Search the full
+    # Android frame because different ad layouts move and resize the control.
+    for scale in (.7, .8, .9, 1., 1.1, 1.2, 1.3, 1.4, 1.5):
+        needle = cv2.resize(template, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+        _, score, _, point = cv2.minMaxLoc(cv2.matchTemplate(gray, needle, cv2.TM_CCOEFF_NORMED))
+        if score < best_score:
+            continue
+        h, w = needle.shape
+        x, y = point
+        patch = frame[y:y+h, x:x+w].astype(np.int16)
+        # Correlation alone ignores color and brightness. Reject the game's
+        # orange X and light authorization controls even if their shapes match.
+        if (np.percentile(patch.max(axis=2) - patch.min(axis=2), 95) > 25
+                or not 45 <= np.median(gray[y:y+h, x:x+w]) <= 155):
+            continue
+        best_score, best_point = score, (x + w // 2, y + h // 2)
+    return LoginAction('startup_ad_close', *best_point) if best_point else None
+
+
 def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1,
-                   is_authorized: Callable[[], bool] | None = None) -> bytes | None:
+                   is_authorized: Callable[[], bool] | None = None,
+                   allow_startup_ads: bool = True) -> bytes | None:
     last_action, repeated = None, 0
     qr_wait_until: float | None = None
     channel_attempts = 0
+    ad_observed, ad_clicks = False, 0
     login_type = parse_login_type(getattr(device, 'login_type', DEFAULT_LOGIN_TYPE))
     while time.time() < device.deadline:
         if is_authorized is not None and is_authorized():
@@ -290,6 +319,32 @@ def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1,
             if png:
                 return png
             action = choose_action(frame, xml, login_type)
+        ad_action = (find_startup_ad_close(frame)
+                     if allow_startup_ads and qr_wait_until is None
+                     and (action is None or action.name != 'game_wait') else None)
+        if ad_action:
+            if ad_clicks >= 3:
+                raise QRNavigationError('启动广告关闭后仍然出现，已尝试 3 次；停止点击，请检查模拟器广告页面')
+            if not ad_observed:
+                logging.getLogger(__name__).info('识别到启动广告关闭按钮；下一轮重新截图确认后关闭')
+                ad_observed = True
+            else:
+                if is_authorized is not None and is_authorized():
+                    return None
+                if time.time() >= device.deadline:
+                    break
+                device.tap(ad_action.x, ad_action.y)
+                ad_clicks += 1
+                ad_observed = False
+                logging.getLogger(__name__).info(
+                    '启动广告关闭按钮复查通过，点击坐标：(%s, %s)，第 %s/3 次；重新截图继续准备二维码',
+                    ad_action.x, ad_action.y, ad_clicks,
+                )
+            time.sleep(min(max(0, poll_seconds), max(0, device.deadline-time.time())))
+            continue
+        if ad_observed:
+            logging.getLogger(__name__).info('启动广告关闭按钮复查未匹配，取消点击，按当前页面继续准备二维码')
+        ad_observed = False
         if qr_wait_until is not None and time.time() >= qr_wait_until:
             if (login_type.endswith('_wechat') and action is not None
                     and action.name in ('wechat_android', 'wechat_ios') and channel_attempts < 3):
@@ -311,6 +366,8 @@ def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1,
             if time.time() >= device.deadline:
                 break
             device.tap(action.x, action.y)
+            if action.name != 'game_wait':
+                allow_startup_ads = False
             if action.name in ('wechat_android', 'wechat_ios'):
                 channel_attempts += 1
             if action.name in ("scan_login", "wechat_android", "wechat_ios"):
@@ -374,6 +431,7 @@ def refresh_login_qr(device: LoginDevice, *, is_authorized: Callable[[], bool],
         else:
             action = choose_action(frame, '', login_type)
             if action and action.name != 'game_back':
-                return fetch_login_qr(device, poll_seconds=poll_seconds, is_authorized=is_authorized)
+                return fetch_login_qr(device, poll_seconds=poll_seconds, is_authorized=is_authorized,
+                                      allow_startup_ads=False)
         time.sleep(min(poll_seconds, max(0, device.deadline - time.time())))
     raise QRNavigationError('Login task deadline expired during QR refresh')
