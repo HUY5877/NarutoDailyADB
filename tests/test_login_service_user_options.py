@@ -44,7 +44,7 @@ def queue_body():
         "id": task_id,
         "createdAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "expiresAt": (now + timedelta(seconds=60)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-        "objectKey": f"login/{task_id}/qr.png",
+        "objectKey": f"login-test-jev/{task_id}/qr.png",
     }
 
 
@@ -53,7 +53,7 @@ def parse_http(body):
 
 
 def parse_queue(body):
-    return parse_queue_task(body, "login")
+    return parse_queue_task(body, "login-test-jev")
 
 
 def test_user_options_defaults_are_independent():

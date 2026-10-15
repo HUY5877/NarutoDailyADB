@@ -17,11 +17,11 @@ from redis.retry import Retry
 from redis.asyncio.retry import Retry as AsyncRetry
 
 from naruto_daily.common.environment import EnvironmentConfigError, read_environment
+from naruto_daily.common.namespace import ROUTING_COUNTER_KEY
 from .channels import CHANNELS, Channel, channel_values
 
 
 LOGGER = logging.getLogger('naruto_daily')
-ROUTING_COUNTER_KEY = 'naruto:multimodal:route:sequence'
 REDIS_TIMEOUT_SECONDS = 5
 
 

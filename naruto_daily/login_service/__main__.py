@@ -10,6 +10,7 @@ import signal
 from urllib.parse import urlsplit
 
 from naruto_daily.common import environment
+from naruto_daily.common.namespace import isolate_state_dir
 from .ldplayer import LDPlayerError
 
 
@@ -36,7 +37,7 @@ def reset_pool_on_startup(env_file: Path) -> None:
     state_dir = Path(values.get("LDPLAYER_STATE_DIR") or ".data/login-service/ldplayer")
     if not state_dir.is_absolute():
         state_dir = environment.PROJECT_ROOT / state_dir
-    manager = LDPlayerManager(console.resolve(), "", state_dir.resolve(),
+    manager = LDPlayerManager(console.resolve(), "", isolate_state_dir(state_dir.resolve()),
                               pool_indices=tuple(int(part) for part in parts))
     manager.reset_pool()
     logging.info("雷电实例登记已重置为空闲：indices=%s", indices)

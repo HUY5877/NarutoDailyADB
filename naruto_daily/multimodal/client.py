@@ -14,6 +14,7 @@ from naruto_daily.common.environment import (
     EnvironmentConfigError, read_environment, resolve_environment,
 )
 from .gateway import initialize_gateway
+from .decisions import ChoicePrompt, JevDecisionClient
 from naruto_daily.common.execution import MODEL_REQUEST_TIMEOUT_SECONDS, current_execution
 from naruto_daily.common.visual import NonRetryableVisualError
 
@@ -32,6 +33,8 @@ class MultimodalClient:
         self._sleep, self._clock = sleep, clock
         try:
             environment = read_environment()
+            self._decision_values = {name: environment.get(name) for name in ('JEV_API_KEY', 'JEV_MODEL')}
+            self._decisions = None
             self.gateway = initialize_gateway()
             # 任务 JSON 只控制调用时限等业务参数，URL、密钥、模型由渠道决定。
             self.config = resolve_environment({key: value for key, value in config.items()
@@ -57,6 +60,19 @@ class MultimodalClient:
     def complete_json(self, png: bytes, prompt: str, *, timeout_seconds=None,
                       refresh_image: Callable[[], bytes] | None = None) -> dict:
         """首次识别给定截图；提供刷新函数时，每次接口重试都改用新截图。"""
+        if isinstance(prompt, ChoicePrompt):
+            try:
+                if self._decisions is None:
+                    self._decisions = JevDecisionClient(
+                        self._decision_values, open_request=self._open,
+                        sleep=self._sleep, clock=self._clock,
+                    )
+            except EnvironmentConfigError as exc:
+                raise MultimodalConfigurationError(f'JEV 配置错误：{exc}') from None
+            return self._decisions.complete_json(
+                png, prompt, request_timeout=float(self.config['timeout_seconds']),
+                timeout_seconds=timeout_seconds, refresh_image=refresh_image,
+            )
         def build_request(image):
             payload = {
                 'model': self.config['model'], 'reasoning_effort': 'low', 'max_tokens': 4096,

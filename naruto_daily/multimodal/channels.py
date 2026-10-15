@@ -17,7 +17,7 @@ CHANNELS = (
     ChannelDefinition('deepseek', 'https://api.deepseek.com',
                       'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL'),
 )
-API_KEY_ENV_NAMES = tuple(channel.key_variable for channel in CHANNELS)
+API_KEY_ENV_NAMES = (*tuple(channel.key_variable for channel in CHANNELS), 'JEV_API_KEY')
 
 
 @dataclass(frozen=True)

@@ -117,7 +117,7 @@ def test_authenticated_submission_dedup_and_png_object_contract(tmp_path):
         assert response.headers["cache-control"] == "no-store"
         assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
         assert len(response.content) == int(head.headers["content-length"])
-        assert response.content == runtime.storage._bucket.objects[f"login/{submission['id']}/qr.png"][0]
+        assert response.content == runtime.storage._bucket.objects[f"login-test-jev/{submission['id']}/qr.png"][0]
         with Image.open(BytesIO(response.content)) as png:
             assert png.format == "PNG"
             assert png.width == png.height
@@ -182,7 +182,7 @@ def test_ready_qr_expires_and_retained_task_is_eventually_removed(tmp_path):
         assert client.head(path).status_code == 404
         wait_for(lambda: runtime.stats["tasks"], lambda count: count == 0)
         assert get_task(client, submission).status_code == 404
-        assert f"login/{submission['id']}/qr.png" not in runtime.storage._bucket.objects
+        assert f"login-test-jev/{submission['id']}/qr.png" not in runtime.storage._bucket.objects
 
 
 def test_ldplayer_mode_rejects_missing_console_configuration_at_startup(tmp_path):

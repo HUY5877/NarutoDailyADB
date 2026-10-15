@@ -142,7 +142,7 @@ def test_cloud_overrides_local_and_process_settings_and_clears_deleted_keys(monk
     assert initialize_gateway().channels[0].name == 'deepseek'
 
 
-def test_qq_and_database_credentials_are_cloud_only_and_not_in_child_environment(monkeypatch, tmp_path):
+def test_production_qq_and_database_credentials_are_ignored_and_not_in_child_environment(monkeypatch, tmp_path):
     names = ('QQ_BOT_APP_ID', 'QQ_BOT_APP_SECRET', 'QQ_BOT_GROUP_OPENID', 'DATABASE_URL')
     with (tmp_path / '.env').open('a', encoding='utf-8') as stream:
         stream.write('\n' + '\n'.join(f'{name}=stale-local-value' for name in names))
@@ -152,8 +152,8 @@ def test_qq_and_database_credentials_are_cloud_only_and_not_in_child_environment
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: dict(remote))
     environment.initialize_environment(tmp_path / '.env')
     config = load_config()
-    assert config.qq_bot_app_secret == 'cloud-qq-secret'
-    assert config.database_url == 'postgresql://user:password@db.invalid/naruto'
+    assert config.qq_bot_app_id == config.qq_bot_app_secret == config.qq_bot_group_openid == ''
+    assert config.database_url is None
     assert all(name not in environment.model_environment_for_child() for name in names)
     environment._initialized = False
     remote.clear()
@@ -163,13 +163,16 @@ def test_qq_and_database_credentials_are_cloud_only_and_not_in_child_environment
 
 
 def test_startup_reports_missing_username_database_configuration(monkeypatch, tmp_path, caplog):
-    remote = {**OSS_ENV, 'REDIS_URL': 'redis://unused.invalid/0', 'QQ_BOT_APP_ID': '1900000001',
-              'QQ_BOT_APP_SECRET': 'private-qq-secret', 'QQ_BOT_GROUP_OPENID': 'A' * 32}
+    remote = {**OSS_ENV, 'REDIS_URL': 'redis://unused.invalid/0'}
+    with (tmp_path / '.env').open('a', encoding='utf-8') as stream:
+        stream.write('\nTEST_JEV_QQ_BOT_APP_ID=1900000001\n'
+                     'TEST_JEV_QQ_BOT_APP_SECRET=private-qq-secret\n'
+                     f'TEST_JEV_QQ_BOT_GROUP_OPENID={"A" * 32}\n')
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: dict(remote))
     with pytest.raises(SystemExit) as result:
         entrypoint.main(['--env-file', str(tmp_path / '.env')])
     assert result.value.code == 1
-    assert 'DATABASE_URL' in caplog.text
+    assert 'TEST_JEV_DATABASE_URL' in caplog.text
     assert 'private-qq-secret' not in caplog.text
 
 

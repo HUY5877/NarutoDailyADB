@@ -71,7 +71,7 @@ def test_config_defaults_and_project_relative_state(monkeypatch, tmp_path):
     assert config.ldplayer_console_path is None
     assert config.ldplayer_template == ""
     assert config.ldplayer_pool_indices == ()
-    assert config.ldplayer_state_dir == PROJECT_ROOT / ".data/login-service/ldplayer"
+    assert config.ldplayer_state_dir == PROJECT_ROOT / ".data/login-service/ldplayer/test-jev"
     assert config.ldplayer_package == "com.tencent.KiHan"
     assert config.ldplayer_command_timeout_seconds == 20
 
@@ -93,7 +93,7 @@ def test_ldplayer_config_resolves_paths_and_redacts_oss_secrets(tmp_path):
     })
     assert config.ldplayer_console_path == console
     assert config.ldplayer_template == "clean-login-template"
-    assert config.ldplayer_state_dir == PROJECT_ROOT / "relative-state"
+    assert config.ldplayer_state_dir == PROJECT_ROOT / "relative-state/test-jev"
     assert config.ldplayer_package == "example.game"
     assert config.ldplayer_command_timeout_seconds == 31
     assert "private-oss-secret" not in repr(config)
@@ -155,7 +155,7 @@ def test_config_allows_oss_and_non_loopback_credentials():
         "OSS_REGION": "oss-cn-hangzhou", "OSS_BUCKET": "example", "OSS_ACCESS_KEY_ID": "test-id",
         "OSS_ACCESS_KEY_SECRET": "test-secret", "OSS_STS_TOKEN": "test-sts", "OSS_KEY_PREFIX": "/login/test/",
     })
-    assert config.key_prefix == "login/test"
+    assert config.key_prefix == "login-test-jev/test"
     assert config.oss_sts_token == "test-sts"
 
 
@@ -565,7 +565,7 @@ def test_ldplayer_worker_protocol_is_secret_free_and_completed_instance_is_relea
                 "type": "start", "id": task_id, "expiresAt": body["expiresAt"],
                 "consolePath": str(tmp_path / "dnconsole.exe"),
                 "template": "clean-template", "poolIndices": [],
-                "stateDir": str(tmp_path / "state"),
+                "stateDir": str(tmp_path / "state" / "test-jev"),
                 "package": "example.game", "commandTimeout": 23,
                 "dailyConfigPath": str(runtime.config.daily_config_path),
                 "dailyTimeoutSeconds": runtime.config.daily_timeout_seconds,

@@ -169,8 +169,8 @@ def test_cmd_entrypoint_resets_local_pool_before_cloud_config_and_worker(tmp_pat
         "EMULATOR_DRIVER=ldplayer\nLDPLAYER_CONSOLE_PATH=LDPlayer9/ldconsole.exe\n"
         "LDPLAYER_POOL_INDICES=4,17\nLDPLAYER_STATE_DIR=machine-state\n", encoding="utf-8-sig",
     )
-    path = tmp_path / "machine-state" / "bindings.json"
-    path.parent.mkdir()
+    path = tmp_path / "machine-state" / "test-jev" / "bindings.json"
+    path.parent.mkdir(parents=True)
     path.write_text("corrupted old bindings", encoding="utf-8")
     events = []
 
@@ -231,7 +231,7 @@ def test_pool_startup_process_environment_overrides_local_file(tmp_path, monkeyp
 
     assert len(managers) == 1
     assert managers[0].pool_indices == (4, 39)
-    assert managers[0].state_dir == tmp_path / "custom-state"
+    assert managers[0].state_dir == tmp_path / "custom-state" / "test-jev"
 
 
 @pytest.mark.parametrize("indices", ["", "4,x", "4,4"])

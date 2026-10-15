@@ -22,7 +22,7 @@ def test_child_only_reads_its_task_and_does_not_repeat_before_upload_ack(monkeyp
     command['requestId'] = str(uuid4())
     reader.next_poll = 0
     assert reader.poll() is None
-    assert reads == [f'test:queue:refresh:{task_id}'] * 3
+    assert reads == [f'test-test-jev:queue:refresh:{task_id}'] * 3
 
 
 @pytest.mark.parametrize('page', ['valid_qr', 'expired_qr', 'login'])

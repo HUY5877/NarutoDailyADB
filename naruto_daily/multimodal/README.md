@@ -1,6 +1,28 @@
 # 多模态网关路由
 
-普通图片识别和 OpenAI 兼容导航共用进程内路由层，不启动额外 HTTP 服务。渠道定义在 `channels.py`，路由和 Redis 计数在 `gateway.py`，请求超时及重试在 `transport.py`。
+选择判断与内容生成使用两条显式路径，不启动额外 HTTP 服务。`ChoicePrompt` 交给 `decisions.py` 调用 JEV；普通字符串提示词与 OpenAI 兼容导航继续使用生成模型网关。生成渠道定义在 `channels.py`，路由和 Redis 计数在 `gateway.py`，两条路径的请求时限和重试都使用 `transport.py`。
+
+## JEV 选择判断
+
+在根目录被 Git 忽略的 `.env` 中配置：
+
+```dotenv
+JEV_API_KEY=
+JEV_MODEL=typesafe/jev-1.14
+```
+
+本地 JEV 配置优先于共享 KV，显式进程变量优先于本地文件；任务子进程继承父进程解析的值。修改配置后重启 worker。缺少 JEV 密钥时，选择场景明确报错，不回退到生成模型。
+
+`decisions.py` 固定请求 `https://openrouter.ai/api/alpha/decisions`，发送图片、判定条件和一个 `choice` 问题，并携带图片功能请求头。JEV 只返回候选标签，程序验证标签后深拷贝本地结果，不能让 JEV 生成 JSON、坐标或解释。模型请求和异常日志不包含密钥、图片、提示词或上游响应原文。
+
+| 选择场景 | 本地结果来源 |
+| --- | --- |
+| 主界面、装备子菜单、奖励入口、秘境入口 | 当前截图的候选编号映射坐标；页面不符、遮挡或候选不清时保持未确认 |
+| 战斗是否结束、丰饶结算前景 | 已结束、进行中和未知等有限状态；未知时保持停止点击并重新观察 |
+| 装备材料动作、弹层类型、所选装备能否进阶 | 固定操作枚举及 6 个装备槽位 |
+| 一乐外卖 | 3 个位置的 8 种可领取组合，或奖励/未知前景 |
+
+奖励候选仍须通过同一帧文字模板复核。需要自由读取昵称、券数、重置次数、装备数值、副本名称，以及生成按钮坐标或执行导航工具的场景继续走原生成模型，JEV 不加入其轮询渠道。JEV 请求不访问 Redis 轮询计数；两条路径仍共用原任务截止时间、单次超时和重新截图重试规则。
 
 ## 配置
 
@@ -14,6 +36,7 @@ REDIS_URL=redis://127.0.0.1:6379/0
 
 | 渠道 | 固定基础地址 | 密钥变量 | 模型变量 |
 | --- | --- | --- | --- |
+| 鱼玩 | `https://llm-proxy.yuwan-game.com/v1` | `YUWAN_API_KEY` | `YUWAN_MODEL` |
 | DeepSeek 官方 | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` |
 
 DeepSeek 使用 `/chat/completions`，地址依据[官方 API 文档](https://api-docs.deepseek.com/)。模型名是独立配置项，示例名称可按该渠道提供的多模态模型修改。
@@ -31,7 +54,7 @@ DeepSeek 配置使用上表中的变量，key 留空即禁用该渠道。任务 
 ## 请求流程
 
 1. 启动时按预定义顺序筛选有 key 的渠道，冻结有效列表和配置。
-2. 每次实际 HTTP 尝试前执行一次原子 `INCR naruto:multimodal:route:sequence`。
+2. 每次生成模型的实际 HTTP 尝试前执行一次原子 `INCR naruto:multimodal-test-jev:route:sequence`，与正式环境隔离。
 3. 用返回值对有效渠道数取模，作为有效列表的下标，同时替换 URL、Authorization 和请求体中的 `model`。
 4. 请求成功返回；非 200 或网络异常按现有规则等待并重试，下一次尝试再次 `INCR`。图片重试仍重新截图，导航历史和已执行的工具动作保留。
 

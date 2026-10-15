@@ -1,4 +1,4 @@
-"""启动时加载 Cloudflare KV；本地文件提供连接凭据、可选鱼玩和机器配置。"""
+"""启动时加载 Cloudflare KV；本地文件提供连接凭据、JEV 和机器配置。"""
 from __future__ import annotations
 
 import logging
@@ -15,8 +15,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CHANNEL_ENV_NAMES = (
     'YUWAN_API_KEY', 'YUWAN_MODEL',
     'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL',
+    'JEV_API_KEY', 'JEV_MODEL',
 )
-LOCAL_CHANNEL_ENV_NAMES = ('YUWAN_API_KEY', 'YUWAN_MODEL')
+JEV_ENV_NAMES = ('JEV_API_KEY', 'JEV_MODEL')
+LOCAL_CHANNEL_ENV_NAMES = ('YUWAN_API_KEY', 'YUWAN_MODEL', *JEV_ENV_NAMES)
 CLOUD_ENV_NAMES = (*CHANNEL_ENV_NAMES, 'REDIS_URL', 'REDIS_QUEUE_KEY',
                    'OSS_REGION', 'OSS_BUCKET', 'OSS_ACCESS_KEY_ID',
                    'OSS_ACCESS_KEY_SECRET', 'OSS_STS_TOKEN', 'OSS_KEY_PREFIX',
@@ -61,7 +63,13 @@ def initialize_environment(env_file: Path | None = None) -> None:
         if local_yuwan:
             if not (local.get('YUWAN_MODEL') or '').strip():
                 raise EnvironmentConfigError('本地启用鱼玩时，请在 .env 配置非空的 YUWAN_MODEL')
-            values.update({name: local[name] for name in LOCAL_CHANNEL_ENV_NAMES})
+            values.update({name: local[name] for name in ('YUWAN_API_KEY', 'YUWAN_MODEL')})
+        # JEV 本地配置独立于生成模型；子进程只继承已解析的值。
+        # 环境变量优先于 .env，明确的空值也不能回退到共享 KV 中的 key。
+        for name in JEV_ENV_NAMES:
+            value = os.environ.get(name, local.get(name))
+            if value is not None:
+                values[name] = value
         # Publish only after every page and value has been read successfully.
         # Missing cloud settings must never reuse stale local/process credentials.
         for name in CLOUD_ENV_NAMES:

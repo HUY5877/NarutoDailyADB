@@ -81,7 +81,7 @@ def _locate_and_tap(images, model, action, page, name, *, clock=time.monotonic):
             return None
         start = clock()
         try:
-            result = model.complete_json(preview, secret_entry_prompt(page, name),
+            result = model.complete_json(preview, secret_entry_prompt(page, name, centers),
                                          timeout_seconds=stage_timeout(deadline-images.elapsed))
             calls += 1
         finally:

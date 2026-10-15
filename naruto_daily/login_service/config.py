@@ -11,6 +11,10 @@ from urllib.parse import urlsplit
 
 from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS
 from naruto_daily.common.environment import EnvironmentConfigError
+from naruto_daily.common.namespace import (
+    DEFAULT_OSS_KEY_PREFIX, DEFAULT_REDIS_QUEUE_KEY, isolate_oss_prefix,
+    isolate_redis_queue_key, isolate_state_dir,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -20,11 +24,11 @@ DEFAULT_SERVICE_TOKEN = "local-development-token"
 @dataclass(frozen=True)
 class ServiceConfig:
     redis_url: str | None = field(default=None, repr=False)
-    redis_queue_key: str = "naruto:login:tasks"
+    redis_queue_key: str = DEFAULT_REDIS_QUEUE_KEY
     host: str = "127.0.0.1"
     port: int = 4320
     service_token: str = DEFAULT_SERVICE_TOKEN
-    key_prefix: str = "login"
+    key_prefix: str = DEFAULT_OSS_KEY_PREFIX
     concurrency: int = 2
     max_queue_size: int = 100
     max_tasks: int = 500
@@ -34,7 +38,7 @@ class ServiceConfig:
     ldplayer_console_path: Path | None = None
     ldplayer_template: str = ""
     ldplayer_pool_indices: tuple[int, ...] = ()
-    ldplayer_state_dir: Path = PROJECT_ROOT / ".data/login-service/ldplayer"
+    ldplayer_state_dir: Path = PROJECT_ROOT / ".data/login-service/ldplayer/test-jev"
     ldplayer_package: str = "com.tencent.KiHan"
     ldplayer_command_timeout_seconds: int = 20
     daily_config_path: Path = PROJECT_ROOT / "config.example.json"
@@ -54,6 +58,10 @@ class ServiceConfig:
     database_url: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        # Constructor/replace callers obey the same guard as env-loaded config.
+        object.__setattr__(self, "redis_queue_key", isolate_redis_queue_key(self.redis_queue_key))
+        object.__setattr__(self, "key_prefix", isolate_oss_prefix(self.key_prefix))
+        object.__setattr__(self, "ldplayer_state_dir", isolate_state_dir(self.ldplayer_state_dir))
         # Preserve shorter configured/test limits without letting old 7200s
         # settings extend the 50-minute execution ceiling.
         object.__setattr__(self, "daily_timeout_seconds", min(self.daily_timeout_seconds, DAILY_TIMEOUT_SECONDS))
@@ -85,9 +93,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
                 raise ValueError
         except ValueError:
             raise ValueError("REDIS_URL must be a valid redis:// or rediss:// URL") from None
-    redis_queue_key = env.get("REDIS_QUEUE_KEY", "naruto:login:tasks")
-    if not re.fullmatch(r"[a-zA-Z0-9_:{}-]{1,128}", redis_queue_key):
-        raise ValueError("Invalid REDIS_QUEUE_KEY")
+    redis_queue_key = isolate_redis_queue_key(env.get("REDIS_QUEUE_KEY", DEFAULT_REDIS_QUEUE_KEY))
     emulator_driver = env.get("EMULATOR_DRIVER", "mock")
     if emulator_driver not in {"mock", "ldplayer"}:
         raise ValueError("EMULATOR_DRIVER must be mock or ldplayer")
@@ -108,9 +114,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
             raise ValueError("Invalid LDPLAYER_POOL_INDICES")
     else:
         ldplayer_pool_indices = ()
-    state_dir = Path(env.get(
-        "LDPLAYER_STATE_DIR", str(ServiceConfig.ldplayer_state_dir),
-    ))
+    state_dir = Path(env.get("LDPLAYER_STATE_DIR") or str(ServiceConfig.ldplayer_state_dir))
     if not state_dir.is_absolute():
         state_dir = PROJECT_ROOT / state_dir
     state_dir = state_dir.resolve()
@@ -134,9 +138,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
             raise ValueError("LDPLAYER_POOL_INDICES requires REDIS_URL worker mode")
         if not daily_config_path.is_file():
             raise ValueError("DAILY_CONFIG_PATH must name an existing JSON configuration")
-    key_prefix = env.get("OSS_KEY_PREFIX", "login").strip("/")
-    if not re.fullmatch(r"[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*", key_prefix):
-        raise ValueError("Invalid OSS_KEY_PREFIX")
+    key_prefix = isolate_oss_prefix(env.get("OSS_KEY_PREFIX", DEFAULT_OSS_KEY_PREFIX))
     service_token = env.get("SERVICE_TOKEN", DEFAULT_SERVICE_TOKEN)
     if len(service_token) < 16:
         raise ValueError("SERVICE_TOKEN must contain at least 16 characters")
@@ -155,21 +157,21 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
     )):
         raise ValueError("OSS_REGION, OSS_BUCKET, OSS_ACCESS_KEY_ID and OSS_ACCESS_KEY_SECRET are required for OSS")
     qq = {
-        "qq_bot_app_id": env.get("QQ_BOT_APP_ID", "").strip(),
-        "qq_bot_app_secret": env.get("QQ_BOT_APP_SECRET", "").strip(),
-        "qq_bot_group_openid": env.get("QQ_BOT_GROUP_OPENID", "").strip(),
+        "qq_bot_app_id": env.get("TEST_JEV_QQ_BOT_APP_ID", "").strip(),
+        "qq_bot_app_secret": env.get("TEST_JEV_QQ_BOT_APP_SECRET", "").strip(),
+        "qq_bot_group_openid": env.get("TEST_JEV_QQ_BOT_GROUP_OPENID", "").strip(),
     }
     if any(qq.values()) and not all(qq.values()):
-        raise EnvironmentConfigError("QQ_BOT_APP_ID, QQ_BOT_APP_SECRET and QQ_BOT_GROUP_OPENID must be configured together")
+        raise EnvironmentConfigError("TEST_JEV_QQ_BOT_APP_ID, TEST_JEV_QQ_BOT_APP_SECRET and TEST_JEV_QQ_BOT_GROUP_OPENID must be configured together")
     if qq["qq_bot_app_id"] and not re.fullmatch(r"[0-9]{1,32}", qq["qq_bot_app_id"]):
-        raise EnvironmentConfigError("Invalid QQ_BOT_APP_ID")
+        raise EnvironmentConfigError("Invalid TEST_JEV_QQ_BOT_APP_ID")
     if qq["qq_bot_group_openid"] and not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", qq["qq_bot_group_openid"]):
-        raise EnvironmentConfigError("Invalid QQ_BOT_GROUP_OPENID")
+        raise EnvironmentConfigError("Invalid TEST_JEV_QQ_BOT_GROUP_OPENID")
     if any(ord(char) < 32 for char in qq["qq_bot_app_secret"]):
-        raise EnvironmentConfigError("Invalid QQ_BOT_APP_SECRET")
-    database_url = env.get("DATABASE_URL", "").strip() or None
+        raise EnvironmentConfigError("Invalid TEST_JEV_QQ_BOT_APP_SECRET")
+    database_url = env.get("TEST_JEV_DATABASE_URL", "").strip() or None
     if qq["qq_bot_app_id"] and not database_url:
-        raise EnvironmentConfigError("请在 Cloudflare KV 配置 DATABASE_URL，以查询 QQ 通知中的网站用户名")
+        raise EnvironmentConfigError("请配置 TEST_JEV_DATABASE_URL，以查询测试 QQ 通知中的网站用户名")
     if database_url:
         try:
             database_address = urlsplit(database_url)
@@ -178,7 +180,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
                 raise ValueError
             database_address.port
         except ValueError:
-            raise EnvironmentConfigError("Invalid DATABASE_URL") from None
+            raise EnvironmentConfigError("Invalid TEST_JEV_DATABASE_URL") from None
     return ServiceConfig(
         redis_url=redis_url,
         redis_queue_key=redis_queue_key,
