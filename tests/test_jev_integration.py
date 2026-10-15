@@ -3,6 +3,8 @@ import io
 import json
 import os
 
+import cv2
+import numpy as np
 import pytest
 
 from naruto_daily.common import environment
@@ -22,7 +24,8 @@ def test_choice_uses_jev_without_consuming_generation_route(monkeypatch, configu
 
     model = MultimodalClient({'timeout_seconds': 10}, open_request=open_request)
     prompt = ChoicePrompt('只判断当前页面', {'无法确认': {'page': 'unknown', 'found': False}})
-    assert model.complete_json(b'png', prompt) == {'page': 'unknown', 'found': False}
+    frame = cv2.imencode('.png', np.zeros((360, 640, 3), np.uint8))[1].tobytes()
+    assert model.complete_json(frame, prompt) == {'page': 'unknown', 'found': False}
     assert len(sent) == 1 and sent[0].endswith('/api/alpha/decisions')
     assert configured_environment.value == 0
 

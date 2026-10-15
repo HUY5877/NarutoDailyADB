@@ -15,7 +15,10 @@ from test_battle import Clock, battle_config
 
 @pytest.fixture(autouse=True)
 def offline_jev_environment(monkeypatch, configured_environment):
+    from naruto_daily.multimodal import decisions
     monkeypatch.setenv('JEV_API_KEY', 'offline-jev-key')
+    # These timing tests use symbolic frames; real PNG resizing has dedicated tests.
+    monkeypatch.setattr(decisions, '_prepare_image', lambda image: image)
 
 
 class Device:

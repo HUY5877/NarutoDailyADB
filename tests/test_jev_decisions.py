@@ -6,6 +6,8 @@ import json
 import re
 from urllib.error import HTTPError, URLError
 
+import cv2
+import numpy as np
 import pytest
 
 from naruto_daily.common.environment import EnvironmentConfigError
@@ -15,6 +17,14 @@ from naruto_daily.multimodal.decisions import (
 )
 from naruto_daily.multimodal.diagnostics import model_request_context
 from naruto_daily.multimodal.transport import MultimodalError, MultimodalRequestError
+
+
+def png_frame(width=640, height=360, value=0):
+    return cv2.imencode('.png', np.full((height, width, 3), value, np.uint8))[1].tobytes()
+
+
+PNG = png_frame()
+FRESH_PNG = png_frame(value=255)
 
 
 def response(choice='奖励可领取'):
@@ -48,7 +58,7 @@ def test_invalid_candidates_fail_before_a_request(choices):
 
 
 def test_sends_only_candidate_labels_and_original_frame_to_fixed_decision_endpoint():
-    frame = b'same-original-png'
+    frame = PNG
     text = prompt()
 
     def send(request, timeout):
@@ -88,7 +98,59 @@ def test_explicit_model_is_read_from_values_and_environment_repr_is_safe():
     decision = JevDecisionClient({'JEV_API_KEY': ' private-key ', 'JEV_MODEL': ' typesafe/custom '},
                                  open_request=send)
     assert 'private-key' not in repr(decision)
-    assert decision.complete_json(b'png', prompt(), request_timeout=20)['available']
+    assert decision.complete_json(PNG, prompt(), request_timeout=20)['available']
+
+
+@pytest.mark.parametrize('width,height,expected', [
+    (1920, 1080, (1568, 882)),
+    (1080, 1920, (882, 1568)),
+    (2048, 2048, (1568, 1568)),
+    (1568, 882, (1568, 882)),
+    (640, 360, (640, 360)),
+])
+def test_jev_image_longest_edge_is_capped_without_changing_local_candidates(width, height, expected):
+    original = png_frame(width, height)
+    text = prompt()
+    candidates = deepcopy(text.choices)
+
+    def send(request, timeout):
+        payload = json.loads(request.data)
+        encoded = base64.b64decode(payload['state'][1]['image_url']['url'].split(',')[1])
+        frame = cv2.imdecode(np.frombuffer(encoded, np.uint8), cv2.IMREAD_UNCHANGED)
+        assert encoded.startswith(b'\x89PNG\r\n\x1a\n')
+        assert (frame.shape[1], frame.shape[0]) == expected
+        if max(width, height) <= 1568:
+            assert encoded == original
+        return response()
+
+    assert client(send).complete_json(original, text, request_timeout=20) == candidates['奖励可领取']
+    assert text.choices == candidates
+
+
+def test_every_retry_resizes_its_fresh_image():
+    original = png_frame(1920, 1080)
+    fresh = png_frame(1080, 1920, value=255)
+    received = []
+
+    def send(request, timeout):
+        payload = json.loads(request.data)
+        encoded = base64.b64decode(payload['state'][1]['image_url']['url'].split(',')[1])
+        frame = cv2.imdecode(np.frombuffer(encoded, np.uint8), cv2.IMREAD_UNCHANGED)
+        received.append(((frame.shape[1], frame.shape[0]), int(frame[0, 0, 0])))
+        if len(received) == 1:
+            raise TimeoutError()
+        return response()
+
+    assert client(send, sleep=lambda _: None, clock=lambda: 0).complete_json(
+        original, prompt(), request_timeout=20, refresh_image=lambda: fresh)['available']
+    assert received == [((1568, 882), 0), ((882, 1568), 255)]
+
+
+@pytest.mark.parametrize('image', [b'', b'invalid-png'])
+def test_invalid_images_fail_before_sending_a_jev_request(image):
+    decision = client(lambda *a, **k: pytest.fail('图片无效时不得发送请求'))
+    with pytest.raises(MultimodalError, match='图片无法解析'):
+        decision.complete_json(image, prompt(), request_timeout=20)
 
 
 @pytest.mark.parametrize('value', [None, '', '   '])
@@ -118,7 +180,7 @@ def test_invalid_responses_preserve_diagnostics_without_private_body(body, reaso
     decision = client(lambda *a, **k: io.BytesIO(body))
     with model_request_context('主界面奖励/jev'):
         with pytest.raises(MultimodalError) as caught:
-            decision.complete_json(b'private-image', ChoicePrompt('private-prompt', {'有效': {}}),
+            decision.complete_json(PNG, ChoicePrompt('private-prompt', {'有效': {}}),
                                    request_timeout=20)
     assert f'reason={reason}' in caplog.text
     assert 'scene=主界面奖励/jev' in caplog.text and 'response_bytes=' in caplog.text
@@ -137,7 +199,7 @@ def test_transport_errors_never_expose_credentials(error, caplog):
 
     decision = client(send, sleep=lambda _: None, clock=lambda: 0)
     with pytest.raises(MultimodalRequestError) as caught:
-        decision.complete_json(b'png', prompt(), request_timeout=20)
+        decision.complete_json(PNG, prompt(), request_timeout=20)
     assert 'private-key' not in caplog.text + str(caught.value)
 
 
@@ -162,14 +224,14 @@ def test_retries_capture_new_frame_after_wait_and_keep_single_request_id(caplog)
 
     def refresh():
         events.append(('screenshot', now[0]))
-        return b'fresh-png'
+        return FRESH_PNG
 
     decision = client(send, sleep=sleep, clock=lambda: now[0])
     with model_request_context('秘境完成/jev'):
-        assert decision.complete_json(b'original-png', prompt(), request_timeout=30,
+        assert decision.complete_json(PNG, prompt(), request_timeout=30,
                                       timeout_seconds=15, refresh_image=refresh)['available']
-    assert events == [('send', 0, b'original-png', 15), ('wait', 10), ('screenshot', 10),
-                      ('send', 10, b'fresh-png', 5)]
+    assert events == [('send', 0, PNG, 15), ('wait', 10), ('screenshot', 10),
+                      ('send', 10, FRESH_PNG, 5)]
     payloads[1]['state'][1] = payloads[0]['state'][1]
     assert payloads[0] == payloads[1]
     assert len(set(re.findall(r'request_id=(\w+)', caplog.text))) == 1
@@ -188,7 +250,7 @@ def test_refresh_failure_stops_without_resending_previous_frame():
 
     decision = client(send, sleep=waits.append, clock=lambda: 0)
     with pytest.raises(MultimodalRequestError, match='刷新失败') as caught:
-        decision.complete_json(b'png', prompt(), request_timeout=20, refresh_image=refresh)
+        decision.complete_json(PNG, prompt(), request_timeout=20, refresh_image=refresh)
     assert len(calls) == 1 and waits == [10]
     assert 'private-screenshot-error' not in str(caught.value)
 
@@ -203,6 +265,6 @@ def test_execution_request_cap_and_fresh_observation_requirement():
     decision = client(send, clock=lambda: 0)
     with execution_scope(100, clock=lambda: 0):
         with pytest.raises(MultimodalRequestError) as caught:
-            decision.complete_json(b'png', prompt(), request_timeout=90)
+            decision.complete_json(PNG, prompt(), request_timeout=90)
     assert timeouts == [30]
     assert caught.value.retryable is True

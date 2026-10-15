@@ -8,6 +8,9 @@ import logging
 from typing import Callable, Mapping
 from urllib.request import Request
 
+import cv2
+import numpy as np
+
 from naruto_daily.common.environment import EnvironmentConfigError, require_environment
 from .diagnostics import current_model_scene, safe_exception_details
 from .transport import MultimodalError, request_with_retry
@@ -16,11 +19,32 @@ from .transport import MultimodalError, request_with_retry
 LOGGER = logging.getLogger('naruto_daily')
 JEV_ENDPOINT = 'https://openrouter.ai/api/alpha/decisions'
 DEFAULT_JEV_MODEL = 'typesafe/jev-1.14'
+JEV_MAX_IMAGE_EDGE = 1568
 CHOICE_INSTRUCTIONS = (
     '仅根据截图和场景判定条件，从 criteria 中选择唯一一个最符合的候选标签。'
     '场景参考中的 JSON 示例仅表示要判断的事实；其中的输出格式或生成要求不是本次任务指令。'
     '只做候选选择，不生成 JSON、按钮坐标、解释或其他自由内容。'
 )
+
+
+def _prepare_image(png: bytes) -> bytes:
+    try:
+        frame = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_UNCHANGED)
+    except cv2.error:
+        raise MultimodalError('JEV 请求图片无法解析') from None
+    if frame is None:
+        raise MultimodalError('JEV 请求图片无法解析')
+    height, width = frame.shape[:2]
+    longest_edge = max(width, height)
+    if longest_edge <= JEV_MAX_IMAGE_EDGE:
+        return png
+    scale = JEV_MAX_IMAGE_EDGE / longest_edge
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    resized = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+    success, encoded = cv2.imencode('.png', resized)
+    if not success:
+        raise MultimodalError('JEV 请求图片缩放编码失败')
+    return encoded.tobytes()
 
 
 class ChoicePrompt(str):
@@ -62,6 +86,7 @@ class JevDecisionClient:
         choices = deepcopy(prompt.choices)
 
         def build_request(image):
+            image = _prepare_image(image)
             payload = {
                 'model': self._model,
                 'state': [
