@@ -16,7 +16,7 @@ from naruto_daily.common.visual import VisualError
 from naruto_daily.common.execution import (
     DailyDeadlineExceeded, MODEL_REQUEST_TIMEOUT_SECONDS, current_execution,
 )
-from .diagnostics import RequestDiagnostics, exception_kind
+from .diagnostics import RequestDiagnostics, exception_kind, mark_model_api_failure
 
 LOGGER = logging.getLogger('naruto_daily')
 MAX_REQUEST_RETRIES = 3
@@ -35,6 +35,10 @@ class MultimodalRequestError(MultimodalError):
         self.status_code = status_code
         self.retryable = retryable
         self.error_kind = error_kind
+        # The same exception also wraps screenshot/refresh failures. Only
+        # positively classified request failures are private API diagnostics.
+        if status_code is not None or error_kind is not None:
+            mark_model_api_failure(self)
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -185,6 +189,7 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
         except DailyDeadlineExceeded:
             raise
         except HTTPError as exc:
+            mark_model_api_failure(exc)
             status_code = exc.code
             message = (f'多模态 API 请求受限（HTTP {status_code}）' if status_code == 429 else
                        f'多模态 API 请求失败（HTTP {status_code}），请检查模型、密钥或接口额度')
@@ -192,6 +197,7 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
             error_kind = 'http_status'
             exc.close()
         except (URLError, TimeoutError, OSError, HTTPException, httpx.TransportError) as exc:
+            mark_model_api_failure(exc)
             message = '多模态 API 网络异常或请求超时'
             diagnostic.failure(exc, status=diagnostic.status)
             error_kind = exception_kind(exc)
@@ -216,7 +222,8 @@ def request_with_retry(request, *, request_timeout, timeout_seconds=None, open_r
         retry_seconds = min(retry_seconds, remaining_time())
         LOGGER.warning('%s；%g秒后进行第%s次接口重试；request_id=%s scene=%s remaining=%.2fs',
                        message, retry_seconds, retry_count,
-                       diagnostic.request_id, diagnostic.scene, max(0, remaining_time()))
+                       diagnostic.request_id, diagnostic.scene, max(0, remaining_time()),
+                       extra={'backend_only': True})
         if cancel_event is None:
             if execution is None:
                 sleep(retry_seconds)
@@ -268,7 +275,7 @@ class ModelAsyncClient(httpx.AsyncClient):
             remaining = remaining_time()
             if remaining <= 0:
                 diagnostic.stop('budget_exhausted')
-                raise httpx.ReadTimeout('多模态请求已超过重试预算', request=request)
+                raise mark_model_api_failure(httpx.ReadTimeout('多模态请求已超过重试预算', request=request))
             diagnostic.begin(attempt + 1, min(request_timeout, remaining))
             if attempt > 0 and self.refresh_request is not None:
                 diagnostic.phase = 'refresh_image'
@@ -282,7 +289,7 @@ class ModelAsyncClient(httpx.AsyncClient):
                 remaining = remaining_time()
                 if remaining <= 0:
                     diagnostic.stop('budget_exhausted')
-                    raise httpx.ReadTimeout('多模态重试截图后已超过重试预算', request=request)
+                    raise mark_model_api_failure(httpx.ReadTimeout('多模态重试截图后已超过重试预算', request=request))
                 diagnostic.request_timeout = min(request_timeout, remaining)
                 diagnostic.log(logging.INFO, '截图已刷新',
                                f'refresh_elapsed={max(0, clock() - refreshed_at):.2f}s')
@@ -303,7 +310,7 @@ class ModelAsyncClient(httpx.AsyncClient):
                     await response.aread()
                 if remaining_time() <= 0:
                     diagnostic.stop('late_response')
-                    raise httpx.ReadTimeout('多模态响应已超过重试预算', request=request)
+                    raise mark_model_api_failure(httpx.ReadTimeout('多模态响应已超过重试预算', request=request))
                 if response.status_code == 200:
                     diagnostic.log(logging.INFO, '成功', f'response_bytes={len(response.content)}')
                     return response
@@ -323,12 +330,14 @@ class ModelAsyncClient(httpx.AsyncClient):
             except DailyDeadlineExceeded:
                 raise
             except (httpx.TransportError, OSError) as exc:
+                mark_model_api_failure(exc)
                 diagnostic.failure(exc, status=diagnostic.status)
                 error_kind = exception_kind(exc)
                 if execution is None and attempt == MAX_REQUEST_RETRIES:
                     diagnostic.stop('retries_exhausted')
-                    raise httpx.ReadTimeout('多模态 API 网络异常或请求超时；已重试3次；' + diagnostic.summary(),
-                                            request=request) from None
+                    raise mark_model_api_failure(httpx.ReadTimeout(
+                        '多模态 API 网络异常或请求超时；已重试3次；' + diagnostic.summary(),
+                        request=request)) from None
                 message = '多模态 API 网络异常或请求超时'
             finally:
                 if response is not None:
@@ -340,11 +349,13 @@ class ModelAsyncClient(httpx.AsyncClient):
                                              status_code=status_code, retryable=True, error_kind=error_kind)
             if execution is None and remaining <= REQUEST_RETRY_SECONDS:
                 diagnostic.stop('budget_insufficient')
-                raise httpx.ReadTimeout('多模态请求剩余时间不足，停止重试；' + diagnostic.summary(), request=request)
+                raise mark_model_api_failure(httpx.ReadTimeout(
+                    '多模态请求剩余时间不足，停止重试；' + diagnostic.summary(), request=request))
             retry_seconds = min(REQUEST_RETRY_SECONDS, remaining)
             retry_count = str(attempt + 1) if execution else f'{attempt + 1}/{MAX_REQUEST_RETRIES}'
             LOGGER.warning('%s；%g秒后进行第%s次接口重试；request_id=%s scene=%s remaining=%.2fs',
                            message, retry_seconds, retry_count,
-                           diagnostic.request_id, diagnostic.scene, max(0, remaining))
+                           diagnostic.request_id, diagnostic.scene, max(0, remaining),
+                           extra={'backend_only': True})
             await asyncio.sleep(retry_seconds)
             attempt += 1

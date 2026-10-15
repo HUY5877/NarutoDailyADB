@@ -758,7 +758,7 @@ def test_shutdown_before_qr_preserves_existing_retry_behavior(monkeypatch, tmp_p
             await asyncio.wait_for(runtime.stop(), 3)
             assert not record.qr_published
             assert pool.closed == [record.id]
-            assert pool.retries == [record.id]
+            assert pool.retries == []
             assert queue.requeued == [record.id]
         finally:
             await runtime.stop()

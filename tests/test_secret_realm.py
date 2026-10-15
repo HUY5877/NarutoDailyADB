@@ -65,7 +65,18 @@ def fake_model(monkeypatch, counts):
         calls.append(png)
         return {"page": "room", "tickets": next(counts)}
     monkeypatch.setattr(handler, "MultimodalClient", lambda *a, **kw: SimpleNamespace(complete_json=complete))
+    # Ticket-only scenarios reuse a room frame; their fake battle supplies the
+    # READY boundary rather than treating that placeholder as a loaded arena.
+    monkeypatch.setattr(handler, 'prepare_secret_battle', lambda *a, **kw: BattlePreparation.READY)
     return calls
+
+
+def fake_battle_after_prepare(args, kwargs, attack):
+    """A fake battle must run the same pre-input gate as the real battle module."""
+    prepared = kwargs['before_attack'](args[0].screenshot())
+    if prepared is not None:
+        return prepared
+    return attack()
 
 
 def test_secret_realm_runs_two_battles_then_zero_completes_without_returning_to_main(monkeypatch, caplog):
@@ -74,7 +85,8 @@ def test_secret_realm_runs_two_battles_then_zero_completes_without_returning_to_
     from naruto_daily.secret_realm import handler
     client, sleeps, battles, returned = SecretClient(), [], [], []
     calls = fake_model(monkeypatch, [2, 2, 1, 1, 0])
-    monkeypatch.setattr(handler, "run_battle", lambda *a, **kw: battles.append((a[1], kw)))
+    monkeypatch.setattr(handler, "run_battle", lambda *a, **kw:
+                        fake_battle_after_prepare(a, kw, lambda: battles.append((a[1], kw))))
     monkeypatch.setattr(runner, "return_to_main", lambda *a, **kw: returned.append(True))
     caplog.set_level(logging.INFO, logger='naruto_daily')
     summary = runner.ActionRunner(client, template_matcher=secret_matcher, sleep=sleeps.append).run([
@@ -130,6 +142,9 @@ def test_failed_battle_does_not_repeat_deploy(monkeypatch):
     client = SecretClient()
     fake_model(monkeypatch, [2, 2])
     def fail(*a, **kw):
+        prepared = kw['before_attack'](a[0].screenshot())
+        if prepared is not None:
+            return prepared
         raise VisualError("未确认战斗结束")
     monkeypatch.setattr(handler, "run_battle", fail)
     with pytest.raises(VisualError):
@@ -146,7 +161,8 @@ def test_positive_tickets_continue_without_requiring_a_decrease(monkeypatch, cou
     from naruto_daily.secret_realm import handler
     client, battles = SecretClient(), []
     calls = fake_model(monkeypatch, counts)
-    monkeypatch.setattr(handler, "run_battle", lambda *a, **kw: battles.append(True))
+    monkeypatch.setattr(handler, "run_battle", lambda *a, **kw:
+                        fake_battle_after_prepare(a, kw, lambda: battles.append(True)))
     assert handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher,
                                        sleep=lambda _: None) == expected_battles
     assert len(battles) == expected_battles
@@ -196,6 +212,9 @@ def test_each_battle_result_returns_before_next_ticket_read(monkeypatch):
                 self.result = False
     client = ResultClient()
     def battle(*a, **kw):
+        prepared = kw['before_attack'](a[0].screenshot())
+        if prepared is not None:
+            return prepared
         client.result = True
     def detect(png, path, roi, threshold):
         if png == b'result':
@@ -254,7 +273,8 @@ def test_skipped_yinyang_does_not_require_ticket_decrease_or_count_as_completed(
     fake_model(monkeypatch, [1, 1, 1, 1, 0])
     skipped = iter([BattlePreparation.EXITED, BattlePreparation.READY])
     monkeypatch.setattr(handler, 'prepare_secret_battle', lambda *a, **kw: next(skipped), raising=False)
-    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw: battles.append(True))
+    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw:
+                        fake_battle_after_prepare(a, kw, lambda: battles.append(True)))
     assert handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher,
                                        sleep=lambda _: None) == 1
     assert client.taps == [(1443, 791), (1787, 920), (1787, 920)]
@@ -268,7 +288,8 @@ def test_failed_yinyang_detection_or_exit_never_starts_attacking(monkeypatch):
     def fail(*a, **kw):
         raise MultimodalError('退出未确认')
     monkeypatch.setattr(handler, 'prepare_secret_battle', fail, raising=False)
-    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw: battles.append(True))
+    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw:
+                        fake_battle_after_prepare(a, kw, lambda: battles.append(True)))
     with pytest.raises(MultimodalError, match='退出未确认'):
         handler.handle_secret_realm(client, secret_action(), template_matcher=secret_matcher, sleep=lambda _: None)
     assert client.taps == [(1443, 791), (1787, 920)] and battles == []
@@ -297,7 +318,8 @@ def test_deploy_warning_is_confirmed_before_realm_detection_and_battle(monkeypat
         assert not client.warning, '应先确认提示再进行副本名称识别'
         return BattlePreparation.READY
     monkeypatch.setattr(handler, 'prepare_secret_battle', classify)
-    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw: battles.append(True))
+    monkeypatch.setattr(handler, 'run_battle', lambda *a, **kw:
+                        fake_battle_after_prepare(a, kw, lambda: battles.append(True)))
     assert handler.handle_secret_realm(client, secret_action(), template_matcher=detect,
                                        sleep=lambda _: None) == 1
     assert client.taps == [(1443, 791), (1787, 920), (950, 700)] and len(battles) == 1
@@ -330,6 +352,9 @@ def test_navigation_failure_returns_to_room_and_rereads_tickets_before_redeploy(
         return preparation
 
     def battle(*args, **kwargs):
+        prepared = kwargs['before_attack'](args[0].screenshot())
+        if prepared is not None:
+            return prepared
         battles.append(True)
         client.result = True
 
@@ -368,6 +393,9 @@ def test_ninja_selection_returns_to_room_and_rechecks_tickets_before_next_battle
                         lambda png: (150, 1000) if png == b'ninja' else None)
 
     def battle(*args, **kwargs):
+        prepared = kwargs['before_attack'](args[0].screenshot())
+        if prepared is not None:
+            return prepared
         battles.append(True)
         client.selecting = True
         assert kwargs['end_detector'](client.screenshot()) == '秘境更换忍者页'
@@ -401,6 +429,9 @@ def test_ninja_battle_end_does_not_authorize_blank_taps_on_unknown_transition(mo
     monkeypatch.setattr(handler, 'prepare_secret_battle', lambda *a, **kw: BattlePreparation.READY)
 
     def battle(*args, **kwargs):
+        prepared = kwargs['before_attack'](args[0].screenshot())
+        if prepared is not None:
+            return prepared
         client.unknown_frames = 2
         return BattleSummary(0, '秘境更换忍者页')
 

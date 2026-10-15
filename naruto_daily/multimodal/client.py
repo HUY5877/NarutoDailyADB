@@ -15,9 +15,14 @@ from naruto_daily.common.environment import (
 )
 from .gateway import initialize_gateway
 from naruto_daily.common.execution import MODEL_REQUEST_TIMEOUT_SECONDS, current_execution
+from naruto_daily.common.visual import NonRetryableVisualError
 
 
 LOGGER = logging.getLogger('naruto_daily')
+
+
+class MultimodalConfigurationError(MultimodalError, NonRetryableVisualError):
+    """模型连接配置无效，不能通过重新截图恢复。"""
 
 
 class MultimodalClient:
@@ -35,7 +40,7 @@ class MultimodalClient:
             self.config.update(base_url=channel.base_url, model=channel.model)
             self._key = channel.api_key
         except EnvironmentConfigError as exc:
-            raise MultimodalError(f'多模态配置错误（API 密钥或环境变量）：{exc}') from None
+            raise MultimodalConfigurationError(f'多模态配置错误（API 密钥或环境变量）：{exc}') from None
         if current_execution() is not None:
             self.config = {**self.config, 'timeout_seconds': min(
                 float(self.config['timeout_seconds']), MODEL_REQUEST_TIMEOUT_SECONDS)}

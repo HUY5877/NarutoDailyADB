@@ -11,10 +11,13 @@ import sys
 import time
 from typing import Callable, Sequence
 
+import cv2
+import numpy as np
+
 from naruto_daily.common.adb_client import AdbClient, CommandResult
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common.recognition import ImageRecognition
-from naruto_daily.common.visual import VisualError, find_template_in_png
+from naruto_daily.common.visual import find_template_in_png
 from naruto_daily.config import ConfigError, load_settings
 from naruto_daily.runner import ActionRunner
 from naruto_daily.tasks import build_all, build_task
@@ -57,16 +60,22 @@ class DailySession:
         self.settings = load_settings(self.config_path, skip_account_login=True)
         self.user_options = parse_user_options({} if user_options is None else user_options)
         self._login_actions = deepcopy(self.settings.tasks["login"])
+        selected_settings = self.settings
+        skipped_tasks = {}
+        if not self.user_options["equipmentStamina"]:
+            skipped_tasks['equipment_upgrade'] = []
+            LOGGER.info("已按用户设置跳过装备栏体力刷取（扫荡、合成、装备和进阶）")
+        skip_secret = self.user_options['secretRealmMode'] == 'skip'
+        if skip_secret:
+            # Remove the entire route, including entry, room handling and its return navigation.
+            skipped_tasks.update(secret_realm=[], secret_realm_farm=[])
+            LOGGER.info('已按用户设置跳过整个秘境探险线路，继续其余日常')
+        if skipped_tasks:
+            selected_settings = replace(self.settings, tasks={**self.settings.tasks, **skipped_tasks})
         if task_name == "all":
-            selected_settings = self.settings
-            if not self.user_options["equipmentStamina"]:
-                # Skip the whole equipment route, including menu navigation and
-                # material synthesis/upgrade; all other task groups keep their order.
-                selected_settings = replace(self.settings, tasks={**self.settings.tasks, "equipment_upgrade": []})
-                LOGGER.info("已按用户设置跳过装备栏体力刷取（扫荡、合成、装备和进阶）")
             actions = build_all(selected_settings)
         elif task_name == "secret_realm_farm":
-            actions = build_task(self.settings, task_name)
+            actions = list(self._login_actions) if skip_secret else build_task(selected_settings, task_name)
         else:
             raise ConfigError(f"不支持的扫码后任务：{task_name}")
         self._daily_actions = actions[len(self._login_actions):]
@@ -135,7 +144,7 @@ class DailySession:
 
     def _runner(self) -> ActionRunner:
         return ActionRunner(self.client, sleep=self._sleep, template_matcher=self._match,
-                            asset_root=self.asset_root)
+                            asset_root=self.asset_root, user_options=self.user_options)
 
     def wait_for_authorization(self, deadline: float, *, on_wait=None) -> None:
         """观察扫码后的明确页面，立即交接；按钮操作留给登录收尾。"""
@@ -153,6 +162,11 @@ class DailySession:
             def observed():
                 self._remaining()
                 png = self.client.screenshot()
+                frame = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+                # 微信二维码、过期提示和加载页保持竖屏，不能套用游戏横屏检测区域。
+                # 继续交给刷新回调和原截止时间；恢复横屏后再确认扫码授权。
+                if frame is not None and frame.shape[0] > frame.shape[1]:
+                    return False
                 for index, target in enumerate(targets):
                     if index == 2 and on_wait is not None and target.get('main_menu'):
                         from .qr_navigation import pre_login_image
@@ -195,9 +209,7 @@ class DailySession:
             self._runner().run(actions)
             LOGGER.info("登录收尾动作已完成，额外复核主界面；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
             images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
-            center, _ = images.find(self._main_marker, deadline=images.elapsed + self._remaining())
-            if center is None:
-                raise VisualError("扫码登录后未能确认游戏主界面")
+            images.wait_for(self._main_marker, timeout_seconds=self._remaining(), poll_seconds=1)
             self._remaining()
             self._logged_in = True
 

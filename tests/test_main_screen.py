@@ -144,10 +144,11 @@ def test_disappeared_button_does_not_click_cached_position_and_calls_are_bounded
 @pytest.mark.parametrize('menu,page', [('equipment_submenu', 'equipment_menu'), ('rewards', 'main')])
 @pytest.mark.parametrize('max_calls,confirm_misses', [(3, 0), (2, 1)])
 def test_last_search_call_can_still_confirm_and_click(monkeypatch, menu, page, max_calls, confirm_misses):
+    first_id, last_id = (7, 7) if menu == 'rewards' else (1, 2)
     responses = iter([answer(menu, found=False)] * (max_calls - 1)
-                     + [answer(menu, page=page, candidate_id=1)]
+                     + [answer(menu, page=page, candidate_id=first_id)]
                      + [answer(menu, found=False)] * confirm_misses
-                     + [answer(menu, page=page, candidate_id=2)])
+                     + [answer(menu, page=page, candidate_id=last_id)])
     calls, taps = [], []
     def complete(*args, **kwargs):
         calls.append(1)
@@ -155,9 +156,14 @@ def test_last_search_call_can_still_confirm_and_click(monkeypatch, menu, page, m
     fake_model(monkeypatch, complete)
     config = action(menu)
     config['multimodal']['max_calls'] = max_calls
-    client = SimpleNamespace(screenshot=lambda: png(), tap=lambda *xy: taps.append(xy))
+    def screenshot():
+        if menu != 'rewards':
+            return png()
+        fixture = 'reward_cards_stuck.png' if taps else 'main_rewards_right_hud.png'
+        return (ROOT / 'tests/fixtures' / fixture).read_bytes()
+    client = SimpleNamespace(screenshot=screenshot, tap=lambda *xy: taps.append(xy))
     required_template_tap(client, config, sleep=lambda _: None)
-    expected = (282, 835) if menu == 'equipment_submenu' else (1845, 85)
+    expected = (282, 835) if menu == 'equipment_submenu' else (1845, 537)
     assert taps == [expected] and len(calls) == max_calls + confirm_misses + 1
 
 

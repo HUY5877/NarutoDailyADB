@@ -13,7 +13,9 @@ SHARED_TEMPLATES = {
 }
 SERVICE_TEMPLATES = {
     "add_account", "game_back", "other_login", "qr_heading", "scan_login",
+    "startup_ad_close",
     "web_qr_heading", "web_qr_instruction", "web_qr_expired",
+    "qq_ios", "wechat_android", "wechat_ios", "wechat_qr_instruction", "wechat_qr_cancel",
 }
 PACKAGED_TEMPLATES = {
     **SHARED_TEMPLATES,
@@ -110,7 +112,9 @@ from naruto_daily.login_service import qr_navigation
 assert Path(qr_navigation.__file__).resolve().is_relative_to(installed_root)
 names = ('qq_android', 'start_game', 'switch_account', 'add_account',
          'game_back', 'other_login', 'qr_heading', 'scan_login',
-         'web_qr_heading', 'web_qr_instruction', 'web_qr_expired')
+         'startup_ad_close',
+         'web_qr_heading', 'web_qr_instruction', 'web_qr_expired',
+         'qq_ios', 'wechat_android', 'wechat_ios', 'wechat_qr_instruction', 'wechat_qr_cancel')
 for name in names:
     template = qr_navigation._template(name)
     assert template is not None and template.ndim == 2 and template.size > 0, name

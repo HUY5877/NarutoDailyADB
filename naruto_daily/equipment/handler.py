@@ -1,8 +1,10 @@
 """优先最低进阶装备，从左到右处理六格材料，再检查进阶。"""
 import logging
 import time
+from itertools import count
 from pathlib import Path
 
+from naruto_daily.common.execution import current_execution
 from naruto_daily.common.model_workflow import ModelWorkflow, require_page
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from . import prompts
@@ -92,9 +94,21 @@ def _page(data):
 
 
 def _close_layers(flow, page=None):
-    for _ in range(4):
+    scoped = current_execution() is not None
+    expected = {'equipment', page or 'material'}
+    if page == 'sweep_setup':
+        expected.add('material')
+
+    def closing_page(data):
+        observed = _page(data)
+        if observed not in expected:
+            raise VisualError('装备弹层关闭后出现其他前景，继续观察，未继续点击')
+        return observed
+
+    attempts = count() if scoped else range(4)
+    for _ in attempts:
         if page is None:
-            page = flow.read('装备弹层关闭检查', prompts.PAGE, _page)
+            page = flow.read('装备弹层关闭检查', prompts.PAGE, closing_page if scoped else _page)
         if page == 'equipment':
             return
         flow.tap(BLANK)
@@ -102,8 +116,19 @@ def _close_layers(flow, page=None):
     raise VisualError('装备弹层未能关闭，已停止')
 
 
+def _equip_after_synthesis(data):
+    button = _material(data)
+    if button != 'equip':
+        raise VisualError('合成后尚未确认装备按钮，继续观察，未重复合成')
+    return button
+
+
 def _finish_material(flow, button):
-    if button == 'synthesize':
+    if button == 'synthesize' and current_execution() is not None:
+        LOGGER.info('材料已齐，点击一次合成成品，等待装备按钮')
+        flow.tap(MATERIAL_BUTTON)
+        button = flow.read('合成后装备按钮', prompts.MATERIAL, _equip_after_synthesis)
+    elif button == 'synthesize':
         for attempt in range(1, 4):
             LOGGER.info('[材料合成 第%d/3次] 材料已齐，点击合成成品', attempt)
             flow.tap(MATERIAL_BUTTON)
@@ -129,8 +154,17 @@ def _finish_material(flow, button):
         _close_layers(flow, 'material')
 
 
+def _sweep_close_page(data):
+    page = _page(data)
+    if page not in ('material', 'sweep_result'):
+        raise VisualError('扫荡结果关闭后尚未确认材料详情，继续观察，未继续点击')
+    return page
+
+
 def _dismiss_sweep_result(flow, stamina_before):
-    deadline = flow.elapsed() + min(flow.action['sweep_timeout_seconds'], flow.remaining())
+    scoped = current_execution() is not None
+    deadline = flow.elapsed() + (flow.remaining() if scoped else
+                                 min(flow.action['sweep_timeout_seconds'], flow.remaining()))
     # 材料足够后可能根本没有“继续扫荡”，直接核验结果层本身。
     runs, stamina_after = flow.read('扫荡完成结果核验', prompts.SWEEP_RESULT, _sweep_result,
                                     timeout=deadline - flow.elapsed())
@@ -139,7 +173,7 @@ def _dismiss_sweep_result(flow, stamina_before):
     # 必须确认前景回到材料详情，不能把按钮暂时消失当成结果层关闭。
     while flow.elapsed() < deadline:
         flow.tap(BLANK)
-        page = flow.read('扫荡结果关闭检查', prompts.PAGE, _page,
+        page = flow.read('扫荡结果关闭检查', prompts.PAGE, _sweep_close_page if scoped else _page,
                          timeout=deadline - flow.elapsed())
         if page == 'material':
             return
@@ -180,7 +214,8 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
                              asset_root=Path('.'), sleep=time.sleep):
     flow = ModelWorkflow(client, action, model=model, template_matcher=template_matcher,
                          asset_root=asset_root, sleep=sleep)
-    for round_number in range(1, action['max_rounds'] + 1):
+    rounds = count(1) if current_execution() is not None else range(1, action['max_rounds'] + 1)
+    for round_number in rounds:
         overview = flow.read('最低进阶装备识别', prompts.EQUIPMENT, _overview)
         slot = lowest_equipment(overview)
         levels = tuple(overview['progressions'])

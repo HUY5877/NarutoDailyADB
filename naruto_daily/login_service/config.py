@@ -10,6 +10,7 @@ from typing import Mapping
 from urllib.parse import urlsplit
 
 from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS
+from naruto_daily.common.environment import EnvironmentConfigError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -38,7 +39,7 @@ class ServiceConfig:
     ldplayer_command_timeout_seconds: int = 20
     daily_config_path: Path = PROJECT_ROOT / "config.example.json"
     daily_timeout_seconds: int = DAILY_TIMEOUT_SECONDS
-    run_log_retention_seconds: int = 86_400
+    run_log_retention_seconds: int = 604_800
     run_log_max_entries: int = 2_000
     sweep_interval_ms: int = 250
     storage_sweep_interval_ms: int = 10_000
@@ -47,6 +48,10 @@ class ServiceConfig:
     oss_access_key_id: str = ""
     oss_access_key_secret: str = field(default="", repr=False)
     oss_sts_token: str | None = field(default=None, repr=False)
+    qq_bot_app_id: str = ""
+    qq_bot_app_secret: str = field(default="", repr=False)
+    qq_bot_group_openid: str = ""
+    database_url: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         # Preserve shorter configured/test limits without letting old 7200s
@@ -149,6 +154,31 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         "oss_region", "oss_bucket", "oss_access_key_id", "oss_access_key_secret",
     )):
         raise ValueError("OSS_REGION, OSS_BUCKET, OSS_ACCESS_KEY_ID and OSS_ACCESS_KEY_SECRET are required for OSS")
+    qq = {
+        "qq_bot_app_id": env.get("QQ_BOT_APP_ID", "").strip(),
+        "qq_bot_app_secret": env.get("QQ_BOT_APP_SECRET", "").strip(),
+        "qq_bot_group_openid": env.get("QQ_BOT_GROUP_OPENID", "").strip(),
+    }
+    if any(qq.values()) and not all(qq.values()):
+        raise EnvironmentConfigError("QQ_BOT_APP_ID, QQ_BOT_APP_SECRET and QQ_BOT_GROUP_OPENID must be configured together")
+    if qq["qq_bot_app_id"] and not re.fullmatch(r"[0-9]{1,32}", qq["qq_bot_app_id"]):
+        raise EnvironmentConfigError("Invalid QQ_BOT_APP_ID")
+    if qq["qq_bot_group_openid"] and not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", qq["qq_bot_group_openid"]):
+        raise EnvironmentConfigError("Invalid QQ_BOT_GROUP_OPENID")
+    if any(ord(char) < 32 for char in qq["qq_bot_app_secret"]):
+        raise EnvironmentConfigError("Invalid QQ_BOT_APP_SECRET")
+    database_url = env.get("DATABASE_URL", "").strip() or None
+    if qq["qq_bot_app_id"] and not database_url:
+        raise EnvironmentConfigError("请在 Cloudflare KV 配置 DATABASE_URL，以查询 QQ 通知中的网站用户名")
+    if database_url:
+        try:
+            database_address = urlsplit(database_url)
+            if (database_address.scheme not in {"postgres", "postgresql"}
+                    or not database_address.hostname or any(ord(char) < 32 for char in database_url)):
+                raise ValueError
+            database_address.port
+        except ValueError:
+            raise EnvironmentConfigError("Invalid DATABASE_URL") from None
     return ServiceConfig(
         redis_url=redis_url,
         redis_queue_key=redis_queue_key,
@@ -168,11 +198,11 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         ldplayer_state_dir=state_dir,
         daily_config_path=daily_config_path,
         daily_timeout_seconds=_integer(env, "DAILY_TIMEOUT_SECONDS", DAILY_TIMEOUT_SECONDS, 1, 86_400),
-        run_log_retention_seconds=_integer(env, "RUN_LOG_RETENTION_SECONDS", 86_400, 60, 604_800),
+        run_log_retention_seconds=_integer(env, "RUN_LOG_RETENTION_SECONDS", 604_800, 60, 604_800),
         run_log_max_entries=_integer(env, "RUN_LOG_MAX_ENTRIES", 2_000, 100, 10_000),
         ldplayer_package=ldplayer_package,
         ldplayer_command_timeout_seconds=_integer(
             env, "LDPLAYER_COMMAND_TIMEOUT_SECONDS", 20, 1, 300,
         ),
-        **oss,
+        **oss, **qq, database_url=database_url,
     )

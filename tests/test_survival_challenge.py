@@ -143,18 +143,41 @@ def test_survival_dismisses_transfer_then_sweeps_until_model_reports_zero():
     client, waits = Client(), []
     run(action(), client, Model([2, 0]), waits)
     assert [(x, y) for x, y, _ in client.taps] == [
-        (960, 540), (1100, 900), (1100, 900), (1100, 900),
+        (960, 850), (1100, 900), (1100, 900), (1100, 900),
         (1100, 900), (1400, 900), (1100, 900), (1100, 900),
         (1100, 900), (1100, 900), (1100, 900),
     ]
     assert waits.count(60) == 2
 
 
+@pytest.mark.parametrize('initial_transfer', [False, True])
+def test_transfer_panel_ignores_inside_taps_but_dismisses_from_blank_area(initial_transfer):
+    class TransferPanelClient(Client):
+        def tap(self, x, y):
+            # The live 1920x1080 dialog covers y=325..705. Only the blank strip
+            # below it and above the bottom toolbar was verified to dismiss it.
+            if self.state == 'transfer' and not (500 < x < 1500 and 720 < y < 900):
+                self.taps.append((x, y, self.state))
+                return
+            reset_confirmed = self.state == 'reset_confirm'
+            super().tap(x, y)
+            if reset_confirmed:
+                self.state = 'transfer'
+
+    client, waits = TransferPanelClient(transfer=initial_transfer), []
+    model = Model([1, 0])
+    run(action(), client, model, waits)
+
+    assert sum(state == 'transfer' for _, _, state in client.taps) == 1 + int(initial_transfer)
+    assert client.state == 'map'
+    assert model.calls == waits.count(60) == 2
+
+
 def test_survival_without_transfer_starts_directly_and_zero_breaks():
     client, waits = Client(transfer=False), []
     run(action(), client, Model([0]), waits)
     assert client.taps[0][0] == 1100
-    assert (960, 540, 'map') not in client.taps
+    assert (960, 850, 'map') not in client.taps
     assert waits[-1] == 60
 
 
@@ -186,6 +209,64 @@ def test_survival_dismisses_transfer_again_after_reset_before_next_sweep(initial
     reset = states.index('reset_confirm')
     assert states[reset + 1:reset + 4] == ['transfer', 'map', 'ready']
     assert waits.count(60) == 2
+
+
+@pytest.mark.parametrize('initial_transfer', [False, True])
+def test_survival_rechecks_transfer_until_second_dismiss_click_before_sweeping(initial_transfer):
+    class TwoClickTransferClient(Client):
+        transfer_clicks = 0
+
+        def tap(self, x, y):
+            if self.state == 'transfer':
+                assert (x, y) == (960, 850), 'Sweep attempted before transfer closed'
+                self.taps.append((x, y, self.state))
+                self.transfer_clicks += 1
+                if self.transfer_clicks == 2:
+                    self.state = 'map'
+                return
+            reset_confirmed = self.state == 'reset_confirm'
+            super().tap(x, y)
+            if reset_confirmed:
+                self.state = 'transfer'
+                self.transfer_clicks = 0
+
+    client, waits = TwoClickTransferClient(transfer=initial_transfer), []
+    run(action(), client, Model([1, 0]), waits)
+    states = [state for _, _, state in client.taps]
+    reset = states.index('reset_confirm')
+    assert states[reset + 1:] == ['transfer', 'transfer', 'map', 'ready',
+                                  'confirm_first', 'confirm_second']
+    assert states.count('transfer') == 2 + 2 * int(initial_transfer)
+    assert waits.count(60) == 2
+
+
+@pytest.mark.parametrize('timeout_seconds', [5, 180])
+def test_unclosed_transfer_stops_before_any_sweep_click_without_scope(monkeypatch, timeout_seconds):
+    monkeypatch.setattr('naruto_daily.survival_challenge.handler.time.monotonic', lambda: 0)
+    client, waits = Client(), []
+    client.tap = lambda x, y: client.taps.append((x, y, client.state))
+    with pytest.raises(VisualError, match='关闭生存挑战传送提示超时'):
+        run(dict(action(), timeout_seconds=timeout_seconds), client, Model([]), waits)
+
+    assert sum(waits) == min(timeout_seconds, 20)
+    assert all((x, y, state) == (960, 850, 'transfer') for x, y, state in client.taps)
+
+
+def test_late_transfer_recheck_cannot_trigger_second_dismiss_without_scope(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr('naruto_daily.survival_challenge.handler.time.monotonic', lambda: now[0])
+    client, waits = Client(), []
+    client.tap = lambda x, y: client.taps.append((x, y, client.state))
+
+    def screenshot():
+        if client.taps:
+            now[0] += 25
+        return client.state.encode()
+
+    client.screenshot = screenshot
+    with pytest.raises(VisualError, match='关闭生存挑战传送提示超时'):
+        run(action(), client, Model([]), waits)
+    assert client.taps == [(960, 850, 'transfer')]
 
 
 @pytest.mark.parametrize('count', [None, True, -1, '1'])
@@ -323,7 +404,7 @@ def test_unknown_loading_screen_is_waited_for_without_blind_reclick(eventually_r
         with pytest.raises(VisualError, match='开始扫荡后等待名单或扫荡确认页面超时'):
             run(action(), client, Model([]), waits)
         assert len(client.taps) == 1
-        assert sum(waits) <= 21
+        assert sum(waits) <= 24  # Includes three initial transfer-check retries.
     assert not any(state == 'loading' for _, _, state in client.taps)
     assert sum(state == 'map' for _, _, state in client.taps) == 1
 
@@ -353,7 +434,7 @@ def test_slow_screenshot_result_cannot_trigger_click_after_button_timeout(monkey
 
     def screenshot():
         screenshots[0] += 1
-        if screenshots[0] == 2:
+        if screenshots[0] == 5:  # Four absent-transfer frames precede the button check.
             now[0] += 25
         return client.state.encode()
 

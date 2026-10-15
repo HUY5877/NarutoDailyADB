@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.execution import retry_observation
 from naruto_daily.common.visual import VisualError, find_template_in_png
 
 
@@ -112,14 +113,18 @@ def handle_organization_prayer(
         client.tap(action["dismiss_x"], action["dismiss_y"])
         sleep(wait_seconds)
 
-    coin_center = images.wait_for(coin_prayer, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
-    LOGGER.info("发现 6000 铜币焚香祈福，点击前等待 %.2f 秒", pre_click_wait)
-    sleep(pre_click_wait)
-    confirmed_coin, confirmed_coin_score = images.find(coin_prayer)
-    if confirmed_coin is None:
-        raise VisualError(
-            f"6000 铜币焚香祈福在点击前等待后已消失，最后相似度 {confirmed_coin_score:.3f}"
-        )
+    def observe_coin():
+        images.wait_for(coin_prayer, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+        LOGGER.info("发现 6000 铜币焚香祈福，点击前等待 %.2f 秒", pre_click_wait)
+        sleep(pre_click_wait)
+        center, score = images.find(coin_prayer)
+        if center is None:
+            raise VisualError(
+                f"6000 铜币焚香祈福在点击前等待后已消失，最后相似度 {score:.3f}"
+            )
+        return center, score
+
+    confirmed_coin, confirmed_coin_score = retry_observation(observe_coin, name='铜币祈福点击前确认')
     LOGGER.info(
         "再次确认 6000 铜币焚香祈福，相似度 %.3f，点击坐标：(%d, %d)",
         confirmed_coin_score,

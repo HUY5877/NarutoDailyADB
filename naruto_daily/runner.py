@@ -14,6 +14,7 @@ from naruto_daily.login import cleanup_popups
 from naruto_daily.return_to_main import return_to_main
 from naruto_daily.login.authorization import finish_login_authorization, authorize_account
 from naruto_daily.common.navigation import navigate_to_card, required_template_tap
+from naruto_daily.login_service.user_options import UserOptions, parse_user_options
 from naruto_daily.secret_realm.enter import enter_secret_realm
 from naruto_daily.organization_prayer import handle_organization_prayer
 from .fortune import handle_coin_fortune
@@ -64,12 +65,14 @@ class ActionRunner:
         dry_run: bool = False,
         template_matcher: Callable = find_template_in_png,
         asset_root: Path = Path("."),
+        user_options: UserOptions | None = None,
     ):
         self.client = client
         self.sleep = lambda seconds: execution_sleep(seconds, sleep)
         self.dry_run = dry_run
         self.template_matcher = template_matcher
         self.asset_root = Path(asset_root)
+        self.user_options = parse_user_options({} if user_options is None else user_options)
 
     def run(self, actions: Sequence[dict]) -> RunSummary:
         LOGGER.info(
@@ -91,6 +94,10 @@ class ActionRunner:
                 LOGGER.info("模拟运行，不发送输入")
                 continue
             action_type = action["type"]
+            if self.user_options['secretRealmMode'] == 'skip' and action_type in {
+                    'enter_secret_realm', 'handle_secret_realm'}:
+                LOGGER.info('已按用户设置跳过秘境探险动作，继续其余日常')
+                continue
             if skip_action_type is not None:
                 if action_type == skip_action_type:
                     LOGGER.info("%s今日已完成，跳过对应页面处理", completed_card_name)
@@ -184,10 +191,11 @@ class ActionRunner:
                     completed_card_name = "秘境探险"
             elif action_type == "handle_secret_realm":
                 handle_secret_realm(self.client, action, template_matcher=self.template_matcher,
-                                    asset_root=self.asset_root, sleep=self.sleep)
-                # 秘境处理器仅在确认挑战券为0时正常返回；此时整次任务已完成。
+                                    asset_root=self.asset_root, sleep=self.sleep,
+                                    secret_realm_once=self.user_options['secretRealmMode'] == 'once')
+                # 秘境处理器正常返回代表已用完券，或已按用户设置完成首次成功及结算收尾。
                 action_count = index
-                LOGGER.info('秘境已确认挑战券为0，结束本次任务，跳过后续 %d 个动作', len(actions) - index)
+                LOGGER.info('秘境处理已完成，结束本次任务，跳过后续 %d 个动作', len(actions) - index)
                 break
             elif action_type == "handle_abundance":
                 handle_abundance(

@@ -40,7 +40,7 @@ def authorize_account(
 
     def extract(png, prompt):
         nonlocal calls
-        if calls >= action['multimodal']['max_calls']:
+        if current_execution() is None and calls >= action['multimodal']['max_calls']:
             raise MultimodalError('账号识别达到模型调用上限，已停止登录')
         if images.elapsed >= deadline:
             raise MultimodalError('账号识别已超过等待时间，已停止登录')
@@ -71,7 +71,8 @@ def authorize_account(
         if agree is None:
             return None
         result = extract(png, ACCOUNT_NICKNAME)
-        if 'nickname' not in result or (result['nickname'] is not None and not isinstance(result['nickname'], str)):
+        if (not isinstance(result, dict) or 'nickname' not in result
+                or (result['nickname'] is not None and not isinstance(result['nickname'], str))):
             raise MultimodalError('模型返回的昵称格式不正确')
         nickname = result['nickname'].strip() if result['nickname'] else None
         selected = nickname == action['account_name']
@@ -87,13 +88,15 @@ def authorize_account(
     round_number = 0
     while images.elapsed < deadline:
         round_number += 1
-        LOGGER.info('[账号授权 第%d轮] 检查账号列表或读取昵称；%s；剩余等待 %.2f 秒，模型调用 %d/%d 次',
+        call_progress = (f'{calls} 次（由总时限约束）' if current_execution() is not None
+                         else f"{calls}/{action['multimodal']['max_calls']} 次")
+        LOGGER.info('[账号授权 第%d轮] 检查账号列表或读取昵称；%s；剩余等待 %.2f 秒，模型调用 %s',
                     round_number, '已选账号，仅核对昵称后同意' if account_chosen else '昵称一致则同意，不一致则切换账号',
-                    max(0, deadline - images.elapsed), calls, action['multimodal']['max_calls'])
+                    max(0, deadline - images.elapsed), call_progress)
         state = images.check(probe, lambda value: value is not None,
                              action['account_name'], deadline=deadline)
         if state is not None:
-            if images.elapsed + pre_wait >= deadline:
+            if current_execution() is None and images.elapsed + pre_wait >= deadline:
                 LOGGER.info('剩余时间不足以完成点击前等待，结束账号授权循环')
                 break
             LOGGER.info('本轮找到可执行动作，等待 %.2f 秒后重新确认页面，确认一致才点击', pre_wait)
@@ -118,7 +121,8 @@ def authorize_account(
             LOGGER.info('点击前未确认同一个动作，本轮取消点击')
         if images.elapsed < deadline:
             delay = min(float(action['poll_seconds']), deadline - images.elapsed)
-            LOGGER.info('本轮未完成授权，等待 %.2f 秒后开始下一轮；达到时间或模型调用上限则停止', delay)
+            stop_condition = '达到总时限则停止' if current_execution() is not None else '达到时间或模型调用上限则停止'
+            LOGGER.info('本轮未完成授权，等待 %.2f 秒后开始下一轮；%s', delay, stop_condition)
             images.sleep(delay)
     raise VisualError(f"未能确认并授权账号{action['account_name']}，已停止登录")
 

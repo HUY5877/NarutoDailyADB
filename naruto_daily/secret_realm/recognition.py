@@ -41,7 +41,7 @@ def wait_for_tickets(images, model, action, *, clock=time.monotonic):
             return None
         if images.elapsed >= deadline:
             raise MultimodalError('秘境挑战券读取超时')
-        if calls >= action['multimodal']['max_calls']:
+        if current_execution() is None and calls >= action['multimodal']['max_calls']:
             raise MultimodalError('秘境挑战券读取达到模型调用上限')
         start = clock()
         try:
@@ -54,8 +54,10 @@ def wait_for_tickets(images, model, action, *, clock=time.monotonic):
         if images.elapsed >= deadline:
             raise MultimodalError('秘境挑战券读取超时，忽略迟到的结果')
         count = parse_tickets(result)
-        LOGGER.info('模型读取秘境剩余挑战券：%s；调用 %d/%d 次',
-                    count if count is not None else '未确认', calls, action['multimodal']['max_calls'])
+        call_progress = (f'{calls} 次（由总时限约束）' if current_execution() is not None
+                         else f"{calls}/{action['multimodal']['max_calls']} 次")
+        LOGGER.info('模型读取秘境剩余挑战券：%s；调用 %s',
+                    count if count is not None else '未确认', call_progress)
         return RoomState(count, center) if count is not None else None
 
     round_number = 0

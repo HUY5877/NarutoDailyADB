@@ -65,7 +65,8 @@ def test_queue_schema_is_tokenless_and_path_is_exact():
 
 
 @pytest.mark.parametrize('lease', [False, True])
-def test_failed_login_cleanup_releases_only_its_lock_and_preserves_history(lease):
+@pytest.mark.parametrize('error_code', ['login_finish_failed', 'worker_stopped'])
+def test_failed_login_cleanup_releases_only_its_lock_and_preserves_history(lease, error_code):
     async def scenario():
         client = fake_client()
         try:
@@ -90,13 +91,13 @@ def test_failed_login_cleanup_releases_only_its_lock_and_preserves_history(lease
             await client.set(run, 'execution failure history', ex=86400)
             await client.xadd(log, {'json': 'original execution log'})
             before = await client.pttl(key)
-            record.daily_error_code = 'login_finish_failed'
+            record.daily_error_code = error_code
             intruder = RedisTaskQueue(config(), client=client)
             assert not await intruder.finish_failed(record)
             assert await client.get(active) == record.id
             assert await queue.finish_failed(record)
             ended = json.loads(await client.get(key))
-            assert ended['status'] == 'failed' and ended['errorCode'] == 'login_finish_failed'
+            assert ended['status'] == 'failed' and ended['errorCode'] == error_code
             assert 'loginAuthorized' not in ended and 'refreshRequestId' not in ended
             for field in ['tokenHash', 'createdAt', 'expiresAt', 'userOptions', 'loginExpiresAt']:
                 assert ended.get(field) == saved.get(field)
@@ -435,6 +436,36 @@ def test_requeue_preserves_original_payload_ttl_and_session_credentials():
             reclaimed = await other.pop()
             assert reclaimed.id == body["id"]
             assert not await queue.set_status(reclaimed, "failed")
+        finally:
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+def test_published_qr_refresh_cannot_requeue_even_with_original_payload():
+    async def scenario():
+        client = fake_client()
+        try:
+            queue = RedisTaskQueue(config(), client=client)
+            body = task_body()
+            key, payload = await enqueue(client, body)
+            record = await queue.pop()
+            assert await queue.set_status(record, "qr_ready")
+            record.qr_published = True
+            stored = json.loads(await client.get(key))
+            stored.update(status="preparing_qr", refreshRequestId=str(uuid4()))
+            await client.set(key, json.dumps(stored), keepttl=True)
+            record.status = "preparing_qr"
+            record._queue_payload = payload
+            before = await client.get(key)
+            ttl_before = await client.pttl(key)
+
+            assert not await queue.requeue(record)
+
+            assert await client.get(key) == before
+            assert await client.llen(config().redis_queue_key) == 0
+            assert 0 < await client.pttl(key) <= ttl_before
+            assert record.status == "preparing_qr"
+            assert record._queue_payload == payload
         finally:
             await client.aclose()
     asyncio.run(scenario())

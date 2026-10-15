@@ -147,5 +147,5 @@ def test_already_settled_does_not_read_name_or_click_pause():
     def fail(*a, **kw):
         raise AssertionError('结算页无需再调用模型')
     assert prepare_secret_battle(ImageRecognition(client, asset_root=ROOT, sleep=lambda _: None),
-                                 SimpleNamespace(complete_json=fail), action()) is BattlePreparation.READY
+                                 SimpleNamespace(complete_json=fail), action()) is BattlePreparation.FINISHED
     assert client.taps == []

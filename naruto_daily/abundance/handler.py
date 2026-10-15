@@ -104,14 +104,17 @@ def finish_abundance_result(
             result = model.complete_json(png, ABUNDANCE_AFTER_BATTLE, timeout_seconds=budget)
             if remaining() <= 0:
                 raise VisualError('丰饶战后页面识别超时，忽略迟到结果，未点击')
+            # Validate inside the read-only observation so an unknown page can be
+            # recaptured without replaying the battle or a result-dismiss click.
+            page = result.get('page') if isinstance(result, dict) else None
+            if not isinstance(page, str) or page not in {'result', 'service_popup', 'abundance', 'home'}:
+                raise VisualError('无法确认丰饶战后页面，未点击或继续关闭')
             return None, result
 
         center, result = retry_observation(observe, name='丰饶战后页面')
         if center is None:
             # 只在结算文字缺失时识别当前页面，不能把通用 finished 当成结算页。
-            page = result.get('page') if isinstance(result, dict) else None
-            if not isinstance(page, str) or page not in {'result', 'service_popup', 'abundance', 'home'}:
-                raise VisualError('无法确认丰饶战后页面，未点击或继续关闭')
+            page = result['page']
             LOGGER.info('[丰饶战后页面] 模型识别为 %s', page)
             if page in {'result', 'service_popup'}:
                 client.tap(*SERVICE_POPUP_DISMISS)

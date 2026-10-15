@@ -74,7 +74,7 @@ def _locate_and_tap(images, model, action, page, name, *, clock=time.monotonic):
         nonlocal calls
         if images.elapsed >= deadline:
             raise MultimodalError(f'{name}定位超时')
-        if calls >= action['multimodal']['max_calls']:
+        if current_execution() is None and calls >= action['multimodal']['max_calls']:
             raise MultimodalError(f'{name}定位达到模型调用上限，未点击')
         preview, centers = entry_candidates(png)
         if not centers:
@@ -90,7 +90,9 @@ def _locate_and_tap(images, model, action, page, name, *, clock=time.monotonic):
         if images.elapsed >= deadline:
             raise MultimodalError(f'{name}定位超时，忽略迟到结果')
         center = parse_entry_center(result, page, name, centers)
-        LOGGER.info('模型定位%s：%s；调用 %d/%d 次', name, center or '未确认', calls, action['multimodal']['max_calls'])
+        call_progress = (f'{calls} 次（由总时限约束）' if current_execution() is not None
+                         else f"{calls}/{action['multimodal']['max_calls']} 次")
+        LOGGER.info('模型定位%s：%s；调用 %s', name, center or '未确认', call_progress)
         return center
 
     def check():
@@ -103,7 +105,7 @@ def _locate_and_tap(images, model, action, page, name, *, clock=time.monotonic):
                     name, round_number, deadline-images.elapsed)
         center = check()
         if center is not None:
-            if images.elapsed + action['pre_click_wait_seconds'] >= deadline:
+            if current_execution() is None and images.elapsed + action['pre_click_wait_seconds'] >= deadline:
                 break
             images.sleep(action['pre_click_wait_seconds'])
             center = check()

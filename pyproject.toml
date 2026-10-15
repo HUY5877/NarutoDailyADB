@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "naruto-daily-adb"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["numpy>=2", "opencv-python-headless>=4.10", "python-dotenv>=1.0", "pydantic>=2.12", "claude-agent-sdk==0.2.152", "pydantic-ai-slim[openai]==2.41.0", "redis>=5,<8", "cloudflare>=5.9,<6"]
+dependencies = ["numpy>=2", "opencv-python-headless>=4.10", "python-dotenv>=1.0", "pydantic>=2.12", "claude-agent-sdk==0.2.152", "pydantic-ai-slim[openai]==2.41.0", "redis>=5,<8", "cloudflare>=5.9,<6", "psycopg[binary]>=3.2,<4"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
@@ -23,9 +23,10 @@ naruto-login-service = "naruto_daily.login_service.__main__:main"
 [tool.setuptools.package-data]
 "naruto_daily.assets" = [
     "qq_android_button.png", "qq_account_switch_account.png", "start_game_button.png",
-    "login_add_account.png", "login_game_back.png", "login_other_login.png",
+    "login_add_account.png", "login_game_back.png", "login_other_login.png", "login_startup_ad_close.png",
     "login_qr_heading.png", "login_scan_login.png", "login_web_qr_heading.png",
     "login_web_qr_instruction.png", "login_web_qr_expired.png",
+    "login_qq_ios.png", "login_wechat_android.png", "login_wechat_ios.png", "login_wechat_qr_instruction.png", "login_wechat_qr_cancel.png",
 ]
 "naruto_daily.multimodal" = ["README.md"]
 "naruto_daily.multimodal.agent" = ["README.md"]

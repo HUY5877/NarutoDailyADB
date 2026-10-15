@@ -38,6 +38,7 @@ SAFE_DRIVER_ERRORS = {
     "login_finish_failed": "扫码授权已完成，但进入游戏失败，请重新申请。",
     "daily_timeout": "已达到日常总时限（最多50分钟），任务已停止。",
     "daily_failed": "Could not complete the daily tasks.",
+    "worker_stopped": "执行服务器已停止，任务执行中断，请重新申请。",
 }
 SAFE_REJECTION_ERRORS = {
     "worker_clock_skew": "执行服务器时间与任务服务器不同步，请同步执行服务器系统时间后重新申请。",
@@ -421,6 +422,15 @@ class RedisTaskQueue:
         record._queue_payload = payload
         return record
 
+    async def notification_user_id(self, record: TaskRecord) -> str:
+        """Read identity only from this worker's existing, unexpired session."""
+        script = _SESSION_GUARD + _OWNER_GUARD + """
+if type(session.userId) ~= 'string' then return '' end
+return session.userId
+"""
+        value = await self._call('eval', script, 1, self._session_key(record), *self._session_args(record))
+        return value if isinstance(value, str) and UUID_PATTERN.fullmatch(value) else ''
+
     async def pending_refresh(self, record: TaskRecord, request_id: str) -> bool:
         raw = await self._call('get', f'{self.config.redis_queue_key}:refresh:{record.id}')
         try:
@@ -471,7 +481,7 @@ class RedisTaskQueue:
         return bool(changed)
 
     async def requeue(self, record: TaskRecord) -> bool:
-        if record._queue_payload is None:
+        if record.qr_published or record._queue_payload is None:
             return False
         changed = await self._call(
             "eval", _REQUEUE_SCRIPT, 2, self._session_key(record), self.config.redis_queue_key,

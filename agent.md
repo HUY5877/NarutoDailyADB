@@ -2,7 +2,7 @@
 
 本文件供用户 clone 项目后，让 AI 执行首次安装、配置和环境验收。可以直接对 AI 说：**“请读取根目录 agent.md，按当前电脑的实际情况安装依赖、配置雷电模拟器并完成预检。”** 文件名按本项目约定使用 `agent.md`；若 AI 工具只自动加载 `AGENTS.md`，需要显式要求它读取本文件。
 
-基于 2026-10-10 的仓库现状编写。执行前复核 `README.md`、`.env.example`、`config.example.json`、`pyproject.toml` 和相关代码；发生差异时以当前实现为准。
+按统一扫码服务入口更新于 2026-10-14。执行前复核 `README.md`、`.env.example`、`config.example.json`、`pyproject.toml` 和相关代码；发生差异时以当前实现为准。
 
 本指南面向公开安装场景，只记录下文列出的配置项。参考仓库文件时，不补充公司内部服务的名称、地址或专用变量。
 
@@ -10,15 +10,15 @@
 
 安装目标是 Windows、Python 3.11+、**雷电模拟器 9**。先检查已有安装和配置，能复用就复用。本文中的安装路径、实例索引和设备号均为示例，不能直接当成用户电脑的实际值。
 
-- 只配置用户指定的模拟器实例。保留已有 `.env`、`config.local.json`、虚拟环境、游戏数据和其他实例；不要用示例文件覆盖已有配置。
+- 只配置用户指定的模拟器实例。保留已有 `.env`、`config.example.json`、虚拟环境、游戏数据和其他实例；不要用示例文件覆盖已有配置。直接使用根目录共享任务配置，不另建本地任务配置副本。
 - 只安装、配置和验收环境。实际运行游戏任务或启动扫码 worker，应由用户明确要求；worker 启动后会消费真实 Redis 任务。
 - 密钥写入本地 `.env` 或用户指定的 Cloudflare KV，不写入 JSON、本文、日志或 Git。缺少用户凭据时完成其余步骤，并报告具体缺项，不编造凭据或宣称配置成功。
 - 需要 BIOS/UEFI 操作、管理员交互或登录授权时，说明具体步骤交由用户完成。不要为安装模拟器擅自关闭 Hyper-V、WSL、系统安全功能或自动重启电脑。
 
 | 配置位置 | 当前用途 |
 | --- | --- |
-| 根目录 `config.local.json` | 本地 ADB 路径、设备 serial、屏幕尺寸及完整任务配置；从 `config.example.json` 复制后修改 |
-| 根目录 `.env` | Cloudflare 连接凭据、保存账号昵称、雷电和 worker 的机器参数 |
+| 根目录 `config.example.json` | 服务共用的屏幕尺寸、完整任务配置和资源引用；执行时由 worker 覆盖 ADB 路径和 serial |
+| 根目录 `.env` | Cloudflare 连接凭据、雷电和 worker 的机器参数 |
 | Cloudflare KV | DeepSeek 渠道、Redis、OSS 等运行配置；启动时读取 |
 | 雷电每个实例的设置 | 安卓分辨率、DPI、ADB 调试；实例池中的每个实例都必须一致 |
 
@@ -36,7 +36,7 @@ Get-Command python, py, git -ErrorAction SilentlyContinue
 Test-Path .\.venv\Scripts\python.exe
 Test-Path .\.venv-login-service\Scripts\python.exe
 Test-Path .\.env
-Test-Path .\config.local.json
+Test-Path .\config.example.json
 ```
 
 确认实际 Python 版本至少为 3.11。未安装时从 Python 官方安装 Windows 版本，再用明确的 Python 可执行文件创建虚拟环境；不要仅凭存在 `python` 命令就认定版本正确。
@@ -46,15 +46,12 @@ Test-Path .\config.local.json
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test,login-service]"
-if (-not (Test-Path .\config.local.json)) {
-    Copy-Item .\config.example.json .\config.local.json
-}
 if (-not (Test-Path .\.env)) {
     Copy-Item .\.env.example .\.env
 }
 ```
 
-已有 `.venv` 时跳过创建，检查其 Python 版本后安装依赖。已有 `.venv-login-service` 可继续用于扫码入口，但普通日常和秘境启动脚本要求 `.venv`。扫码服务、扫码秘境脚本优先使用 `.venv-login-service`，其次 `.venv`；两者同时存在时，应检查实际被选中的环境是否安装了当前依赖。
+已有 `.venv` 时跳过创建，检查其 Python 版本后安装依赖。`启动扫码服务.cmd` 优先使用 `.venv-login-service`，其次 `.venv`；两者同时存在时，应检查实际被选中的环境是否安装了当前依赖。下文预检示例使用 `.venv`，若服务选择已有 `.venv-login-service`，应替换成该环境的 Python 路径。
 
 ## 3. 安装雷电模拟器 9
 
@@ -134,7 +131,7 @@ $DeviceSerial = 'emulator-5554'  # 示例：填写上面核对过且状态为 de
 - `wm size` 的 `Physical size` 为 `1920x1080`。若还有 `Override size`，其值也必须一致；原始截图也必须是 1920×1080。
 - `wm density` 的实际生效密度为 `240`。若存在 `Override density`，需一起核对，不能只看 `Physical density`。
 
-当前 `naruto_daily/common/adb_client.py` 的尺寸读取优先使用 `Physical size`；扫码实例管理检查 `wm size` 输出中的最后一个尺寸。**两条路径均不自动检查 DPI**，因此 `check` 成功仍不能证明 DPI 正确。不要只通过 `adb shell wm size` 临时覆盖尺寸来绕过配置，应在雷电设置中配置并重启；已有尺寸或密度覆盖时，应在核对目标设备后处理覆盖，再重新验收。
+当前 `naruto_daily/common/adb_client.py` 的尺寸读取优先使用 `Physical size`；扫码实例管理检查 `wm size` 输出中的最后一个尺寸。**两条路径均不自动检查 DPI**，因此尺寸检查成功仍不能证明 DPI 正确。不要只通过 `adb shell wm size` 临时覆盖尺寸来绕过配置，应在雷电设置中配置并重启；已有尺寸或密度覆盖时，应在核对目标设备后处理覆盖，再重新验收。
 
 若没有设备，先核对本地 ADB 开关、保存/重启是否完成和安装路径。必要时按官方端口规则连接目标实例，连接后重新读取实际 serial：
 
@@ -150,8 +147,7 @@ $AdbPort = 5555 + 2 * $InstanceIndex
 
 在目标实例安装官方《火影忍者》手游，并完成首次资源下载、更新、协议及必要的手动引导。游戏不包含在 Git 仓库中。
 
-- 普通保存账号登录需要安装安卓 QQ、手动登录目标账号，并填写该账号在授权页显示的完整昵称。
-- 本地扫码秘境和扫码 worker 支持模拟器安装 QQ 或不安装 QQ；无 QQ 时使用游戏内 QQ 网页扫码授权。手机 QQ 扫码确认由用户完成。
+- 扫码 worker 支持模拟器安装 QQ 或不安装 QQ；无 QQ 时使用游戏内 QQ 网页扫码授权。手机扫码确认由用户完成，服务无需保存账号昵称。
 - 检查实际游戏包名，尤其不要凭游戏名称假定包名为 `com.tencent.naruto`。扫码实现当前默认值是 **`com.tencent.KiHan`**，以实际安装结果为准。
 
 ```powershell
@@ -160,26 +156,21 @@ $AdbPort = 5555 + 2 * $InstanceIndex
 & $Adb -s $DeviceSerial shell pm list packages -3
 ```
 
-扫码 worker 可用 `LDPLAYER_PACKAGE` 覆盖实际包名；本地扫码入口当前使用默认包名，没有对应 CLI 参数，安装其他包名的版本不能仅靠设置该变量就认定本地扫码可用。不同发行版本的登录 UI 也需要另行验证。
+扫码 worker 可用 `LDPLAYER_PACKAGE` 覆盖实际包名。不同发行版本的登录 UI 也需要另行验证。
 
-普通日常/秘境脚本应从第一张游戏登录页开始；扫码入口也支持已显示的 QQ 二维码页面。长期未登录账号的回归活动、额外引导等情况目前未完整兼容，应先由用户处理，不能用完整任务当作首次安装验收。
+worker 会重开游戏并导航到扫码登录页面。长期未登录账号的回归活动、额外引导等情况目前未完整兼容，应先由用户处理，不能用完整任务当作首次安装验收。
 
-## 6. 配置本地 JSON
+## 6. 核对共享日常配置
 
-保留从 `config.example.json` 复制的完整 `tasks` 和 `assets/` 引用，只修改机器相关字段。示例文件中的 `E:\雷电模拟器\leidian\LDPlayer9\adb.exe` 是原作者路径，新机器必须替换。
+服务统一使用根目录 `config.example.json`，保留完整 `tasks` 和 `assets/` 引用，不复制本地任务配置。机器参数通过 `.env` 配置；worker 使用雷电控制台同目录下的 `adb.exe` 和分配实例的真实 serial，覆盖日常配置中的对应字段，无需把示例 ADB 路径替换成新机器路径。
 
 ```powershell
-$ConfigPath = Join-Path (Get-Location).Path 'config.local.json'
-$LocalConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath $ConfigPath | ConvertFrom-Json
-$LocalConfig.adb_path = $Adb
-$LocalConfig.serial = $DeviceSerial
-$LocalConfig.screen.width = 1920
-$LocalConfig.screen.height = 1080
-$ConfigText = $LocalConfig | ConvertTo-Json -Depth 100
-[System.IO.File]::WriteAllText($ConfigPath, $ConfigText, [System.Text.UTF8Encoding]::new($false))
+$ConfigPath = Join-Path (Get-Location).Path 'config.example.json'
+$TaskConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath $ConfigPath | ConvertFrom-Json
+$TaskConfig.screen
 ```
 
-JSON 路径中的反斜杠需要转义；用 JSON 序列化写入可避免手工转义错误，并应采用 UTF-8 无 BOM。单设备可以保留 `serial: null`，多设备必须指定实际 serial；`run` 支持 `--serial` 覆盖，`check` 没有该参数。不要把上面几个字段写成整个配置文件，完整 `tasks` 必须保留。资源路径相对 JSON 所在目录解析，保持根目录 JSON 与 `assets/` 的相对关系。
+`screen` 的宽、高必须为 1920、1080，实际模拟器尺寸和 DPI 仍需单独验收。调整任务时直接修改共享文件，采用 UTF-8 无 BOM，保留完整 `tasks`。资源路径相对 JSON 所在目录解析，保持根目录 JSON 与 `assets/` 的相对关系。
 
 ## 7. 配置 `.env` 和 Cloudflare KV
 
@@ -191,12 +182,9 @@ JSON 路径中的反斜杠需要转义；用 JSON 序列化写入可避免手工
 CLOUDFLARE_API_TOKEN=用户提供的只读Token
 CLOUDFLARE_ACCOUNT_ID=用户的32位十六进制账户ID
 CLOUDFLARE_KV_NAMESPACE_ID=用户的32位十六进制命名空间ID
-
-# 仅保存账号登录需要；填写授权页显示的完整昵称。
-LOGIN_ACCOUNT_NAME="用户的完整昵称"
 ```
 
-Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限。这里的中文均为待填写说明，不是可运行凭据。昵称含空格或 `#` 时保留引号；仅扫码时昵称可留空。
+Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限。这里的中文均为待填写说明，不是可运行凭据；扫码服务不要求 `LOGIN_ACCOUNT_NAME`。
 
 ### Cloudflare KV
 
@@ -205,9 +193,9 @@ Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限。
 | KV key | 用途 |
 | --- | --- |
 | `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` | 本指南使用 DeepSeek，key 和 model 必填 |
-| `REDIS_URL` | 所有实际执行的模型路由需要，含本地日常和本地扫码秘境；地址须为 `redis://` 或 `rediss://` |
+| `REDIS_URL` | 扫码服务的任务队列与模型路由需要；地址须为 `redis://` 或 `rediss://` |
 | `REDIS_QUEUE_KEY` | 扫码队列名，默认 `naruto:login:tasks` |
-| `OSS_REGION`、`OSS_BUCKET`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET` | 扫码 worker 必填；普通本地任务和本地扫码秘境无需 OSS |
+| `OSS_REGION`、`OSS_BUCKET`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET` | 扫码 worker 必填 |
 | `OSS_STS_TOKEN` | 使用临时 OSS 凭据时填写 |
 | `OSS_KEY_PREFIX` | OSS 对象前缀，默认 `login` |
 
@@ -215,17 +203,15 @@ Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限。
 
 **配置加载规则必须遵守：**
 
-1. `naruto_daily/common/environment.py` 在启动时读取 Cloudflare KV；读取失败则停止，不提供离线回退。`check`、`--dry-run` 也会进入这个加载过程，不过不会点击或请求模型。
+1. `naruto_daily/common/environment.py` 在服务启动时读取 Cloudflare KV；读取失败则停止，不提供离线回退。实例池管理命令也会读取 KV。
 2. DeepSeek、Redis、OSS 不从本地 `.env` 回退，写入这些本地变量不能替代 KV；旧的同名进程变量也不会被保留作为兜底。
 3. 普通机器参数优先使用已有进程环境，再读本地 `.env`；KV 若包含同名机器参数，加载后会覆盖它们。建议不同机器的雷电路径和实例索引保留在各自 `.env`。
 4. 当前代码枚举命名空间全部 key。key 名需符合大写环境变量格式，值需可读取为文本；不要将 Cloudflare 连接凭据或内部 `_NARUTO_CLOUD_CONFIG_LOADED` 标记存入该命名空间。
 5. 修改配置后重启对应进程。不要在验收输出中打印 `.env` 全文、KV 值、Redis 含密码的地址或 OSS 密钥。
 
-本地扫码秘境不消费登录任务队列、不上传二维码，但**模型路由仍需要 Redis**，不能把“不连接扫码队列”理解成完全不需要 Redis。
+## 8. 配置扫码服务实例池
 
-## 8. 需要扫码 worker 时配置实例池
-
-只有用户需要网站扫码服务时才执行本节。推荐先配置一个专用实例，再扩展池；先前章节中的显示和 ADB 设置必须对池内每个实例逐一完成。
+推荐先配置一个专用实例，再扩展池；先前章节中的显示和 ADB 设置必须对池内每个实例逐一完成。
 
 在根目录 `.env` 添加或更新以下机器参数，路径和索引必须采用实际结果：
 
@@ -235,16 +221,18 @@ LDPLAYER_CONSOLE_PATH='C:\LDPlayer\LDPlayer9\ldconsole.exe'
 LDPLAYER_POOL_INDICES=0
 WORKER_CONCURRENCY=1
 LDPLAYER_PACKAGE=com.tencent.KiHan
-DAILY_CONFIG_PATH=config.local.json
+DAILY_CONFIG_PATH=config.example.json
 ```
 
 - `.env.example` 中默认没有启用真实驱动，实际默认是 `mock`；mock 二维码不能登录游戏。
 - `LDPLAYER_POOL_INDICES` 是 `list2` 的现有实例索引，用逗号分隔、不能重复；固定池支持索引 `0`，不要照搬旧复制模式的限制。示例 `0,2` 只有在这两个实例真实存在且均已配置好时才能使用。
 - 配置固定池后不需要 `LDPLAYER_TEMPLATE`，也不会复制实例。并发数建议不超过已准备实例数，实际占用不能超过池容量。
-- 每个实例预装游戏并完成资源更新，交给 worker 前退出已有账号到登录页并停止实例；不要让实例池接管正在手动游玩的实例。worker 会启动、操作并在结束后关闭它们，不删除池实例；不要与本地日常脚本共用同一个正在运行的实例。
-- worker 使用控制台同目录下的 `adb.exe`，并以分配实例的 serial 和 ADB 路径覆盖日常 JSON 的对应字段。普通本地脚本仍使用 JSON 中的机器配置。
-- `DAILY_CONFIG_PATH` 的默认值是 `config.example.json`；要使用本地任务改动时明确设置 `config.local.json`。任务 JSON 和完整 `assets/` 必须同时保留。
-- 状态目录默认 `.data/login-service/ldplayer`，不要删除它来强行解除占用。只查看占用可运行下面的 `list`；释放实例是另一个操作，应核实具体任务后按模块文档处理。
+- 每个实例预装游戏并完成资源更新，交给 worker 前退出已有账号到登录页并停止实例；不要让实例池接管正在手动游玩的实例。worker 会启动、操作并在结束后关闭它们，不删除池实例；同一个实例不能同时交给多个任务或人工操作。
+- worker 使用控制台同目录下的 `adb.exe`，并以分配实例的 serial 和 ADB 路径覆盖日常 JSON 的对应字段。
+- `DAILY_CONFIG_PATH` 使用默认值 `config.example.json`，任务改动直接维护该文件。任务 JSON 和完整 `assets/` 必须同时保留。
+- 状态目录默认 `.data/login-service/ldplayer`，无需手动删除或替换绑定文件。通过 `启动扫码服务.cmd` 启动时，服务入口先读取本机 `.env` 和进程环境中的 `LDPLAYER_POOL_INDICES`、雷电控制台路径与状态目录，查询 `ldconsole list2` 确认实际实例，再覆盖为全空闲槽位：`state: idle`、`taskId: null`、`serial: null`。这一步在 Cloudflare、模型网关和 Redis 配置加载之前完成，不硬编码实例编号或名称；serial 在任务启动实例时查询。
+- 固定池的 `bindings.json` 按实例编号保存当前状态，不随历史任务数量增长。任务子 worker、领取任务和下面的 `list` 命令不执行启动重置；单独使用实例池管理器读取旧版状态时仍会自动迁移并保留正在占用任务的归属。升级前先正常停止旧服务。
+- 仓库根目录的全空闲 `bindings.json` 模板仅供可选手动初始化，正常使用启动入口无需复制；手动替换须先停止 worker、确认实例没有任务并核对实际状态目录。新电脑直接按本机配置初始化，不复制其他电脑的状态目录。
 
 ```powershell
 .\.venv\Scripts\python.exe -m naruto_daily.login_service.pool_admin list
@@ -262,20 +250,13 @@ DAILY_CONFIG_PATH=config.local.json
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-保存账号登录已填写完整昵称时，可运行：
+按服务实际使用的规则检查共享日常 JSON，跳过保存账号登录前缀：
 
 ```powershell
-.\.venv\Scripts\naruto-daily.exe check --config config.local.json
-.\.venv\Scripts\naruto-daily.exe run all --config config.local.json --dry-run
+.\.venv\Scripts\python.exe -c "from pathlib import Path; from naruto_daily.config import load_settings; load_settings(Path('config.example.json'), skip_account_login=True); print('任务配置检查通过')"
 ```
 
-仅使用扫码、昵称留空时，`check` 会解析原始保存账号登录配置，可能报缺少 `LOGIN_ACCOUNT_NAME`；不要编造昵称绕过，改用支持跳过账号前缀的扫码预检：
-
-```powershell
-.\.venv\Scripts\naruto-daily.exe run secret_realm_farm --qr-login --config config.local.json --dry-run
-```
-
-上述预检都不执行游戏点击或模型请求。它们不能证明真实模型、Redis 和 OSS 请求已联通，也不检查 DPI；明确记录验收范围。
+JSON 检查会读取 Cloudflare KV，不执行游戏点击或模型请求，也不连接 Redis 或 OSS，不能证明 Redis、OSS 或模型接口已联通或 DPI 正确；明确记录验收范围。
 
 可在游戏登录页保存原始截图，核对尺寸和横屏布局。使用 `pull` 传输 PNG，避免旧 PowerShell 的二进制重定向损坏图片：
 
@@ -288,24 +269,17 @@ New-Item -ItemType Directory -Force .\artifacts | Out-Null
 
 尺寸应为 `(1920, 1080)`。截图可能包含账号或二维码，只保留本地，不提交到 Git。
 
-仅在用户要求实际启动时选择对应入口：
+仅在用户要求实际启动时，使用唯一入口 `启动扫码服务.cmd`。它运行常驻 Redis worker，生成二维码并上传 OSS，扫码后执行日常；按 `Ctrl+C` 停止。
 
-| 入口 | 用途 |
-| --- | --- |
-| `启动日常.cmd` | 保存账号登录后执行完整日常 |
-| `启动秘境.cmd` | 保存账号登录后独立刷秘境 |
-| `启动扫码秘境.cmd` | 本地手机 QQ 扫码后只刷秘境，无需 OSS |
-| `启动扫码服务.cmd` | 常驻 Redis worker，生成二维码并上传 OSS，扫码后执行日常 |
-
-最终向用户报告实际 Python/虚拟环境路径、雷电版本与安装路径、目标实例索引、ADB serial、尺寸和 DPI 实测值、选择的入口、已通过的预检和仍缺少的凭据或手动步骤。没有通过的项目应标为未验证，不能用“文件已写入”替代“环境可运行”。
+最终向用户报告实际 Python/虚拟环境路径、雷电版本与安装路径、目标实例索引、ADB serial、尺寸和 DPI 实测值、已通过的预检和仍缺少的凭据或手动步骤。没有通过的项目应标为未验证，不能用“文件已写入”替代“环境可运行”。
 
 ## 10. 常见失败的排查顺序
 
 | 现象 | 先检查 |
 | --- | --- |
-| 找不到 `adb.exe` / 控制台 | 实际安装路径和 JSON / `.env` 是否一致；不要沿用原作者路径 |
+| 找不到 `adb.exe` / 控制台 | `.env` 中的实际控制台路径及同目录 `adb.exe`；不要沿用示例路径 |
 | 无设备、`offline`、`unauthorized` | 实例启动状态、ADB 本地连接、保存后重启、目标 serial 和授权提示 |
-| 多个在线设备 | 将核对过的 serial 写入 JSON；`run` 也可用 `--serial` 指定 |
+| 多个在线设备 | 核对实例池索引、任务绑定和对应 serial；worker 必须操作分配到的实例 |
 | 分辨率错误或点击偏移 | 每个实例的 1920×1080、DPI 240、方向、尺寸/密度覆盖及原始截图 |
 | 缺少 Cloudflare 凭据或 KV 读取失败 | 三个本地连接变量、32 位 ID、Token 权限、网络和命名空间全部 key 的格式 |
 | 没有有效模型渠道或缺少 Redis | KV 中的 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `REDIS_URL` |
@@ -314,4 +288,4 @@ New-Item -ItemType Directory -Force .\artifacts | Out-Null
 | worker 启动后没有任务 | 客户端与 worker 是否使用相同 Redis 数据库和队列；不要盲目重建实例或删除状态 |
 | 首次登录或回归弹窗导致中断 | 游戏资源更新、额外引导和登录起始页；先由用户处理未兼容页面 |
 
-维护依据：`naruto_daily/cli.py`、`config.py`、`common/adb_client.py`、`common/environment.py`、`common/cloudflare_kv.py`、`multimodal/gateway.py`、`login_service/config.py`、`login_service/ldplayer.py`、`login_service/local.py` 和根目录各启动脚本。
+维护依据：`naruto_daily/config.py`、`common/adb_client.py`、`common/environment.py`、`common/cloudflare_kv.py`、`multimodal/gateway.py`、`login_service/config.py`、`login_service/ldplayer.py`、`login_service/daily.py` 和根目录 `启动扫码服务.cmd`。

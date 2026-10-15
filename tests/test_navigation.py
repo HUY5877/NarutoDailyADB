@@ -8,6 +8,9 @@ from naruto_daily.common.navigation import navigate_to_card
 from naruto_daily.common.visual import VisualError
 
 
+pytestmark = pytest.mark.usefixtures('reward_swipe_vision')
+
+
 class NavigationClient:
     def __init__(self):
         self.taps = []
@@ -93,8 +96,65 @@ def test_reward_search_default_limit_is_shared_by_all_tasks():
         client = NavigationClient()
         summary = navigate_to_card(client, action, template_matcher=lambda *args: (None, .1),
                                    sleep=lambda _: None)
-        assert summary.completed and summary.swipes == 10
-        assert client.swipes == [(1450, 550, 1000, 550, 600)] * 10
+        assert summary.completed and summary.swipes == 20
+        assert client.swipes == [(1450, 550, 1000, 550, 600)] * 20
+
+
+def test_default_limit_allows_twenty_successes_after_failed_attempts(monkeypatch):
+    from naruto_daily.common import navigation
+    client = NavigationClient()
+    monkeypatch.setattr(navigation, 'reward_card_swipe_starts',
+                        lambda png: [(1260, 550), (1640, 550), (880, 550)])
+    monkeypatch.setattr(navigation, 'reward_card_displacement',
+                        lambda before, after: 0.0 if len(client.swipes) in (1, 4) else -520.0)
+    summary = navigate_to_card(client, reward_card_actions()[0],
+                               template_matcher=lambda *args: (None, .1), sleep=lambda _: None)
+    assert summary.swipes == 20 and len(client.swipes) == 22
+    assert client.swipes[0][:2] != client.swipes[1][:2]
+    assert client.swipes[3][:2] != client.swipes[4][:2]
+
+
+def test_failed_alignment_keeps_its_intent_when_the_label_temporarily_disappears(monkeypatch):
+    from naruto_daily.common import navigation
+    client = NavigationClient()
+    monkeypatch.setattr(navigation, 'reward_card_swipe_starts',
+                        lambda png: [(1260, 550), (1640, 550)])
+    monkeypatch.setattr(navigation, 'reward_card_displacement',
+                        lambda before, after: 0.0 if len(client.swipes) == 1 else -520.0)
+
+    def matcher(png, path, *args):
+        if len(client.swipes) == 1:
+            return None, .1
+        if path.name == 'organization_pray_label.png':
+            return (1820, 492), .99
+        if len(client.swipes) >= 3 and path.name == 'completed_stamp.png':
+            return (1820, 650), .99
+        return None, .1
+
+    result = navigate_to_card(client, dict(card_action(), completed_skip_type='handle_organization_prayer'),
+                              template_matcher=matcher, sleep=lambda _: None)
+    assert len(client.swipes) == 2 and result.swipes == 1
+    assert not client.taps
+
+
+def test_pre_click_frame_can_confirm_the_pending_successful_swipe(monkeypatch):
+    from naruto_daily.common import navigation
+    client = NavigationClient()
+    movements = iter([None, -520.0])
+    monkeypatch.setattr(navigation, 'reward_card_displacement', lambda *args: next(movements))
+
+    def matcher(png, path, *args):
+        if not client.swipes:
+            return None, .1
+        if path.name == 'organization_pray_label.png':
+            return (562, 394), .99
+        if path.name == 'go_now_button.png':
+            return (562, 580), .99
+        return None, .1
+
+    result = navigate_to_card(client, card_action(), template_matcher=matcher, sleep=lambda _: None)
+    assert result.swipes == 1 and len(client.swipes) == 1
+    assert client.taps == [(562, 580)]
 
 
 def test_card_visible_now_clicks_corresponding_button_without_swiping(caplog):

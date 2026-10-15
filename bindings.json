@@ -1,0 +1,197 @@
+{
+  "version": 2,
+  "bindings": {
+    "0": {
+      "name": "实例0",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "1": {
+      "name": "实例1",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "2": {
+      "name": "实例2",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "3": {
+      "name": "实例3",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "4": {
+      "name": "实例4",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "5": {
+      "name": "实例5",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "6": {
+      "name": "实例6",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "7": {
+      "name": "实例7",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "8": {
+      "name": "实例8",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "9": {
+      "name": "实例9",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "10": {
+      "name": "实例10",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "11": {
+      "name": "实例11",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "12": {
+      "name": "实例12",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "13": {
+      "name": "实例13",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "14": {
+      "name": "实例14",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "15": {
+      "name": "实例15",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "16": {
+      "name": "实例16",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "17": {
+      "name": "实例17",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "18": {
+      "name": "实例18",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "19": {
+      "name": "实例19",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "20": {
+      "name": "实例20",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "21": {
+      "name": "实例21",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "22": {
+      "name": "实例22",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "23": {
+      "name": "实例23",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "24": {
+      "name": "实例24",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "25": {
+      "name": "实例25",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "26": {
+      "name": "实例26",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "27": {
+      "name": "实例27",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "28": {
+      "name": "实例28",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "29": {
+      "name": "实例29",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "30": {
+      "name": "实例30",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    },
+    "31": {
+      "name": "实例31",
+      "serial": null,
+      "taskId": null,
+      "state": "idle"
+    }
+  }
+}

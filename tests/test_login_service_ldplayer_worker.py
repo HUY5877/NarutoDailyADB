@@ -65,8 +65,8 @@ def test_worker_runs_ldplayer_and_qr_navigation_protocol(monkeypatch):
             calls.append(("launch", instance, package, deadline))
 
     class Device:
-        def __init__(self, adb_path, serial, deadline, command_timeout=20, *, game_package):
-            calls.append(("device", adb_path, serial, deadline, command_timeout, game_package))
+        def __init__(self, adb_path, serial, deadline, command_timeout=20, *, game_package, login_type):
+            calls.append(("device", adb_path, serial, deadline, command_timeout, game_package, login_type))
 
     def fetch(device):
         calls.append(("fetch", device.__class__.__name__))
@@ -93,7 +93,7 @@ def test_worker_runs_ldplayer_and_qr_navigation_protocol(monkeypatch):
         ("allocate", TASK_ID, deadline),
         ("start", "instance", deadline),
         ("launch", "instance", "com.tencent.naruto", deadline),
-        ("device", Path("C:/LDPlayer/adb.exe"), "emulator-5570", deadline, 23.0, "com.tencent.naruto"),
+        ("device", Path("C:/LDPlayer/adb.exe"), "emulator-5570", deadline, 23.0, "com.tencent.naruto", "android_qq"),
         ("fetch", "Device"),
     ]
 
@@ -292,7 +292,7 @@ def daily_dependencies(calls):
             calls.append("launch")
 
     class Device:
-        def __init__(self, adb_path, serial, deadline, command_timeout, *, game_package):
+        def __init__(self, adb_path, serial, deadline, command_timeout, *, game_package, login_type):
             assert serial == "emulator-5570"
             assert game_package == "com.tencent.naruto"
 
@@ -371,11 +371,16 @@ def test_secret_completion_stops_real_runner_and_preserves_worker_success_protoc
         assert not any(event['type'] == 'daily_completed' for event in events)
 
 
-@pytest.mark.parametrize("options,enabled", [
-    (None, True), ({}, True), ({"equipmentStamina": True}, True), ({"equipmentStamina": False}, False),
+@pytest.mark.parametrize("options,enabled,mode", [
+    (None, True, 'all'), ({}, True, 'all'), ({"equipmentStamina": True}, True, 'all'),
+    ({"equipmentStamina": False}, False, 'all'), ({'secretRealmOnce': True}, True, 'once'),
+    ({'equipmentStamina': False, 'secretRealmOnce': True}, False, 'once'),
+    ({'equipmentStamina': False, 'secretRealmMode': 'once'}, False, 'once'),
+    ({'equipmentStamina': True, 'secretRealmMode': 'all'}, True, 'all'),
+    ({'equipmentStamina': False, 'secretRealmMode': 'skip'}, False, 'skip'),
 ])
 def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_login_finish(
-    monkeypatch, tmp_path, options, enabled,
+    monkeypatch, tmp_path, options, enabled, mode,
 ):
     now = 1_800_000_000.0
     clock = [now]
@@ -394,7 +399,7 @@ def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_l
             assert kwargs == {
                 "config_path": config_path, "adb_path": Path("C:/LDPlayer/adb.exe"),
                 "serial": "emulator-5570", "command_timeout": 23,
-                "user_options": {"equipmentStamina": enabled},
+                "user_options": {"equipmentStamina": enabled, 'secretRealmMode': mode},
             }
             self.logged_in = False
 
@@ -445,6 +450,10 @@ def test_daily_worker_extends_deadline_at_authorization_and_shares_budget_with_l
 @pytest.mark.parametrize("options", [
     None, [], False, "false", 0, {"equipmentStamina": None}, {"equipmentStamina": 0},
     {"equipmentStamina": "false"}, {"equipmentStamina": False, "unknown": True},
+    {'secretRealmOnce': None}, {'secretRealmOnce': 'false'}, {'secretRealmOnce': 0},
+    {'secretRealmOnce': 1}, {'secretRealmOnce': []}, {'secretRealmOnce': {}},
+    {'secretRealmMode': None}, {'secretRealmMode': True}, {'secretRealmMode': []},
+    {'secretRealmMode': 'unknown'}, {'secretRealmMode': 'once', 'secretRealmOnce': False},
 ])
 def test_invalid_user_options_fail_before_driver_initialization(monkeypatch, options):
     loaded = []

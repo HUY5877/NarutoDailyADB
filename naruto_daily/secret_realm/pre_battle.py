@@ -1,4 +1,4 @@
-"""秘境战前准备：暂时跳过指定秘境，保留毒风导航供后续恢复。"""
+"""秘境战斗入口检查：读取当前帧名称，跳过指定秘境并保留毒风导航。"""
 from __future__ import annotations
 
 import logging
@@ -6,9 +6,10 @@ import re
 import time
 from enum import Enum
 
-from naruto_daily.common.visual import VisualError
+from naruto_daily.common.visual import NonRetryableVisualError, VisualError
 from naruto_daily.multimodal.client import MultimodalError
 from naruto_daily.multimodal.prompts import SECRET_BATTLE_REALM
+from naruto_daily.multimodal.diagnostics import model_request_context
 from naruto_daily.common.execution import current_execution, stage_timeout
 from .navigation import navigate_to_poison_seal
 
@@ -46,7 +47,7 @@ def _wait_and_click(images, target, action, *, guard=None):
     while images.elapsed < deadline:
         center = check()
         if center is not None:
-            if images.elapsed + action['pre_click_wait_seconds'] >= deadline:
+            if current_execution() is None and images.elapsed + action['pre_click_wait_seconds'] >= deadline:
                 break
             images.sleep(action['pre_click_wait_seconds'])
             center = check()
@@ -59,8 +60,8 @@ def _wait_and_click(images, target, action, *, guard=None):
     raise VisualError(f'等待{target["name"]}超时，未继续点击或攻击')
 
 
-def identify_battle_realm(images, model, action, *, clock=time.monotonic):
-    """加载后重新截图读名称；无法识别时停止，不猜测进入战斗。"""
+def identify_battle_realm(images, model, action, *, clock=time.monotonic, png=None):
+    """战斗模块提供当前帧；未确认名称时停止输入，由调用方重新观察。"""
     deadline = images.elapsed + stage_timeout(action['timeout_seconds'])
     calls = 0
 
@@ -71,12 +72,13 @@ def identify_battle_realm(images, model, action, *, clock=time.monotonic):
             return '已结束'
         if images.elapsed >= deadline:
             raise MultimodalError('秘境副本名称识别超时')
-        if calls >= action['multimodal']['max_calls']:
+        if current_execution() is None and calls >= action['multimodal']['max_calls']:
             raise MultimodalError('秘境副本名称识别达到模型调用上限，未攻击或退出')
         start = clock()
         try:
-            result = model.complete_json(png, SECRET_BATTLE_REALM,
-                                         timeout_seconds=stage_timeout(deadline-images.elapsed))
+            with model_request_context('秘境名称识别'):
+                result = model.complete_json(png, SECRET_BATTLE_REALM,
+                                             timeout_seconds=stage_timeout(deadline-images.elapsed))
             calls += 1
         finally:
             if current_execution() is None:
@@ -86,8 +88,16 @@ def identify_battle_realm(images, model, action, *, clock=time.monotonic):
         name = result.get('realm_name') if isinstance(result, dict) and result.get('page') == 'battle' else None
         if not isinstance(name, str) or not 3 <= len(name.strip()) <= 20 or not name.strip().endswith('秘境'):
             name = None
-        LOGGER.info('模型识别秘境副本：%s；调用 %d/%d 次', name or '未确认', calls, action['multimodal']['max_calls'])
+        call_progress = (f'{calls} 次（由总时限约束）' if current_execution() is not None
+                         else f"{calls}/{action['multimodal']['max_calls']} 次")
+        LOGGER.info('模型识别秘境副本：%s；调用 %s', name or '未确认', call_progress)
         return name.strip() if name else None
+
+    if png is not None:
+        name = probe(png)
+        if name is None:
+            raise MultimodalError('秘境副本名称尚未确认，保持停止点击并重新截图')
+        return name
 
     while images.elapsed < deadline:
         name = images.check(probe, lambda name: name is not None, '秘境副本名称', deadline=deadline)
@@ -99,14 +109,20 @@ def identify_battle_realm(images, model, action, *, clock=time.monotonic):
 
 def exit_secret_battle(images, action):
     """复用阴阳秘境的暂停→退出→确认流程；回房间由结算模块继续确认。"""
-    _wait_and_click(images, PAUSE, action)
-    _wait_and_click(images, EXIT, action)
-    _wait_and_click(images, CONFIRM, action, guard=QUESTION)
+    try:
+        _wait_and_click(images, PAUSE, action)
+        _wait_and_click(images, EXIT, action)
+        _wait_and_click(images, CONFIRM, action, guard=QUESTION)
+    except VisualError as error:
+        # A partially executed exit must not be replayed as a read-only retry.
+        raise NonRetryableVisualError(str(error)) from None
 
 
-def prepare_secret_battle(images, model, action, *, clock=time.monotonic) -> BattlePreparation:
+def prepare_secret_battle(images, model, action, *, clock=time.monotonic, png=None) -> BattlePreparation:
     """区分可开始战斗、已主动退出和导航期间已出现结算。"""
-    name = identify_battle_realm(images, model, action, clock=clock)
+    name = identify_battle_realm(images, model, action, clock=clock, png=png)
+    if name == '已结束':
+        return BattlePreparation.FINISHED
     # “落岩”可能被模型读成“溶岩”或“熔岩”，名称含“岩”就统一退出。
     if name in SKIPPED_REALMS or re.search(r'岩', name):
         LOGGER.info('确认%s，暂时跳过，执行暂停→退出战斗→确定', name)
@@ -114,7 +130,10 @@ def prepare_secret_battle(images, model, action, *, clock=time.monotonic) -> Bat
         return BattlePreparation.EXITED
     if name == '毒风秘境':
         LOGGER.info('确认毒风秘境，先调用导航 agent 走到封印处，再开始战斗')
-        result = navigate_to_poison_seal(images, model)
+        try:
+            result = navigate_to_poison_seal(images, model)
+        except VisualError as error:
+            raise NonRetryableVisualError(str(error)) from None
         if result.status == 'finished':
             LOGGER.info('毒风导航期间已出现失败或胜利结算，停止导航并返回房间重新检查挑战券：%s', result.observation)
             return BattlePreparation.FINISHED
@@ -125,5 +144,5 @@ def prepare_secret_battle(images, model, action, *, clock=time.monotonic) -> Bat
             LOGGER.info('毒风导航 %d 步后仍未到达封印，执行暂停→退出战斗→确定', result.steps)
             exit_secret_battle(images, action)
             return BattlePreparation.EXITED
-        raise VisualError('毒风导航未确认到达，停止且不进入战斗')
+        raise NonRetryableVisualError('毒风导航未确认到达，停止且不进入战斗')
     return BattlePreparation.READY

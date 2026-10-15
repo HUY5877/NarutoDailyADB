@@ -5,10 +5,41 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import re
 import signal
 from urllib.parse import urlsplit
 
 from naruto_daily.common import environment
+from .ldplayer import LDPlayerError
+
+
+def reset_pool_on_startup(env_file: Path) -> None:
+    """Reset machine-local bindings before loading cloud/service configuration."""
+    from .ldplayer import LDPlayerManager
+
+    local = environment._read_local_dotenv(env_file)
+    values = {**local, **os.environ}
+    indices = (values.get("LDPLAYER_POOL_INDICES") or "").strip()
+    if values.get("EMULATOR_DRIVER", "mock") != "ldplayer" or not indices:
+        return
+    parts = [part.strip() for part in indices.split(",")]
+    if any(not re.fullmatch(r"\d+", part) for part in parts):
+        raise environment.EnvironmentConfigError("Invalid LDPLAYER_POOL_INDICES")
+    console_value = (values.get("LDPLAYER_CONSOLE_PATH") or "").strip()
+    if not console_value:
+        raise environment.EnvironmentConfigError("LDPLAYER_CONSOLE_PATH must name an existing file")
+    console = Path(console_value)
+    if not console.is_absolute():
+        console = environment.PROJECT_ROOT / console
+    if not console.is_file():
+        raise environment.EnvironmentConfigError("LDPLAYER_CONSOLE_PATH must name an existing file")
+    state_dir = Path(values.get("LDPLAYER_STATE_DIR") or ".data/login-service/ldplayer")
+    if not state_dir.is_absolute():
+        state_dir = environment.PROJECT_ROOT / state_dir
+    manager = LDPlayerManager(console.resolve(), "", state_dir.resolve(),
+                              pool_indices=tuple(int(part) for part in parts))
+    manager.reset_pool()
+    logging.info("雷电实例登记已重置为空闲：indices=%s", indices)
 
 
 async def run_worker(config) -> None:
@@ -50,6 +81,7 @@ def main(argv: list[str] | None = None) -> None:
     from .config import load_config
 
     try:
+        reset_pool_on_startup(args.env_file)
         environment.initialize_environment(args.env_file)
         if not os.environ.get("REDIS_URL", "").strip():
             raise environment.EnvironmentConfigError('请在 Cloudflare KV 配置非空的 REDIS_URL')
@@ -62,6 +94,9 @@ def main(argv: list[str] | None = None) -> None:
             logging.info("Redis login worker stopped")
     except environment.EnvironmentConfigError as error:
         logging.error('启动配置错误：%s', error)
+        raise SystemExit(1) from None
+    except LDPlayerError as error:
+        logging.error("雷电实例登记初始化失败：%s", error)
         raise SystemExit(1) from None
     except Exception as error:
         # SDK exceptions and connection URLs can contain credentials.

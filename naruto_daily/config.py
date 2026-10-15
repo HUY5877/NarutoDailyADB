@@ -106,7 +106,7 @@ ACTION_KEYS = {
         "type", "timeout_seconds", "poll_seconds",
         "pre_click_wait_seconds", "post_click_wait_seconds",
         "advanced_tab", "advanced_red_dot", "ordinary_tab", "ordinary_red_dot",
-        "free_button", "result_confirm", "multimodal",
+        "free_button", "result_confirm", "ninja_result_confirm", "multimodal",
     },
 }
 CLICK_WAIT_KEYS = {"pre_click_wait_seconds", "post_click_wait_seconds"}
@@ -344,6 +344,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         optional_keys = optional_keys | {"multimodal"}
     if action_type == "handle_survival_challenge":
         optional_keys = optional_keys | {"sweep_prompt"}
+    if action_type == "handle_free_recruit":
+        optional_keys = optional_keys | {"ninja_result_confirm"}
     if action_type == "handle_equipment_upgrade":
         # 兼容旧配置；装备流程已全部使用模型判断，不再依赖这四个模板。
         optional_keys = optional_keys | {"one_click_sweep", "start_sweep", "sweep_done", "advance"}
@@ -511,8 +513,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             raise ConfigError(f"{context} 的按钮搜索区域上下范围无效")
         if "max_swipes" in action:
             max_swipes = action["max_swipes"]
-            if not isinstance(max_swipes, int) or isinstance(max_swipes, bool) or not 0 <= max_swipes <= 10:
-                raise ConfigError(f"{context} 的 max_swipes 必须在 0 到 10 之间")
+            if not isinstance(max_swipes, int) or isinstance(max_swipes, bool) or not 0 <= max_swipes <= 20:
+                raise ConfigError(f"{context} 的 max_swipes 必须在 0 到 20 之间")
         for key, limit in (
             ("swipe_x1", width), ("swipe_x2", width),
             ("swipe_y1", height), ("swipe_y2", height),
@@ -764,6 +766,18 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             raise ConfigError(f"{context} 的招募结果确定按钮搜索区域必须限制在左下安全区域")
         if result_confirm["threshold"] < 0.85:
             raise ConfigError(f"{context} 的招募结果确定按钮阈值不能低于 0.85")
+        if "ninja_result_confirm" in action:
+            ninja_confirm = action["ninja_result_confirm"]
+            _validate_template_target(ninja_confirm, width, height, f"{context}.ninja_result_confirm", require_name=True)
+            if not (
+                ninja_confirm["left"] >= 650
+                and ninja_confirm["top"] >= 850
+                and ninja_confirm["right"] <= 1300
+                and ninja_confirm["bottom"] <= height
+            ):
+                raise ConfigError(f"{context} 的获得忍者确定按钮搜索区域必须限制在底部中间安全区域")
+            if ninja_confirm["threshold"] < 0.85:
+                raise ConfigError(f"{context} 的获得忍者确定按钮阈值不能低于 0.85")
         return
     return
 

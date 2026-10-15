@@ -98,6 +98,23 @@ def test_log_event_keeps_only_safe_fields_and_normalizes_level_and_time():
     }]
 
 
+@pytest.mark.parametrize('marker, level, expected', [
+    (True, logging.INFO, True), (False, logging.INFO, False),
+    (1, logging.INFO, False), ('true', logging.INFO, False),
+    (True, logging.ERROR, False),
+])
+def test_secret_realm_milestone_uses_the_public_log_timestamp(marker, level, expected):
+    events = []
+    handler = ProtocolLogHandler(events.append)
+    record = logging.LogRecord('naruto_daily', level, __file__, 1, '秘境成功结算', (), None)
+    record.secret_realm_completed = marker
+    handler.handle(record)
+    assert ('secretRealmCompletedAt' in events[0]) is expected
+    if expected:
+        assert events[0]['secretRealmCompletedAt'] == events[0]['time']
+        assert 'actionIndex' not in events[0]
+
+
 def test_local_diagnostics_keep_tracebacks_and_web_logs_receive_sanitized_causes():
     events, terminal = [], StringIO()
     secret = "local-diagnostic-test-secret"
@@ -236,7 +253,7 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
             logger.info("launch game")
 
     class Device:
-        def __init__(self, *args, game_package):
+        def __init__(self, *args, game_package, login_type):
             assert game_package == "test.game"
 
     def fetch(device):

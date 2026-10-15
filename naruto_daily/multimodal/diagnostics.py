@@ -15,6 +15,18 @@ LOGGER = logging.getLogger('naruto_daily')
 _SCENE = ContextVar('multimodal_request_scene', default='多模态识别')
 
 
+def mark_model_api_failure(error):
+    """Classify a confirmed API failure without changing its type or retry policy."""
+    error._model_api_failure = True
+    return error
+
+
+def is_model_api_failure(error):
+    # Inspect only this error: a code error or overall deadline raised while
+    # handling an API failure must remain visible to the task's user.
+    return isinstance(error, BaseException) and getattr(error, '_model_api_failure', False) is True
+
+
 def current_model_scene():
     return _SCENE.get()
 
@@ -119,7 +131,8 @@ class RequestDiagnostics:
                 + (f' {self.error}' if self.error else ''))
 
     def log(self, level, event, detail=''):
-        LOGGER.log(level, '[多模态请求%s] %s%s', event, self.summary(), f' {detail}' if detail else '')
+        LOGGER.log(level, '[多模态请求%s] %s%s', event, self.summary(), f' {detail}' if detail else '',
+                   extra={'backend_only': True})
 
     def failure(self, exc=None, *, status=None):
         self.status = status

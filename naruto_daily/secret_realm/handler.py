@@ -5,8 +5,9 @@ import logging
 import time
 from pathlib import Path
 
-from naruto_daily.battle import run_battle
+from naruto_daily.battle import BattleSummary, run_battle
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.execution import current_execution, stage_timeout
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalClient
 from .recognition import wait_for_tickets
@@ -26,7 +27,7 @@ def _ninja_selection_end(png):
 
 
 def _enter_room(client, images, action):
-    deadline = images.elapsed + action['timeout_seconds']
+    deadline = images.elapsed + stage_timeout(action['timeout_seconds'])
     round_number = 0
     targets = [action['deploy_button'], action['create_room']]
     while images.elapsed < deadline:
@@ -49,9 +50,11 @@ def _enter_room(client, images, action):
     raise VisualError('秘境创建房间超时')
 
 
-def finish_secret_result(client, images, action, *, exited_battle=False, result_confirmed=False):
+def finish_secret_result(client, images, action, *, exited_battle=False, result_confirmed=False,
+                         on_success=None):
     """处理结算或误入的更换忍者页，逐轮检查直到回房间。"""
-    deadline = images.elapsed + action['timeout_seconds']
+    deadline = images.elapsed + stage_timeout(action['timeout_seconds'])
+    scoped = current_execution() is not None
     return_clicked = False
     dismiss_enabled = exited_battle or result_confirmed
 
@@ -63,16 +66,20 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
             return 'room', None
         if images.match(png, action['create_room'])[0] is not None:
             return 'lobby', None
+        if secret_failure_visible(png):
+            return 'failure', None
+        result_visible = images.match(png, action['result_marker'])[0] is not None
+        reward_visible = images.match(png, action['reward_overlay'])[0] is not None
+        if not exited_battle and on_success is not None and (result_visible or reward_visible):
+            on_success()
         # 战斗层已经确认结束后，返回键无需再依赖可能被倒计时遮挡的结算标题。
         # 房间的同款返回键必须由上面的房间判断优先拦住。
-        if dismiss_enabled or images.match(png, action['result_marker'])[0] is not None:
+        if dismiss_enabled or result_visible:
             center, _ = images.match(png, action['result_return'])
             if center is not None:
                 return 'result', center
-        if images.match(png, action['reward_overlay'])[0] is not None:
+        if reward_visible:
             return 'reward', None
-        if secret_failure_visible(png):
-            return 'failure', None
         return None
 
     def check():
@@ -89,7 +96,7 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
         if state and state[0] == 'ninja_selection':
             # 更换忍者页不能沿用结算弹层的空白处点击；重新截图后只点该页返回。
             dismiss_enabled = False
-            if images.elapsed + action['pre_click_wait_seconds'] >= deadline:
+            if not scoped and images.elapsed + action['pre_click_wait_seconds'] >= deadline:
                 break
             images.sleep(action['pre_click_wait_seconds'])
             state = check()
@@ -99,7 +106,7 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
                 images.sleep(action['post_click_wait_seconds'])
                 continue
         if state and state[0] == 'result' and not return_clicked:
-            if images.elapsed + action['pre_click_wait_seconds'] >= deadline:
+            if not scoped and images.elapsed + action['pre_click_wait_seconds'] >= deadline:
                 break
             images.sleep(action['pre_click_wait_seconds'])
             state = check()
@@ -124,7 +131,8 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
             dismiss_enabled = True
             if state[0] == 'failure':
                 LOGGER.info('已确认秘境失败结算，点击空白处回房间后重新核对挑战券')
-        if dismiss_enabled and images.elapsed < deadline:
+        if (dismiss_enabled and images.elapsed < deadline
+                and (not scoped or (state is not None and state[0] in ('result', 'reward', 'failure')))):
             # 避开奖励物品所在的中间一排；此空白坐标已经实机验证可关闭奖励弹层。
             client.tap(960, 900)
             LOGGER.info('已点击屏幕下方空白处 (960, 900)，继续检查是否回到秘境房间')
@@ -133,12 +141,22 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
 
 
 def handle_secret_realm(client, action, *, template_matcher=find_template_in_png,
-                        asset_root=Path('.'), sleep=time.sleep):
-    """循环挑战；仅在房间确认剩余挑战券为0时正常返回，结束本次任务。"""
+                        asset_root=Path('.'), sleep=time.sleep, secret_realm_once=False):
+    """循环挑战；券为0或按用户设置完成首次成功并回房时正常返回。"""
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     _enter_room(client, images, action)
     model = MultimodalClient(action['multimodal'], asset_root=asset_root)
     completed = 0
+    first_success_reported = False
+
+    def report_first_success():
+        nonlocal first_success_reported
+        if not first_success_reported:
+            first_success_reported = True
+            LOGGER.info('已确认首次秘境探险成功结算，日常任务已初步完成，%s',
+                        '结算收尾后结束本次任务' if secret_realm_once else '继续消耗剩余秘境挑战券',
+                        extra={'secret_realm_completed': True})
+
     while True:
         LOGGER.info('[秘境探险 第%d轮] 读取剩余挑战券；大于0则复查后出战，等战斗结束回房间；为0则直接结束本次任务', completed+1)
         state = wait_for_tickets(images, model, action)
@@ -154,25 +172,44 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
         client.tap(*confirmed.deploy_center)
         LOGGER.info('已点击出战，等待 %g 秒加载并检查继续挑战提示；加载完成前不再点击出战', action['load_wait_seconds'])
         wait_after_deploy(images, action, confirmed_tickets=confirmed.tickets)
-        preparation = prepare_secret_battle(images, model, action)
-        result_confirmed = preparation is BattlePreparation.FINISHED
-        if preparation is BattlePreparation.READY:
-            # 秘境结算仅停留约20秒，缩短连点窗口以便回房间前识别结束。
-            battle_summary = run_battle(client, action['battle'], template_matcher=template_matcher,
-                                        asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18,
-                                        end_detector=_ninja_selection_end)
-            # 保留战斗层的结束证据；更换忍者页仍只允许识别并点击该页返回。
-            result_confirmed = (battle_summary is not None
-                                and battle_summary.end_target != '秘境更换忍者页')
-            if result_confirmed:
-                LOGGER.info('战斗层已确认结束（%s），结算优先查找返回键，未匹配则点击空白处',
-                            battle_summary.end_target)
+        preparation = BattlePreparation.READY
+
+        def check_realm(png):
+            nonlocal preparation
+            preparation = prepare_secret_battle(images, model, action, png=png)
+            if preparation is BattlePreparation.EXITED:
+                return BattleSummary(0, '秘境已主动退出')
+            if preparation is BattlePreparation.FINISHED:
+                return BattleSummary(0, '秘境已确认结束')
+            return None
+
+        # 战斗模块在首轮当前帧确认名称之后才允许连点；已结束直接交给结算。
+        battle_summary = run_battle(client, action['battle'], template_matcher=template_matcher,
+                                    asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18,
+                                    end_detector=_ninja_selection_end, before_attack=check_realm)
+        # 保留战斗层的结束证据；更换忍者页仍只允许识别并点击该页返回。
+        result_confirmed = (preparation is BattlePreparation.FINISHED or
+                            preparation is not BattlePreparation.EXITED and battle_summary is not None
+                            and battle_summary.end_target != '秘境更换忍者页')
+        if (battle_summary is not None and battle_summary.end_target in {
+                action['result_marker']['name'], action['reward_overlay']['name']}):
+            report_first_success()
+        if result_confirmed:
+            LOGGER.info('战斗层已确认结束（%s），结算优先查找返回键，未匹配则点击空白处',
+                        battle_summary.end_target)
         finish_secret_result(client, images, action,
                              exited_battle=preparation is BattlePreparation.EXITED,
-                             result_confirmed=result_confirmed)
+                             result_confirmed=result_confirmed, on_success=report_first_success)
         if preparation is BattlePreparation.EXITED:
             LOGGER.info('已主动退出本次秘境；回房间重新读券后继续')
         else:
             completed += 1
+        if secret_realm_once and first_success_reported:
+            # 结算返回大厅时可能只刚点击建房；退出前再确认实际已回房，不再读券或出战。
+            images.wait_for(action['deploy_button'], timeout_seconds=action['timeout_seconds'],
+                            poll_seconds=action['poll_seconds'])
+            LOGGER.info('已按用户设置完成首次秘境探险并确认回房，结束本次日常任务')
+            return completed
+        if preparation is not BattlePreparation.EXITED:
             LOGGER.info('秘境第%d场已结束，等待 %g 秒刷新房间后重新读券；当前券数大于0即可继续', completed, action['post_click_wait_seconds'])
         images.sleep(action['post_click_wait_seconds'])

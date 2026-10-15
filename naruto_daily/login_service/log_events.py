@@ -10,6 +10,7 @@ from typing import Callable, Iterable, Iterator, TextIO
 
 from naruto_daily.common.environment import read_multimodal_environment
 from naruto_daily.multimodal.channels import API_KEY_ENV_NAMES
+from naruto_daily.multimodal.diagnostics import is_model_api_failure
 
 
 MAX_LOG_MESSAGE_LENGTH = 1_000
@@ -64,6 +65,10 @@ def _exception_summary(error: BaseException, *, secrets: Iterable[str], max_leng
         if cause is None and not root.__suppress_context__:
             cause = root.__context__
         if cause is None or id(cause) in seen:
+            break
+        if is_model_api_failure(cause):
+            # Preserve an outer code error/overall deadline, but do not append
+            # private API diagnostics from its exception chain to the web log.
             break
         seen.add(id(cause))
         root = cause
@@ -128,6 +133,8 @@ class ProtocolLogHandler(logging.Handler):
             # Keep earlier keys protected too if configuration changes in-process.
             secrets = (*self._secrets, *model_log_secrets())
             error = record.exc_info[1] if record.exc_info else None
+            if is_model_api_failure(error):
+                return
             message = sanitize_log_message(
                 record.getMessage(),
                 secrets=secrets,
@@ -160,6 +167,8 @@ class ProtocolLogHandler(logging.Handler):
             if type(index) is int and type(total) is int and 0 <= index <= total:
                 event["actionIndex"] = index
                 event["actionTotal"] = total
+            if getattr(record, 'secret_realm_completed', None) is True and error is None and event['level'] == 'INFO':
+                event['secretRealmCompletedAt'] = event['time']
             self._send_event(event)
         except Exception:
             # Logging is best effort, including formatting and broken output pipes.

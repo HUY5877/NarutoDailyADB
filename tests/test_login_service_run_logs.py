@@ -110,6 +110,93 @@ def test_two_task_streams_and_snapshots_are_isolated_and_public():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("terminal,error_code", [
+    ("completed", None), ("failed", "daily_timeout"),
+    ("expired", "login_timeout"), ("interrupted", "worker_stopped"),
+])
+def test_run_username_survives_progress_terminal_and_missing_session(terminal, error_code):
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        record.username = "小鸣人"
+        reporter = RedisRunReporter(cfg, queue)
+        reporter.start()
+        try:
+            run_key, stream_key, session_key = keys(cfg, record)
+            reporter.emit(record, status="starting_emulator")
+            await drain(reporter)
+            assert json.loads(await client.get(run_key))["username"] == "小鸣人"
+
+            reporter.emit(record, status="running_daily")
+            reporter.emit(record, message="日常动作", action_index=1, action_total=3)
+            await drain(reporter)
+            progress = json.loads(await client.get(run_key))
+            assert progress["status"] == "running_daily"
+            assert progress["username"] == "小鸣人"
+            assert progress["actionIndex"] == 1 and progress["actionTotal"] == 3
+
+            await client.delete(session_key)
+            record.username = None  # Later progress must not remove an already-known name.
+            reporter.emit(record, message="二维码会话过期后的进度")
+            await drain(reporter)
+            assert json.loads(await client.get(run_key))["username"] == "小鸣人"
+            reporter.emit(record, status=terminal, error_code=error_code)
+            reporter.finish(record.id)
+            await drain(reporter)
+            final = json.loads(await client.get(run_key))
+            assert final["status"] == terminal
+            assert final["username"] == "小鸣人"
+            assert final["finishedAt"] is not None
+            assert await client.exists(session_key) == 0
+            assert record.id not in reporter._states
+
+            logs = await entries(client, stream_key)
+            assert all("username" not in event for _, event in logs)
+            public = json.dumps([final, logs])
+            for private_value in ("userId", "private-user-id", "tokenHash", "access_token", "accessToken"):
+                assert private_value not in public
+        finally:
+            await reporter.close()
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("missing_username", [None, ""])
+def test_same_status_publishes_new_username_once_and_keeps_legacy_snapshot_compatible(missing_username):
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        record.username = missing_username
+        reporter = RedisRunReporter(cfg, queue)
+        reporter.start()
+        try:
+            run_key, stream_key, _ = keys(cfg, record)
+            reporter.emit(record, status="starting_emulator")
+            await drain(reporter)
+            original = json.loads(await client.get(run_key))
+            assert "username" not in original
+
+            record.username = "小鸣人"
+            reporter.emit(record, status="starting_emulator")
+            await drain(reporter)
+            named = json.loads(await client.get(run_key))
+            assert named["username"] == "小鸣人"
+            assert named["status"] == original["status"]
+            assert named["sequence"] > original["sequence"]
+            assert len(await entries(client, stream_key)) == 2
+
+            reporter.emit(record, status="starting_emulator")
+            await drain(reporter)
+            assert json.loads(await client.get(run_key))["sequence"] == named["sequence"]
+            assert len(await entries(client, stream_key)) == 2
+        finally:
+            await reporter.close()
+            await client.aclose()
+    asyncio.run(scenario())
+
+
 def test_stream_ids_support_incremental_reads_and_exact_bounded_trimming():
     async def scenario():
         client, cfg = fake_client(), config()
@@ -158,7 +245,7 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
             reporter.emit(record, status="running_daily")
             await drain(reporter)
             assert 0 < await client.pttl(session_key) <= before
-            assert 718 <= await client.ttl(run_key) <= 720
+            assert 605398 <= await client.ttl(run_key) <= 605400
             assert 718 <= await client.ttl(stream_key) <= 720
             await client.delete(session_key)  # Simulate QR-session expiration while daily work continues.
             reporter.emit(record, message="daily after QR expiration")
@@ -170,7 +257,7 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
             assert state["authorizedAt"] == iso_time(record.authorized_at)
             assert state["startedAt"] == iso_time(record.daily_started_at)
             assert state["finishedAt"] is not None
-            assert 118 <= await client.ttl(run_key) <= 120
+            assert 604798 <= await client.ttl(run_key) <= 604800
             assert 118 <= await client.ttl(stream_key) <= 120
             assert await client.exists(session_key) == 0
             assert record.id not in reporter._states
@@ -180,7 +267,8 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
     asyncio.run(scenario())
 
 
-def test_owner_handoff_rejects_old_owner_before_and_after_qr_session_expiration():
+@pytest.mark.parametrize("stale_status", ["failed", "interrupted"])
+def test_owner_handoff_rejects_old_owner_before_and_after_qr_session_expiration(stale_status):
     async def scenario():
         client, cfg = fake_client(), config()
         first, second = RedisTaskQueue(cfg, client=client), RedisTaskQueue(cfg, client=client)
@@ -196,7 +284,7 @@ def test_owner_handoff_rejects_old_owner_before_and_after_qr_session_expiration(
             await second_reporter._write(record.id, second_reporter._pending[record.id][-1])
             run_key, stream_key, session_key = keys(cfg, record)
             new_state = await client.get(run_key)
-            first_reporter.emit(record, status="failed", message="stale owner write")
+            first_reporter.emit(record, status=stale_status, message="stale owner write")
             old_update = first_reporter._pending[record.id][-1]
             await first_reporter._write(record.id, old_update)
             assert await client.get(run_key) == new_state
@@ -212,6 +300,41 @@ def test_owner_handoff_rejects_old_owner_before_and_after_qr_session_expiration(
         finally:
             await first_reporter.close(timeout=0)
             await second_reporter.close(timeout=0)
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("session_state", ["queued", "failed", "missing"])
+def test_interrupted_run_rejects_late_progress_without_an_active_claim(session_state):
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        reporter = RedisRunReporter(cfg, queue)
+        try:
+            reporter.emit(record, status="interrupted", error_code="worker_stopped")
+            await reporter._write(record.id, reporter._pending[record.id][-1])
+            run_key, stream_key, session_key = keys(cfg, record)
+            if session_state == "missing":
+                await client.delete(session_key)
+            elif session_state == "failed":
+                record.daily_error_code = "worker_stopped"
+                assert await queue.finish_failed(record)
+            else:
+                assert await queue.requeue(record)
+            before = await client.get(run_key)
+            reporter.emit(record, status="starting_emulator", message="late progress")
+            await reporter._write(record.id, reporter._pending[record.id][-1])
+            assert await client.get(run_key) == before
+            assert len(await entries(client, stream_key)) == 1
+            if session_state == "queued":
+                retried = await queue.pop()
+                assert retried is not None
+                reporter.emit(retried, status="starting_emulator", message="new attempt")
+                await reporter._write(retried.id, reporter._pending[retried.id][-1])
+                assert json.loads(await client.get(run_key))["status"] == "starting_emulator"
+        finally:
+            await reporter.close(timeout=0)
             await client.aclose()
     asyncio.run(scenario())
 
@@ -592,6 +715,94 @@ def test_parent_keeps_action_boundaries_and_warnings_but_omits_low_level_info():
     ]
 
 
+def test_secret_realm_completion_is_first_timestamp_and_does_not_change_running_status():
+    from types import SimpleNamespace
+
+    reported = []
+    runtime = SimpleNamespace(_run_reporter=SimpleNamespace(emit=lambda record, **event: reported.append(event)))
+    record = parse_queue_task(body(), 'login')
+    record.daily_started_at = 1_800_000_000.0
+    record.daily_status = 'running_daily'
+    record.execution_deadline = record.daily_started_at + 3_000
+    first = '2027-01-15T08:00:01.000Z'
+    for stamp in (first, '2027-01-15T08:00:05.000Z'):
+        LoginRuntime._accept_log(runtime, record, {
+            'type': 'log', 'time': stamp, 'level': 'INFO', 'message': '首次秘境成功结算',
+            'secretRealmCompletedAt': stamp,
+        })
+    assert record.secret_realm_completed_at == first
+    assert record.daily_status == 'running_daily'
+    assert record.execution_deadline == 1_800_003_000.0
+    assert len(reported) == 1
+
+
+@pytest.mark.parametrize('changes, started, status', [
+    ({'secretRealmCompletedAt': None}, True, 'running_daily'),
+    ({'secretRealmCompletedAt': True}, True, 'running_daily'),
+    ({'secretRealmCompletedAt': '2027-01-15T08:00:02.000Z'}, True, 'running_daily'),
+    ({'time': '2027-02-30T08:00:01.000Z', 'secretRealmCompletedAt': '2027-02-30T08:00:01.000Z'}, True, 'running_daily'),
+    ({'level': 'ERROR'}, True, 'running_daily'),
+    ({}, False, 'running_daily'), ({}, True, 'finishing_login'), ({}, True, 'failed'),
+])
+def test_invalid_or_out_of_phase_secret_completion_is_rejected(changes, started, status):
+    from types import SimpleNamespace
+
+    record = parse_queue_task(body(), 'login')
+    record.daily_started_at = 1_800_000_000.0 if started else None
+    record.daily_status = status
+    runtime = SimpleNamespace(_run_reporter=None)
+    event = {
+        'type': 'log', 'time': '2027-01-15T08:00:01.000Z', 'level': 'INFO', 'message': '秘境成功',
+        'secretRealmCompletedAt': '2027-01-15T08:00:01.000Z',
+    } | changes
+    with pytest.raises(ValueError):
+        LoginRuntime._accept_log(runtime, record, event)
+    assert record.secret_realm_completed_at is None
+
+
+@pytest.mark.parametrize('terminal, code', [
+    ('failed', 'daily_timeout'), ('failed', 'daily_failed'), ('interrupted', 'worker_stopped'),
+    ('completed', None),
+])
+def test_redis_run_preserves_secret_completion_when_execution_stops(terminal, code):
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        reporter = RedisRunReporter(cfg, queue)
+        reporter.start()
+        try:
+            record.daily_status = 'running_daily'
+            record.daily_started_at = 1_800_000_000.0
+            reporter.emit(record, status='running_daily')
+            await drain(reporter)
+            run_key, _, _ = keys(cfg, record)
+            assert 'secretRealmCompletedAt' not in json.loads(await client.get(run_key))
+            runtime = object.__new__(LoginRuntime)
+            runtime._run_reporter = reporter
+            first = '2027-01-15T08:00:01.000Z'
+            runtime._accept_log(record, {
+                'type': 'log', 'time': first, 'level': 'INFO', 'message': '秘境已成功结算',
+                'secretRealmCompletedAt': first,
+            })
+            reporter.emit(record, message='继续消耗秘境挑战券')
+            await drain(reporter)
+            running = json.loads(await client.get(run_key))
+            assert running['status'] == 'running_daily'
+            assert running['secretRealmCompletedAt'] == first
+            reporter.emit(record, status=terminal, error_code=code)
+            await drain(reporter)
+            final = json.loads(await client.get(run_key))
+            assert final['status'] == terminal
+            assert final.get('errorCode') == code
+            assert final['secretRealmCompletedAt'] == first
+            assert final['finishedAt'] is not None
+        finally:
+            await reporter.close()
+            await client.aclose()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("changes", [
     {"message": ""}, {"message": "x" * 1001}, {"time": "2026-02-30T12:00:00Z"},
     {"time": "2026-09-24T12:00:00+00:00"}, {"level": "DEBUG"},
@@ -617,3 +828,7 @@ def test_parent_rejects_invalid_log_metadata_before_publication(changes):
 def test_run_log_config_rejects_unbounded_or_too_short_retention(env):
     with pytest.raises(ValueError):
         load_config({**OSS_ENV, **env})
+
+def test_execution_history_defaults_to_seven_days():
+    assert ServiceConfig().run_log_retention_seconds == 604_800
+    assert load_config({**OSS_ENV}).run_log_retention_seconds == 604_800

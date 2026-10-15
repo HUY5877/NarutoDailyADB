@@ -2,6 +2,14 @@ import pytest
 
 
 @pytest.fixture
+def reward_swipe_vision(monkeypatch):
+    """Legacy navigation state tests use symbolic frames; real CV has replay tests."""
+    from naruto_daily.common import navigation
+    monkeypatch.setattr(navigation, 'reward_card_swipe_starts', lambda png: [(1450, 550)])
+    monkeypatch.setattr(navigation, 'reward_card_displacement', lambda before, after: -520.0)
+
+
+@pytest.fixture
 def agent_server():
     from agent_fakes import AgentServer
     server = AgentServer()

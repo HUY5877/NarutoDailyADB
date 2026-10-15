@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 import secrets
 from uuid import uuid4
 
+import pytest
+
 from naruto_daily.login_service.config import ServiceConfig
 from naruto_daily.login_service.ldplayer import LDPlayerError, LDPlayerPoolFull
 from naruto_daily.login_service.models import parse_submission
@@ -231,21 +233,32 @@ def test_shutdown_releases_pool_before_requeueing_same_task(monkeypatch, tmp_pat
         task = record()
         events = []
 
+        class Reporter:
+            def emit(self, *_args, **_kwargs):
+                pass
+
+            async def flush(self, task_id):
+                events.append(("flush", task_id))
+
+            def finish(self, task_id):
+                events.append(("finish", task_id))
+
+        runtime._run_reporter = Reporter()
+
         async def cleanup(task_id):
             events.append(("close", task_id))
             return True
 
         async def requeue(item):
             events.append(("requeue", item.id))
+            assert item.daily_status == "interrupted"
+            assert item.daily_error_code == "worker_stopped"
 
         monkeypatch.setattr(runtime, "_cleanup_ldplayer", cleanup)
-        monkeypatch.setattr(runtime, "_prepare_ldplayer_retry", lambda task_id: events.append(
-            ("prepare_retry", task_id),
-        ))
         monkeypatch.setattr(runtime, "_requeue", requeue)
         await runtime._process_record(task)
         assert events == [
-            ("close", task.id), ("prepare_retry", task.id), ("requeue", task.id),
+            ("close", task.id), ("flush", task.id), ("finish", task.id), ("requeue", task.id),
         ]
     asyncio.run(scenario())
 
@@ -264,4 +277,60 @@ def test_shutdown_does_not_requeue_when_pool_release_fails(monkeypatch, tmp_path
         monkeypatch.setattr(runtime, "_requeue", lambda item: requeued.append(item.id))
         await runtime._process_record(task)
         assert requeued == []
+        assert task.daily_status == "failed"
+        assert task.daily_error_code == "instance_cleanup_failed"
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("field, value", [
+    ("qr_published", True),
+    ("authorized_at", 1.0),
+    ("daily_started_at", 1.0),
+])
+def test_release_and_requeue_rejects_published_or_started_task(monkeypatch, tmp_path, field, value):
+    async def scenario():
+        queue = FakeRedisQueue()
+        runtime = LoginRuntime(config(tmp_path), MemoryStorage(), redis_queue=queue)
+        task = record()
+        task.status = "preparing_qr"
+        setattr(task, field, value)
+        closed = []
+
+        async def cleanup(task_id):
+            closed.append(task_id)
+            return True
+
+        monkeypatch.setattr(runtime, "_cleanup_ldplayer", cleanup)
+
+        assert not await runtime._release_and_requeue(task)
+
+        assert closed == []
+        assert queue.requeued == []
+        assert task.status == "preparing_qr"
+        assert task.daily_status is None
+        assert task._queue_payload == "test-payload"
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("field", ["authorized_at", "daily_started_at"])
+def test_shutdown_cleans_started_task_without_requeue_even_when_qr_flag_is_missing(monkeypatch, tmp_path, field):
+    async def scenario():
+        queue = FakeRedisQueue()
+        runtime = LoginRuntime(config(tmp_path), MemoryStorage(), redis_queue=queue)
+        runtime._stopping = True
+        task = record()
+        setattr(task, field, 1.0)
+        closed = []
+
+        async def cleanup(task_id):
+            closed.append(task_id)
+            return True
+
+        monkeypatch.setattr(runtime, "_cleanup_ldplayer", cleanup)
+
+        await runtime._process_record(task)
+
+        assert closed == [task.id]
+        assert queue.requeued == []
+        assert task.daily_status == "interrupted"
     asyncio.run(scenario())
