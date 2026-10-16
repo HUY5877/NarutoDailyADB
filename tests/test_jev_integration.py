@@ -30,6 +30,46 @@ def test_choice_uses_jev_without_consuming_generation_route(monkeypatch, configu
     assert configured_environment.value == 0
 
 
+def test_takeout_jev_choices_drive_repeated_three_click_rounds(monkeypatch, configured_environment):
+    from naruto_daily.ichiraku import handle_ichiraku_takeout
+
+    monkeypatch.setenv('JEV_API_KEY', 'jev-private')
+    frame = cv2.imencode('.png', np.zeros((360, 640, 3), np.uint8))[1].tobytes()
+    answers = iter(('仍可领取', '奖励弹层', '仍可领取', '已无可领取'))
+    observations = []
+
+    class Device:
+        def __init__(self):
+            self.taps = []
+
+        def screenshot(self):
+            observations.append(tuple(self.taps))
+            return frame
+
+        def tap(self, x, y):
+            self.taps.append((x, y))
+
+    def open_request(request, timeout):
+        assert request.full_url.endswith('/api/alpha/decisions')
+        payload = json.loads(request.data)
+        assert set(payload['questions']['decision']['criteria']) == {
+            '仍可领取', '已无可领取', '奖励弹层', '无法确认',
+        }
+        return io.BytesIO(json.dumps({'answers': {'decision': {'choice': next(answers)}}}).encode())
+
+    device = Device()
+    model = MultimodalClient({'timeout_seconds': 10}, open_request=open_request)
+    handle_ichiraku_takeout(
+        device, {'timeout_seconds': 30, 'post_click_wait_seconds': 0, 'multimodal': {'max_calls': 2}},
+        model=model, sleep=lambda _: None,
+    )
+    points = [(450, 520), (880, 520), (1310, 520)]
+    close = [(1550, 740)]
+    assert device.taps == points + close + points
+    assert observations == [(), tuple(points), tuple(points + close), tuple(points + close + points)]
+    assert configured_environment.value == 0
+
+
 def test_missing_jev_key_fails_closed_without_generation_fallback():
     model = MultimodalClient(
         {'timeout_seconds': 10},

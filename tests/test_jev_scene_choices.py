@@ -1,5 +1,4 @@
 """有限选择恢复原场景协议；坐标和任意 OCR 继续由原路径处理。"""
-from itertools import chain, combinations
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -110,15 +109,26 @@ def test_equipment_choices_preserve_actions_page_guards_and_selected_slot():
         _can_advance({'page': 'unknown'}, 1)
 
 
-def test_takeout_choices_cover_all_eight_combinations_and_safe_foregrounds():
+def test_takeout_choices_only_decide_whether_to_continue_or_confirm_the_foreground():
+    assert set(TAKEOUT_PROMPT.choices) == {'仍可领取', '已无可领取', '奖励弹层', '无法确认'}
     takeout = [result for result in TAKEOUT_PROMPT.choices.values() if result['page'] == 'takeout']
-    expected = set(chain.from_iterable(combinations((1, 2, 3), count) for count in range(4)))
-    assert {tuple(_takeout(result)) for result in takeout} == expected
+    assert {_takeout(result) for result in takeout} == {True, False}
     reward = next(result for result in TAKEOUT_PROMPT.choices.values() if result['page'] == 'reward')
     assert _takeout(reward) is None
     unknown = next(result for result in TAKEOUT_PROMPT.choices.values() if result['page'] == 'unknown')
     with pytest.raises(VisualError):
         _takeout(unknown)
+
+
+@pytest.mark.parametrize('can_claim', [None, 0, 1, 'true', 'false', [], {}])
+def test_takeout_requires_an_explicit_boolean_before_claiming_or_finishing(can_claim):
+    with pytest.raises(VisualError, match='领取状态不明确'):
+        _takeout({'page': 'takeout', 'can_claim': can_claim})
+
+
+def test_takeout_missing_claim_state_cannot_be_treated_as_finished():
+    with pytest.raises(VisualError, match='领取状态不明确'):
+        _takeout({'page': 'takeout'})
 
 
 def test_free_text_numbers_and_coordinate_prompts_keep_the_generation_path():

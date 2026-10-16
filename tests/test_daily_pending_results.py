@@ -72,8 +72,8 @@ def action(**overrides):
                 multimodal={'max_calls': 2}, **overrides)
 
 
-def takeout(*slots):
-    return dict(page='takeout', claimable_slots=list(slots))
+def takeout(can_claim=False):
+    return dict(page='takeout', can_claim=can_claim)
 
 
 def material(button):
@@ -119,7 +119,7 @@ def test_takeout_checks_first_screenshot_before_clicking_left_middle_right(clock
             super().tap(x, y)
 
     device = CheckedDevice(clock)
-    model = Model(clock, device, takeout(2), takeout())
+    model = Model(clock, device, takeout(True), takeout())
     with execution_scope(100, clock=clock, sleep=clock.sleep):
         handle_ichiraku_takeout(device, action(), model=model, sleep=clock.sleep)
     assert device.taps == points
@@ -138,14 +138,14 @@ def test_takeout_initially_claimed_boxes_finish_without_clicking(clock):
 
 def test_takeout_reward_can_take_more_than_one_close_to_return(clock):
     device, model = run(handle_ichiraku_takeout, clock,
-                        *[dict(page='reward')] * 6, takeout())
+                        *[dict(page='reward', can_claim=None)] * 6, takeout())
     assert device.taps == [(1550, 740)] * 6
     assert len(device.frames) == len(model.observations) == 7
 
 
-def test_takeout_repeats_all_three_boxes_while_any_slot_remains(clock):
+def test_takeout_repeats_all_three_boxes_while_still_claimable(clock):
     device, model = run(handle_ichiraku_takeout, clock,
-                        takeout(1, 2), takeout(2), takeout(1), takeout())
+                        takeout(True), takeout(True), takeout(True), takeout())
     points = [(450, 520), (880, 520), (1310, 520)]
     assert device.taps == points * 3
     assert [taps for _, _, taps in model.observations] == [
@@ -156,8 +156,8 @@ def test_takeout_repeats_all_three_boxes_while_any_slot_remains(clock):
 
 def test_takeout_waits_for_confirmed_takeout_after_reward_and_unknown_frames(clock):
     device, model = run(handle_ichiraku_takeout, clock,
-                        dict(page='reward'), *[dict(page='unknown')] * 5,
-                        takeout(3), takeout())
+                        dict(page='reward', can_claim=None), *[dict(page='unknown', can_claim=None)] * 5,
+                        takeout(True), takeout())
     points = [(450, 520), (880, 520), (1310, 520)]
     after_close = [(1550, 740)]
     assert device.taps == after_close + points
@@ -168,7 +168,7 @@ def test_takeout_waits_for_confirmed_takeout_after_reward_and_unknown_frames(clo
 
 def test_takeout_repeated_rounds_stop_at_shared_deadline(clock):
     device = Device(clock)
-    model = Model(clock, device, repeat=takeout(1, 2))
+    model = Model(clock, device, repeat=takeout(True))
     with pytest.raises(DailyDeadlineExceeded):
         with execution_scope(20, clock=clock, sleep=clock.sleep):
             handle_ichiraku_takeout(device, action(), model=model, sleep=clock.sleep)
@@ -178,7 +178,7 @@ def test_takeout_repeated_rounds_stop_at_shared_deadline(clock):
     assert clock() == 20
 
 
-@pytest.mark.parametrize('answer', [takeout(2), dict(page='reward'), takeout()])
+@pytest.mark.parametrize('answer', [takeout(True), dict(page='reward', can_claim=None), takeout()])
 def test_takeout_late_confirmation_cannot_start_round_close_reward_or_succeed(clock, answer):
     device = Device(clock)
 
@@ -195,7 +195,7 @@ def test_takeout_late_confirmation_cannot_start_round_close_reward_or_succeed(cl
 
 def test_takeout_shared_deadline_stops_in_middle_of_three_clicks(clock):
     device = Device(clock)
-    model = Model(clock, device, takeout(1))
+    model = Model(clock, device, takeout(True))
     config = action()
     config['post_click_wait_seconds'] = 1
     with pytest.raises(DailyDeadlineExceeded):
@@ -364,7 +364,7 @@ def test_sweep_close_unexpected_foreground_until_deadline_does_not_repeat_inputs
 
 def test_takeout_without_execution_can_close_reward_until_takeout_returns(clock):
     device = Device(clock)
-    model = Model(clock, device, *[dict(page='reward')] * 6, takeout())
+    model = Model(clock, device, *[dict(page='reward', can_claim=None)] * 6, takeout())
     config = action()
     config['timeout_seconds'] = 100
     handle_ichiraku_takeout(device, config, model=model, sleep=clock.sleep)
@@ -373,7 +373,7 @@ def test_takeout_without_execution_can_close_reward_until_takeout_returns(clock)
 
 def test_takeout_without_execution_can_repeat_more_than_three_rounds(clock):
     device = Device(clock)
-    model = Model(clock, device, *[takeout(1)] * 5, takeout())
+    model = Model(clock, device, *[takeout(True)] * 5, takeout())
     config = action()
     config['timeout_seconds'] = 100
     handle_ichiraku_takeout(device, config, model=model, sleep=clock.sleep)
@@ -383,7 +383,7 @@ def test_takeout_without_execution_can_repeat_more_than_three_rounds(clock):
 
 def test_takeout_without_execution_repeated_rounds_stop_at_local_timeout(clock):
     device = Device(clock)
-    model = Model(clock, device, repeat=takeout(1))
+    model = Model(clock, device, repeat=takeout(True))
     config = action()
     config['timeout_seconds'] = 5
     with pytest.raises(VisualError, match='超时'):

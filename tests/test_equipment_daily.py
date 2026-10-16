@@ -530,15 +530,15 @@ def test_uncertain_stamina_or_wrong_layer_never_starts_sweep(bad):
     assert AUTO_STOP not in client.taps
 
 
-@pytest.mark.parametrize('slots', [[], [1], [1, 2, 3], [2, 3]])
-def test_takeout_checks_claimable_slots_before_clicking_all_three_boxes(slots):
+@pytest.mark.parametrize('can_claim', [False, True])
+def test_takeout_checks_claimability_before_clicking_all_three_boxes(can_claim):
     client = Client()
-    answers = [dict(page='takeout', claimable_slots=slots)]
-    if slots:
-        answers.append(dict(page='takeout', claimable_slots=[]))
+    answers = [dict(page='takeout', can_claim=can_claim)]
+    if can_claim:
+        answers.append(dict(page='takeout', can_claim=False))
     model = Model(*answers)
     handle_ichiraku_takeout(client, action(), model=model, sleep=lambda _: None)
-    assert client.taps == ([(450, 520), (880, 520), (1310, 520)] if slots else [])
+    assert client.taps == ([(450, 520), (880, 520), (1310, 520)] if can_claim else [])
     assert all(prompt is prompt_jev.TAKEOUT_PROMPT
                and isinstance(prompt, prompt_jev.ChoicePrompt) for prompt in model.prompts)
 
@@ -546,8 +546,18 @@ def test_takeout_checks_claimable_slots_before_clicking_all_three_boxes(slots):
 def test_takeout_unrecognized_page_does_not_click():
     client = Client()
     with pytest.raises(VisualError):
-        handle_ichiraku_takeout(client, action(), model=Model(dict(page='unknown'), dict(page='unknown')),
-                               sleep=lambda _: None)
+        handle_ichiraku_takeout(client, action(), model=Model(
+            dict(page='unknown', can_claim=None), dict(page='unknown', can_claim=None)),
+            sleep=lambda _: None)
+    assert not client.taps
+
+
+@pytest.mark.parametrize('can_claim', [None, 0, 1, 'true', 'false', [], {}])
+def test_takeout_non_boolean_claimability_does_not_click(can_claim):
+    client = Client()
+    answer = dict(page='takeout', can_claim=can_claim)
+    with pytest.raises(VisualError):
+        handle_ichiraku_takeout(client, action(), model=Model(answer, answer), sleep=lambda _: None)
     assert not client.taps
 
 
@@ -568,17 +578,17 @@ def test_late_model_response_cannot_trigger_click(monkeypatch):
 def test_takeout_initial_reward_overlay_is_dismissed_without_claim_clicks():
     client = Client()
     handle_ichiraku_takeout(client, action(), model=Model(
-        dict(page='reward'),
-        dict(page='takeout', claimable_slots=[])), sleep=lambda _: None)
+        dict(page='reward', can_claim=None),
+        dict(page='takeout', can_claim=False)), sleep=lambda _: None)
     assert client.taps == [(1550, 740)]
 
 
-def test_takeout_repeats_three_clicks_after_reward_closes_with_remaining_box():
+def test_takeout_repeats_three_clicks_when_still_claimable_after_reward_closes():
     client = Client()
     handle_ichiraku_takeout(client, action(), model=Model(
-        dict(page='takeout', claimable_slots=[1]),
-        dict(page='reward'), dict(page='takeout', claimable_slots=[3]),
-        dict(page='takeout', claimable_slots=[])), sleep=lambda _: None)
+        dict(page='takeout', can_claim=True),
+        dict(page='reward', can_claim=None), dict(page='takeout', can_claim=True),
+        dict(page='takeout', can_claim=False)), sleep=lambda _: None)
     points = [(450, 520), (880, 520), (1310, 520)]
     assert client.taps == points + [(1550, 740)] + points
 

@@ -58,16 +58,16 @@ def workflow(monkeypatch, caplog, *answers, timeout=240, max_calls=2, screenshot
 @pytest.mark.parametrize(('timeout', 'remaining', 'call_timeout'), [(240, 238, 30), (20, 18, 18)])
 def test_logs_request_stages_and_budget_without_request_contents(
         monkeypatch, caplog, timeout, remaining, call_timeout):
-    answer = {'page': 'takeout', 'claimable_slots': [1]}
+    answer = {'page': 'takeout', 'can_claim': True}
     flow, client, model, sleeps = workflow(monkeypatch, caplog, answer, timeout=timeout)
 
-    assert flow.read('一乐外卖领取判断', 'private-prompt', lambda result: result['claimable_slots']) == [1]
+    assert flow.read('一乐外卖领取判断', 'private-prompt', lambda result: result['can_claim']) is True
 
     assert caplog.messages == [
         '[一乐外卖领取判断 第1/2次] 开始截图',
         f'[一乐外卖领取判断 第1/2次] 模型请求开始：阶段剩余 {remaining:.2f} 秒，调用超时 {call_timeout:.2f} 秒',
         '[一乐外卖领取判断 第1/2次] 模型请求返回：耗时 3.50 秒',
-        '[一乐外卖领取判断 第1次] [1]',
+        '[一乐外卖领取判断 第1次] True',
     ]
     assert client.screenshots == 1
     assert model.calls == [(b'private-screenshot-bytes', 'private-prompt', remaining)]
