@@ -1,4 +1,4 @@
-"""一乐外卖：每轮依次点击三个盒子，识别仍有可领取项则继续。"""
+"""一乐外卖：先识别，有可领取项才点击三个盒子，再循环检查。"""
 import logging
 import time
 from pathlib import Path
@@ -29,10 +29,6 @@ def handle_ichiraku_takeout(client, action, *, model=None, template_matcher=find
                          asset_root=asset_root, sleep=sleep)
     round_number = 0
     while True:
-        round_number += 1
-        LOGGER.info('[一乐外卖 第%d轮] 从左到右各点击一次，再截图检查领取结果', round_number)
-        for point in TAKEOUT_POINTS:
-            flow.tap(point)
         slots = flow.read('一乐外卖领取结果', TAKEOUT_PROMPT, _takeout)
         while slots is None:
             LOGGER.info('已确认一乐外卖奖励弹层，关闭后重新截图检查')
@@ -41,4 +37,8 @@ def handle_ichiraku_takeout(client, action, *, model=None, template_matcher=find
         if not slots:
             LOGGER.info('一乐外卖已无可领取盒子，结束领取')
             return
-        LOGGER.info('一乐外卖仍有可领取位置 %s，继续下一轮三次点击', slots)
+        round_number += 1
+        LOGGER.info('[一乐外卖 第%d轮] 确认可领取位置 %s，从左到右各点击一次后重新检查',
+                    round_number, slots)
+        for point in TAKEOUT_POINTS:
+            flow.tap(point)
