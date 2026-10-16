@@ -80,6 +80,7 @@ def match(frame, path, roi, threshold):
         "free": {"tab", "guard"},
         "no-dot": {"tab"},
         "no-tab": {"guard"},
+        "no-menu": set(),
         "result": {"result"},
         "ninja": {"ninja"},
         "result-with-free": {"result", "tab", "guard"},
@@ -92,7 +93,7 @@ def match(frame, path, roi, threshold):
 
 def probe_for(images, model, *, max_calls=10, clock=lambda: 0):
     return free_button.make_free_recruit_retry_probe(
-        FREE_TARGET, category="普通招募", tab=TAB, guard=GUARD,
+        FREE_TARGET, category="普通招募",
         images=images, model=model, max_calls=max_calls, clock=clock,
     )
 
@@ -186,41 +187,41 @@ def test_result_appearing_during_free_confirmation_permanently_cancels_retry(pag
     assert [frame for frame, _ in model.calls] == [b"free:first"]
 
 
-def test_animation_without_result_or_free_conditions_does_not_call_model():
+def test_animation_without_result_queries_model_but_does_not_click_without_free_button():
     device = Device("animation:first", "animation:second", "result:first", "result:confirm")
     images = ImageRecognition(device, match, sleep=lambda _: None)
-    model = Model(answer())
+    model = Model(answer(count=0))
 
     assert confirm(device, images, probe_for(images, model))
 
     assert device.taps == [RESULT_CENTER]
-    assert model.calls == []
+    assert [frame for frame, _ in model.calls] == [b"animation:first", b"animation:second"]
 
 
-@pytest.mark.parametrize("lost", ["no-dot", "no-tab"])
-def test_retry_cancels_when_required_page_condition_disappears(lost):
-    device = Device("free:first", f"{lost}:confirm")
+@pytest.mark.parametrize("page", ["no-dot", "no-tab", "no-menu"])
+def test_retry_uses_confirmed_free_button_without_menu_or_red_dot(page):
+    device = Device(f"{page}:first", f"{page}:confirm", "result:first", "result:confirm")
     images = ImageRecognition(device, match, sleep=lambda _: None)
-    model = Model(answer())
+    model = Model(answer(center=(1100, 800)), answer(center=(1240, 850)))
 
-    with pytest.raises(VisualError, match="超时"):
-        confirm(device, images, probe_for(images, model), timeout=3)
+    assert confirm(device, images, probe_for(images, model))
 
-    assert device.taps == []
-    assert [frame for frame, _ in model.calls] == [b"free:first"]
+    assert device.taps == [(1240, 850), RESULT_CENTER]
+    assert [frame for frame, _ in model.calls] == [f"{page}:first".encode(), f"{page}:confirm".encode()]
 
 
-def test_retry_probe_never_combines_tab_and_red_dot_from_different_frames():
+def test_retry_probe_only_reads_supplied_frame_without_local_menu_or_red_dot_matching():
     device = Device("no-dot:first", "no-tab:second")
-    images = ImageRecognition(device, match, sleep=lambda _: None)
-    model = Model(answer())
+    images = ImageRecognition(device, lambda *args: pytest.fail("补点按钮识别不应匹配菜单或红点"),
+                              sleep=lambda _: None)
+    model = Model(answer(center=(1100, 800)), answer(center=(1240, 850)))
     probe = probe_for(images, model)
 
-    assert probe(b"no-dot:first", 10) is None
-    assert probe(b"no-tab:second", 10) is None
+    assert probe(b"no-dot:first", 10) == (1, (1100, 800))
+    assert probe(b"no-tab:second", 10) == (1, (1240, 850))
     assert device.frames == []
     assert device.taps == []
-    assert model.calls == []
+    assert [frame for frame, _ in model.calls] == [b"no-dot:first", b"no-tab:second"]
 
 
 @pytest.mark.parametrize("response", [
@@ -292,7 +293,7 @@ def test_retry_probe_obeys_model_call_limit_without_shared_execution():
 def test_model_failure_retries_fresh_frame_and_rechecks_page_before_model(recovery):
     clock = Clock()
     device = Device("free:failed", f"{recovery}:fresh", f"{recovery}:confirm")
-    model = Model(MultimodalRequestError("临时网络失败", retryable=True), answer())
+    model = Model(MultimodalRequestError("临时网络失败", retryable=True), answer(count=0))
     expected = pytest.raises(DailyDeadlineExceeded) if recovery == "no-dot" else nullcontext()
     with expected, execution_scope(15, clock=clock, sleep=clock.advance):
         images = ImageRecognition(device, match)
@@ -302,14 +303,21 @@ def test_model_failure_retries_fresh_frame_and_rechecks_page_before_model(recove
         else:
             confirm(device, images, probe, timeout=.1)
 
-    assert [frame for frame, _ in model.calls] == [b"free:failed"]
+    model_frames = [frame for frame, _ in model.calls]
+    assert model_frames[0] == b"free:failed"
+    if recovery == "result":
+        assert model_frames == [b"free:failed"]
+    else:
+        assert len(model_frames) > 1
+        assert model_frames[1] == b"no-dot:fresh"
+        assert all(frame.startswith(b"no-dot:") for frame in model_frames[1:])
     assert device.frames[1] == f"{recovery}:fresh".encode()
     assert device.taps == ([RESULT_CENTER] if recovery == "result" else [])
 
 
 def test_model_failure_before_free_confirmation_relocates_using_fresh_frame():
     clock = Clock()
-    device = Device("free:first", "free:failed", "free:latest", "result:first", "result:confirm")
+    device = Device("no-menu:first", "no-menu:failed", "no-menu:latest", "result:first", "result:confirm")
     model = Model(answer(center=(1100, 800)),
                   MultimodalRequestError("临时网络失败", retryable=True),
                   answer(center=(1250, 850)))
@@ -317,7 +325,7 @@ def test_model_failure_before_free_confirmation_relocates_using_fresh_frame():
         images = ImageRecognition(device, match)
         assert confirm(device, images, probe_for(images, model, clock=clock), timeout=.1)
 
-    assert [frame for frame, _ in model.calls] == [b"free:first", b"free:failed", b"free:latest"]
+    assert [frame for frame, _ in model.calls] == [b"no-menu:first", b"no-menu:failed", b"no-menu:latest"]
     assert device.taps == [(1250, 850), RESULT_CENTER]
 
 
@@ -382,7 +390,7 @@ def test_handle_free_recruit_connects_retry_to_current_category(monkeypatch):
     device = Device(
         "free:entry", "free:dot", "free:dot-check", "free:tab", "free:tab-check",
         "free:after-tab", "free:initial-first", "free:initial-confirm",
-        "free:retry-first", "free:retry-confirm", "result:first", "result:confirm", "no-dot:done",
+        "no-menu:retry-first", "no-menu:retry-confirm", "result:first", "result:confirm", "no-dot:done",
     )
     model = Model(*[
         answer(category="高级招募", center=center)
@@ -404,5 +412,5 @@ def test_handle_free_recruit_connects_retry_to_current_category(monkeypatch):
     assert summary == handler.RecruitSummary(1, 0)
     assert device.taps == [(200, 400), (1150, 810), (1250, 830), RESULT_CENTER]
     assert [frame for frame, _ in model.calls] == [
-        b"free:initial-first", b"free:initial-confirm", b"free:retry-first", b"free:retry-confirm",
+        b"free:initial-first", b"free:initial-confirm", b"no-menu:retry-first", b"no-menu:retry-confirm",
     ]

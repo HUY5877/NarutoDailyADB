@@ -190,7 +190,7 @@ def handle_free_recruit(
     client, action: dict, *, template_matcher: Callable = find_template_in_png,
     asset_root: Path = Path("."), sleep: Callable[[float], None] = time.sleep,
 ) -> RecruitSummary:
-    """只在同一帧确认对应红点和免费按钮后点击，所有识别共用一次补查。"""
+    """首次点击核对红点与免费按钮，结果未出现时直接复查免费按钮并补点一次。"""
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     timeout = float(action["timeout_seconds"])
     poll = float(action["poll_seconds"])
@@ -231,7 +231,7 @@ def handle_free_recruit(
                                   model=model, max_calls=action["multimodal"]["max_calls"], **options):
             continue
         retry_button = make_free_recruit_retry_probe(
-            action['free_button'], category=name, tab=tab, guard=guard, images=images,
+            action['free_button'], category=name, images=images,
             model=model, max_calls=action['multimodal']['max_calls'],
         )
         _confirm_recruit_result(client, action, retry_button=retry_button, **options)
