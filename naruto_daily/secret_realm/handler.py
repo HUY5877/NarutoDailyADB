@@ -14,6 +14,7 @@ from .recognition import wait_for_tickets
 from .pre_battle import BattlePreparation, prepare_secret_battle
 from .deployment import wait_after_deploy
 from .result_detection import secret_failure_visible
+from .result_fallback import SECRET_RESULT_FALLBACK_INTERVAL, observe_result_fallback
 from .ninja_selection import find_ninja_selection_return
 
 
@@ -51,12 +52,19 @@ def _enter_room(client, images, action):
 
 
 def finish_secret_result(client, images, action, *, exited_battle=False, result_confirmed=False,
-                         on_success=None):
+                         on_success=None, model=None, clock=time.monotonic):
     """处理结算或误入的更换忍者页，逐轮检查直到回房间。"""
     deadline = images.elapsed + stage_timeout(action['timeout_seconds'])
     scoped = current_execution() is not None
     return_clicked = False
     dismiss_enabled = exited_battle or result_confirmed
+    success_reported = False
+
+    def report_success():
+        nonlocal success_reported
+        if not exited_battle and on_success is not None and not success_reported:
+            on_success()
+            success_reported = True
 
     def probe(png):
         center = find_ninja_selection_return(png)
@@ -70,8 +78,8 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
             return 'failure', None
         result_visible = images.match(png, action['result_marker'])[0] is not None
         reward_visible = images.match(png, action['reward_overlay'])[0] is not None
-        if not exited_battle and on_success is not None and (result_visible or reward_visible):
-            on_success()
+        if result_visible or reward_visible:
+            report_success()
         # 战斗层已经确认结束后，返回键无需再依赖可能被倒计时遮挡的结算标题。
         # 房间的同款返回键必须由上面的房间判断优先拦住。
         if dismiss_enabled or result_visible:
@@ -90,9 +98,22 @@ def finish_secret_result(client, images, action, *, exited_battle=False, result_
     while images.elapsed < deadline:
         round_number += 1
         LOGGER.info('[秘境结算 第%d轮] %s；回到房间后结束，剩余 %.2f 秒', round_number,
-                    '先确认房间，返回键复查后点击一次；无返回或返回后仍未回房则点击空白处' if dismiss_enabled else '先确认房间，否则识别奖励弹层或结算返回',
+                    '先确认房间，返回键复查后点击一次；确认结算或奖励弹层才点击空白处' if dismiss_enabled else '先确认房间，否则识别奖励弹层或结算返回',
                     deadline-images.elapsed)
         state = check()
+        if (round_number % SECRET_RESULT_FALLBACK_INTERVAL == 0
+                and (state is None or state[0] not in {'room', 'lobby', 'ninja_selection'})):
+            LOGGER.info('[秘境结算 第%d轮] 仍未确认回到房间，每 %d 轮调用一次 JEV 重新识别当前前景',
+                        round_number, SECRET_RESULT_FALLBACK_INTERVAL)
+            if model is None:
+                model = MultimodalClient(action['multimodal'], asset_root=images.asset_root)
+            state = observe_result_fallback(client, images, model, probe=probe,
+                                            deadline=deadline, clock=clock,
+                                            on_reward=report_success if not exited_battle else None)
+            if state[0] == 'unknown':
+                LOGGER.info('[秘境结算 JEV 兜底] 当前前景仍未确认，本轮不点击，继续本地检查')
+                images.sleep(min(action['poll_seconds'], max(0, deadline-images.elapsed)))
+                continue
         if state and state[0] == 'ninja_selection':
             # 更换忍者页不能沿用结算弹层的空白处点击；重新截图后只点该页返回。
             dismiss_enabled = False
@@ -195,11 +216,11 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
                 action['result_marker']['name'], action['reward_overlay']['name']}):
             report_first_success()
         if result_confirmed:
-            LOGGER.info('战斗层已确认结束（%s），结算优先查找返回键，未匹配则点击空白处',
+            LOGGER.info('战斗层已确认结束（%s），结算优先查找返回键，确认奖励弹层后点击空白处',
                         battle_summary.end_target)
         finish_secret_result(client, images, action,
                              exited_battle=preparation is BattlePreparation.EXITED,
-                             result_confirmed=result_confirmed, on_success=report_first_success)
+                             result_confirmed=result_confirmed, on_success=report_first_success, model=model)
         if preparation is BattlePreparation.EXITED:
             LOGGER.info('已主动退出本次秘境；回房间重新读券后继续')
         else:
