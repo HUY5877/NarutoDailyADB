@@ -32,7 +32,7 @@ class Settings:
 
 
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
-TASK_NAMES = {"login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "secret_realm", "secret_realm_farm"}
+TASK_NAMES = {"login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "squad_assault", "secret_realm", "secret_realm_farm"}
 ACTION_KEYS = {
     "main_menu_tap": {"type", "name", "main_menu", "multimodal", "timeout_seconds",
                       "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds"},
@@ -61,6 +61,11 @@ ACTION_KEYS = {
         "pre_click_wait_seconds", "post_click_wait_seconds",
         "transfer_marker", "start_sweep", "ready", "confirm_first", "confirm_second",
         "reset", "reset_confirm", "multimodal", "sweep_prompt",
+    },
+    "handle_squad_assault": {
+        "type", "timeout_seconds", "poll_seconds", "post_click_wait_seconds",
+        "ready_marker", "match_button", "quadruple_checked", "quadruple_unchecked",
+        "continue_button", "limit_marker", "dialog_marker",
     },
     "tap": {"type", "x", "y"},
     "swipe": {"type", "x1", "y1", "x2", "y2", "duration_ms"},
@@ -532,7 +537,7 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         _validate_click_waits(action, context)
         completed_skip_type = action.get("completed_skip_type", "handle_organization_prayer")
         if completed_skip_type not in {
-            "handle_organization_prayer", "handle_coin_fortune", "handle_free_recruit", "handle_abundance", "handle_survival_challenge", "handle_secret_realm",
+            "handle_organization_prayer", "handle_coin_fortune", "handle_free_recruit", "handle_abundance", "handle_survival_challenge", "handle_squad_assault", "handle_secret_realm",
         }:
             raise ConfigError(f"{context} 的 completed_skip_type 不是允许的页面处理动作")
         return
@@ -601,6 +606,20 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
                     raise ConfigError(f'{context}.{key} 识别阈值不能低于 0.85')
             if 'advance' in action and (action['advance']['top'] < 720 or action['advance']['left'] < 1500):
                 raise ConfigError(f'{context}.advance 必须限制在右下角，避开升级按钮')
+        return
+    elif action_type == "handle_squad_assault":
+        if (width, height) != (1920, 1080):
+            raise ConfigError(f"{context} 的小队突袭只支持 1920×1080")
+        _validate_click_waits(action, context)
+        for key, lower, upper in (("timeout_seconds", 1, 3600), ("poll_seconds", .2, 5)):
+            value = action[key]
+            if type(value) not in (int, float) or not lower <= value <= upper:
+                raise ConfigError(f"{context}.{key} 必须在 {lower} 到 {upper} 之间")
+        if action["poll_seconds"] > action["timeout_seconds"]:
+            raise ConfigError(f"{context}.poll_seconds 不能大于 timeout_seconds")
+        for key in ("ready_marker", "match_button", "quadruple_checked", "quadruple_unchecked",
+                    "continue_button", "limit_marker", "dialog_marker"):
+            _validate_template_target(action[key], width, height, f"{context}.{key}", require_name=True)
         return
     elif action_type == "handle_survival_challenge":
         if (width, height) != (1920, 1080):
@@ -818,7 +837,7 @@ def load_settings(path: Path, *, skip_account_login: bool = False) -> Settings:
     tasks = payload["tasks"]
     if not isinstance(tasks, dict):
         raise ConfigError("tasks 必须是对象")
-    _require_exact_keys(tasks, TASK_NAMES, "tasks", optional={"secret_realm", "secret_realm_farm", "survival_challenge", "ichiraku_takeout", "equipment_upgrade"})
+    _require_exact_keys(tasks, TASK_NAMES, "tasks", optional={"secret_realm", "secret_realm_farm", "survival_challenge", "squad_assault", "ichiraku_takeout", "equipment_upgrade"})
     validated: dict[str, list[dict[str, Any]]] = {}
     for task_name, actions in tasks.items():
         if not isinstance(actions, list):

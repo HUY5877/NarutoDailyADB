@@ -1219,6 +1219,161 @@
           "threshold": 0.95
         }
       }
+    ],
+    "squad_assault": [
+      {
+        "type": "return_to_main",
+        "max_rounds": 5,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_page_marker": {
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      },
+      {
+        "type": "main_menu_tap",
+        "name": "奖励入口",
+        "timeout_seconds": 60,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_menu": "rewards",
+        "multimodal": {
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
+      },
+      {
+        "type": "find_card_and_click",
+        "name": "完成1次小队突袭",
+        "template": "assets/squad_assault_label.png",
+        "left": 0,
+        "top": 400,
+        "right": 1920,
+        "bottom": 580,
+        "threshold": 0.9,
+        "button_template": "assets/go_now_button.png",
+        "button_threshold": 0.9,
+        "completed_template": "assets/completed_stamp.png",
+        "completed_threshold": 0.9,
+        "button_left_offset": -140,
+        "button_top_offset": 80,
+        "button_right_offset": 185,
+        "button_bottom_offset": 240,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 5,
+        "completed_skip_type": "handle_squad_assault"
+      },
+      {
+        "type": "handle_squad_assault",
+        "timeout_seconds": 1800,
+        "poll_seconds": 5,
+        "post_click_wait_seconds": 1,
+        "ready_marker": {
+          "name": "小队突袭准备页面",
+          "template": "assets/squad_assault_ready.png",
+          "left": 80,
+          "top": 0,
+          "right": 820,
+          "bottom": 230,
+          "threshold": 0.9
+        },
+        "match_button": {
+          "name": "小队突袭开始匹配",
+          "template": "assets/squad_assault_match.png",
+          "left": 1550,
+          "top": 740,
+          "right": 1920,
+          "bottom": 1080,
+          "threshold": 0.9
+        },
+        "quadruple_checked": {
+          "name": "四倍奖励已勾选",
+          "template": "assets/squad_assault_quadruple_checked.png",
+          "left": 700,
+          "top": 960,
+          "right": 835,
+          "bottom": 1080,
+          "threshold": 0.9
+        },
+        "quadruple_unchecked": {
+          "name": "四倍奖励未勾选",
+          "template": "assets/squad_assault_quadruple_unchecked.png",
+          "left": 700,
+          "top": 960,
+          "right": 835,
+          "bottom": 1080,
+          "threshold": 0.9
+        },
+        "continue_button": {
+          "name": "未勾选四倍奖励继续",
+          "template": "assets/squad_assault_continue.png",
+          "left": 570,
+          "top": 520,
+          "right": 1030,
+          "bottom": 740,
+          "threshold": 0.9
+        },
+        "limit_marker": {
+          "name": "小队突袭奖励次数已达上限",
+          "template": "assets/squad_assault_limit.png",
+          "left": 730,
+          "top": 955,
+          "right": 1220,
+          "bottom": 1080,
+          "threshold": 0.9
+        },
+        "dialog_marker": {
+          "name": "未勾选四倍奖励确认弹窗",
+          "template": "assets/squad_assault_dialog.png",
+          "left": 490,
+          "top": 235,
+          "right": 1430,
+          "bottom": 880,
+          "threshold": 0.9
+        }
+      },
+      {
+        "type": "return_to_main",
+        "max_rounds": 5,
+        "idle_rounds": 2,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_page_marker": {
+          "name": "游戏主界面",
+          "main_menu": "home",
+          "multimodal": {
+            "timeout_seconds": 30,
+            "max_calls": 3
+          }
+        },
+        "close_target": {
+          "name": "通用关闭按钮",
+          "template": "assets/promo_close.png",
+          "left": 1650,
+          "top": 0,
+          "right": 1920,
+          "bottom": 300,
+          "threshold": 0.95
+        }
+      }
     ]
   }
 }

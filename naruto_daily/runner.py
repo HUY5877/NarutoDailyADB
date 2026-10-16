@@ -22,6 +22,7 @@ from .recruit import handle_free_recruit
 from .abundance import handle_abundance
 from .secret_realm import handle_secret_realm
 from .survival_challenge import handle_survival_challenge
+from .squad_assault import handle_squad_assault
 from .ichiraku import handle_ichiraku_takeout
 from .equipment import handle_equipment_upgrade
 
@@ -36,6 +37,7 @@ ACTION_NAMES = {
     "authorize_account": "选择指定 QQ 账号并授权",
     "handle_abundance": "挑战丰饶之间并执行通用战斗",
     "handle_survival_challenge": "执行生存挑战扫荡并按重置次数循环",
+    "handle_squad_assault": "取消四倍奖励并循环匹配小队突袭",
     "tap": "点击",
     "swipe": "滑动",
     "back": "返回",
@@ -209,6 +211,11 @@ class ActionRunner:
                     template_matcher=self.template_matcher,
                     asset_root=self.asset_root,
                     sleep=self.sleep,
+                )
+            elif action_type == "handle_squad_assault":
+                handle_squad_assault(
+                    self.client, action, template_matcher=self.template_matcher,
+                    asset_root=self.asset_root, sleep=self.sleep,
                 )
             elif action_type in ("handle_ichiraku_takeout", "handle_equipment_upgrade"):
                 handler = handle_ichiraku_takeout if action_type == "handle_ichiraku_takeout" else handle_equipment_upgrade
