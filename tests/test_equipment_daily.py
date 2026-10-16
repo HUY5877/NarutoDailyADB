@@ -4,7 +4,7 @@ import pytest
 
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.model_workflow import ModelWorkflow
-from naruto_daily.equipment import prompts
+from naruto_daily.multimodal import prompt_jev, prompts
 from naruto_daily.equipment.handler import (
     handle_equipment_upgrade, lowest_equipment, _finish_material,
     MATERIAL_POINTS, EQUIPMENT_POINTS, BLANK, MATERIAL_BUTTON, AUTO_STOP, START_SWEEP, ADVANCE,
@@ -88,9 +88,9 @@ def test_all_six_slots_are_opened_left_to_right_before_one_advance_check(caplog)
     with caplog.at_level('INFO', logger='naruto_daily'):
         client, model = run(overview(), *filled_slots(), advance(False))
     assert client.taps == [EQUIPMENT_POINTS[4]] + [p for slot in MATERIAL_POINTS for p in (slot, BLANK)]
-    assert model.prompts.count(prompts.MATERIAL_ENTRY) == 6
-    assert model.prompts.count(prompts.ADVANCE) == 1
-    assert model.prompts[-1] == prompts.ADVANCE
+    assert model.prompts.count(prompt_jev.EQUIPMENT_MATERIAL_ENTRY) == 6
+    assert model.prompts.count(prompt_jev.EQUIPMENT_ADVANCE) == 1
+    assert model.prompts[-1] == prompt_jev.EQUIPMENT_ADVANCE
     assert '材料6/6' in caplog.text
 
 
@@ -111,8 +111,8 @@ def test_mixed_slots_synthesize_sweep_equip_then_advance_and_select_new_lowest()
     assert client.taps.count(START_SWEEP) == 1
     assert client.taps.count(MATERIAL_BUTTON) == 7
     assert client.taps.count(ADVANCE) == 1
-    assert model.prompts.count(prompts.ADVANCE) == 1
-    assert model.prompts[:model.prompts.index(prompts.ADVANCE)].count(prompts.MATERIAL_ENTRY) == 6
+    assert model.prompts.count(prompt_jev.EQUIPMENT_ADVANCE) == 1
+    assert model.prompts[:model.prompts.index(prompt_jev.EQUIPMENT_ADVANCE)].count(prompt_jev.EQUIPMENT_MATERIAL_ENTRY) == 6
 
 
 def test_no_advance_after_material_operation_starts_another_full_round():
@@ -121,7 +121,7 @@ def test_no_advance_after_material_operation_starts_another_full_round():
         overview(), *filled_slots(), advance(False),
     )
     assert [p for p in client.taps if p in MATERIAL_POINTS] == list(MATERIAL_POINTS) * 2
-    assert model.prompts.count(prompts.ADVANCE) == 2
+    assert model.prompts.count(prompt_jev.EQUIPMENT_ADVANCE) == 2
     assert ADVANCE not in client.taps
 
 
@@ -160,7 +160,7 @@ def test_advance_without_level_change_continues_full_material_round(advance_roun
     )
     round_taps = [EQUIPMENT_POINTS[4]] + [p for slot in MATERIAL_POINTS for p in (slot, BLANK)]
     assert client.taps == (round_taps + [ADVANCE]) * advance_rounds + round_taps
-    assert model.prompts.count(prompts.ADVANCE) == advance_rounds + 1
+    assert model.prompts.count(prompt_jev.EQUIPMENT_ADVANCE) == advance_rounds + 1
 
 
 def test_sweep_with_partial_materials_rechecks_stamina_on_same_slot_then_finishes():
@@ -173,7 +173,7 @@ def test_sweep_with_partial_materials_rechecks_stamina_on_same_slot_then_finishe
     assert client.taps.count(START_SWEEP) == 2
     first_next_slot = client.taps.index(MATERIAL_POINTS[1])
     assert client.taps[:first_next_slot].count(MATERIAL_POINTS[0]) == 1
-    assert model.prompts.count(prompts.STAMINA) == 2
+    assert model.prompts.count(prompts.EQUIPMENT_STAMINA) == 2
 
 
 def test_partial_sweep_low_stamina_exits_without_skipping_to_next_slot_or_advancing():
@@ -184,7 +184,7 @@ def test_partial_sweep_low_stamina_exits_without_skipping_to_next_slot_or_advanc
     assert [p for p in client.taps if p in MATERIAL_POINTS] == [MATERIAL_POINTS[0]]
     assert client.taps.count(START_SWEEP) == 1
     assert client.taps.count(MATERIAL_BUTTON) == 2
-    assert prompts.ADVANCE not in model.prompts
+    assert prompt_jev.EQUIPMENT_ADVANCE not in model.prompts
 
 
 def test_unchecked_auto_stop_is_confirmed_once_before_starting_sweep(caplog):
@@ -193,7 +193,7 @@ def test_unchecked_auto_stop_is_confirmed_once_before_starting_sweep(caplog):
 
     class RecordingModel(Model):
         def complete_json(self, png, prompt, **kwargs):
-            if prompt == prompts.STAMINA:
+            if prompt == prompts.EQUIPMENT_STAMINA:
                 observed.append((png, len(client.taps)))
             return super().complete_json(png, prompt, **kwargs)
 
@@ -232,9 +232,9 @@ def test_animation_finishes_and_result_layer_closes_before_reading_material():
 
     class GuardModel(Model):
         def complete_json(self, png, prompt, **kwargs):
-            if prompt == prompts.SWEEP_RESULT:
+            if prompt == prompts.EQUIPMENT_SWEEP_RESULT:
                 checks.append(client.taps.count(BLANK))
-            if prompt == prompts.MATERIAL:
+            if prompt == prompt_jev.EQUIPMENT_MATERIAL:
                 assert client.taps.count(BLANK) == 2
             return super().complete_json(png, prompt, **kwargs)
 
@@ -256,7 +256,7 @@ def test_late_sweep_result_cannot_dismiss_or_click_material(monkeypatch):
 
     class LateModel(Model):
         def complete_json(self, png, prompt, **kwargs):
-            if prompt == prompts.SWEEP_RESULT:
+            if prompt == prompts.EQUIPMENT_SWEEP_RESULT:
                 now[0] = 150
             return super().complete_json(png, prompt, **kwargs)
 

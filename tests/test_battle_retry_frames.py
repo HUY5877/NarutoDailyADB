@@ -9,7 +9,7 @@ from naruto_daily.battle import run_battle
 from naruto_daily.common.adb_client import AdbError
 from naruto_daily.multimodal.client import MultimodalClient, MultimodalRequestError
 from naruto_daily.multimodal.decisions import JEV_ENDPOINT
-from naruto_daily.multimodal.prompts import BATTLE_COMPLETION
+from naruto_daily.multimodal.prompt_jev import BATTLE_COMPLETION
 from test_battle import Clock, battle_config
 
 

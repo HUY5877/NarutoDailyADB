@@ -15,7 +15,7 @@ from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.execution import current_execution, retry_observation, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal.diagnostics import model_request_context
-from naruto_daily.multimodal.prompts import BATTLE_COMPLETION
+from naruto_daily.multimodal.prompt_jev import BATTLE_COMPLETION
 
 
 LOGGER = logging.getLogger('naruto_daily')

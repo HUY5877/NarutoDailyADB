@@ -25,7 +25,7 @@ SDK 管理会话、工具调用、权限和请求轮次；移动工具在执行 
 
 以后从 `secret_realm/pre_battle.py` 的 `SKIPPED_REALMS` 移除“毒风秘境”，即可恢复下面保留的原导航分支，无需新配置：
 
-1. `secret_realm/navigation.py` 的 `navigate_to_poison_seal()` 传入目标、摇杆配置、毒风事实判定规则和本地 BOSS 检测回调。
+1. `secret_realm/navigation.py` 的 `navigate_to_poison_seal()` 传入目标、摇杆配置、毒风事实判定规则和本地 BOSS 检测回调。目标、导航提示和证据字段说明统一在 [`multimodal/prompts.py`](../prompts.py) 维护；证据校验和动作控制留在业务模块。
 2. 每轮模型在 `move` 或 `finish` 参数中给出 `page`、`boss_visible`、`battle_started`、`seal_prompt_visible`、`visible_text` 和 `observation`。
 3. 本地规则确认当前是战斗页面、待解封提示明确消失，并有 BOSS 或实际交战的正向证据，才进入通用战斗模块。即使模型请求 `move`，事实已经满足完成条件时也直接成功，不再多移动一步。
 4. 满50步仍在战斗页面且未确认完成，则复用同一个退出函数，回房间重新读券，主动退出不计入已结束战斗数。

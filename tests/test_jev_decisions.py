@@ -13,8 +13,9 @@ import pytest
 from naruto_daily.common.environment import EnvironmentConfigError
 from naruto_daily.common.execution import execution_scope
 from naruto_daily.multimodal.decisions import (
-    ChoicePrompt, DEFAULT_JEV_MODEL, JEV_ENDPOINT, JevDecisionClient,
+    DEFAULT_JEV_MODEL, JEV_ENDPOINT, JevDecisionClient,
 )
+from naruto_daily.multimodal.prompt_jev import ChoicePrompt
 from naruto_daily.multimodal.diagnostics import model_request_context
 from naruto_daily.multimodal.transport import MultimodalError, MultimodalRequestError
 

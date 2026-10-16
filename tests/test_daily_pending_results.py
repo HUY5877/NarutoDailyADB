@@ -5,7 +5,7 @@ from naruto_daily.common import model_workflow
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common.model_workflow import ModelWorkflow
 from naruto_daily.common.visual import VisualError
-from naruto_daily.equipment import prompts
+from naruto_daily.multimodal import prompt_jev, prompts
 from naruto_daily.equipment.handler import (
     ADVANCE, BLANK, EQUIPMENT_POINTS, MATERIAL_BUTTON, MATERIAL_POINTS, START_SWEEP,
     _finish_material, handle_equipment_upgrade,
@@ -289,7 +289,7 @@ def test_equipment_continues_new_confirmed_round_beyond_local_max_rounds(clock):
     assert [point for point in device.taps if point in MATERIAL_POINTS] == list(MATERIAL_POINTS) * 2
     assert [point for point in device.taps if point in EQUIPMENT_POINTS] == [EQUIPMENT_POINTS[4], EQUIPMENT_POINTS[2]]
     assert device.taps.count(ADVANCE) == 1
-    assert model.observations[-1][1] == prompts.ADVANCE
+    assert model.observations[-1][1] == prompt_jev.EQUIPMENT_ADVANCE
 
 
 def test_equipment_rounds_share_original_deadline_instead_of_restarting_budget(clock):
@@ -326,7 +326,7 @@ def test_sweep_rechecks_animation_and_unknown_stamina_without_relaxing_validatio
                         result(animation_finished=False), result(stamina=None), result(),
                         *sweep_tail())
     assert device.taps.count(START_SWEEP) == 1
-    reads = [taps for _, prompt, taps in model.observations if prompt == prompts.SWEEP_RESULT]
+    reads = [taps for _, prompt, taps in model.observations if prompt == prompts.EQUIPMENT_SWEEP_RESULT]
     assert len(reads) == 4
     assert all(START_SWEEP in taps and BLANK not in taps for taps in reads)
     assert device.tap_times[device.taps.index(BLANK)] == 10

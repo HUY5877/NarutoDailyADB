@@ -11,7 +11,7 @@ from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.execution import retry_observation, stage_timeout
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalClient
-from naruto_daily.multimodal.prompts import ABUNDANCE_AFTER_BATTLE
+from naruto_daily.multimodal.prompt_jev import ABUNDANCE_AFTER_BATTLE
 
 
 LOGGER = logging.getLogger('naruto_daily')

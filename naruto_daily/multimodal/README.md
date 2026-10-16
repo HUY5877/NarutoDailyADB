@@ -2,6 +2,8 @@
 
 选择判断与内容生成使用两条显式路径，不启动额外 HTTP 服务。`ChoicePrompt` 交给 `decisions.py` 调用 JEV；普通字符串提示词与 OpenAI 兼容导航继续使用生成模型网关。生成渠道定义在 `channels.py`，路由和 Redis 计数在 `gateway.py`，两条路径的请求时限和重试都使用 `transport.py`。
 
+场景提示词统一在本目录维护：[`prompt_jev.py`](prompt_jev.py) 集中定义 JEV 的通用指令、`ChoicePrompt`、主界面与秘境入口候选、战斗结束、丰饶、装备和一乐外卖提示；[`prompts.py`](prompts.py) 集中定义生成模型使用的文字、数字、坐标读取及毒风导航提示。业务模块只引用这些定义，负责截图、校验和动作执行，不再内嵌场景提示词。
+
 ## JEV 选择判断
 
 根目录 `.env` 设置 `APP_ENV=test` 并填写 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`；在测试 namespace `hyrz-test` 内配置以下普通 key，正式值保存在 `hyrz`：

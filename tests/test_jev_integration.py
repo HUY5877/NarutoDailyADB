@@ -9,7 +9,7 @@ import pytest
 
 from naruto_daily.common import environment
 from naruto_daily.multimodal.client import MultimodalClient, MultimodalConfigurationError
-from naruto_daily.multimodal.decisions import ChoicePrompt
+from naruto_daily.multimodal.prompt_jev import ChoicePrompt
 
 
 def test_choice_uses_jev_without_consuming_generation_route(monkeypatch, configured_environment):

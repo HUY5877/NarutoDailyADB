@@ -14,7 +14,8 @@ from naruto_daily.common.environment import (
     EnvironmentConfigError, read_environment, resolve_environment,
 )
 from .gateway import initialize_gateway
-from .decisions import ChoicePrompt, JevDecisionClient
+from .decisions import JevDecisionClient
+from .prompt_jev import ChoicePrompt
 from naruto_daily.common.execution import MODEL_REQUEST_TIMEOUT_SECONDS, current_execution
 from naruto_daily.common.visual import NonRetryableVisualError
 

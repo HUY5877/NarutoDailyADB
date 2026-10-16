@@ -181,7 +181,7 @@ def _validate_multimodal_config(model: Any, context: str) -> None:
 
 
 def _validate_main_target(target, context, *, marker=False):
-    from naruto_daily.common.main_screen import MAIN_TARGETS
+    from naruto_daily.multimodal.prompt_jev import MAIN_TARGETS
     _require_exact_keys(target, {'name', 'main_menu', 'multimodal'}, context)
     if not isinstance(target['name'], str) or not target['name'].strip():
         raise ConfigError(f'{context}.name 必须是非空字符串')

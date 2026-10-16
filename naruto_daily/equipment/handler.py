@@ -7,7 +7,7 @@ from pathlib import Path
 from naruto_daily.common.execution import current_execution
 from naruto_daily.common.model_workflow import ModelWorkflow, require_page
 from naruto_daily.common.visual import VisualError, find_template_in_png
-from . import prompts
+from naruto_daily.multimodal import prompt_jev, prompts
 
 LOGGER = logging.getLogger('naruto_daily')
 EQUIPMENT_POINTS = ((275, 360), (525, 360), (780, 360), (275, 610), (525, 610), (780, 610))
@@ -108,7 +108,7 @@ def _close_layers(flow, page=None):
     attempts = count() if scoped else range(4)
     for _ in attempts:
         if page is None:
-            page = flow.read('装备弹层关闭检查', prompts.PAGE, closing_page if scoped else _page)
+            page = flow.read('装备弹层关闭检查', prompt_jev.EQUIPMENT_PAGE, closing_page if scoped else _page)
         if page == 'equipment':
             return
         flow.tap(BLANK)
@@ -127,17 +127,17 @@ def _finish_material(flow, button):
     if button == 'synthesize' and current_execution() is not None:
         LOGGER.info('材料已齐，点击一次合成成品，等待装备按钮')
         flow.tap(MATERIAL_BUTTON)
-        button = flow.read('合成后装备按钮', prompts.MATERIAL, _equip_after_synthesis)
+        button = flow.read('合成后装备按钮', prompt_jev.EQUIPMENT_MATERIAL, _equip_after_synthesis)
     elif button == 'synthesize':
         for attempt in range(1, 4):
             LOGGER.info('[材料合成 第%d/3次] 材料已齐，点击合成成品', attempt)
             flow.tap(MATERIAL_BUTTON)
-            button = flow.read('合成后装备按钮', prompts.MATERIAL, _material)
+            button = flow.read('合成后装备按钮', prompt_jev.EQUIPMENT_MATERIAL, _material)
             if button == 'synthesize':
                 # 点击可能尚未生效；先等画面更新，重新确认后才决定是否重试。
                 LOGGER.info('合成后仍显示合成，等待1秒后重新截图确认')
                 flow.images.sleep(min(1, flow.remaining()))
-                button = flow.read('合成后按钮补查', prompts.MATERIAL, _material)
+                button = flow.read('合成后按钮补查', prompt_jev.EQUIPMENT_MATERIAL, _material)
             if button == 'equip':
                 break
             if button != 'synthesize':
@@ -166,14 +166,14 @@ def _dismiss_sweep_result(flow, stamina_before):
     deadline = flow.elapsed() + (flow.remaining() if scoped else
                                  min(flow.action['sweep_timeout_seconds'], flow.remaining()))
     # 材料足够后可能根本没有“继续扫荡”，直接核验结果层本身。
-    runs, stamina_after = flow.read('扫荡完成结果核验', prompts.SWEEP_RESULT, _sweep_result,
+    runs, stamina_after = flow.read('扫荡完成结果核验', prompts.EQUIPMENT_SWEEP_RESULT, _sweep_result,
                                     timeout=deadline - flow.elapsed())
     LOGGER.info('本次扫荡已完成%d次，体力读数 %d→%d', runs, stamina_before, stamina_after)
     # “继续扫荡”会在滚动动画期间提前出现、在材料足够时消失。
     # 必须确认前景回到材料详情，不能把按钮暂时消失当成结果层关闭。
     while flow.elapsed() < deadline:
         flow.tap(BLANK)
-        page = flow.read('扫荡结果关闭检查', prompts.PAGE, _sweep_close_page if scoped else _page,
+        page = flow.read('扫荡结果关闭检查', prompt_jev.EQUIPMENT_PAGE, _sweep_close_page if scoped else _page,
                          timeout=deadline - flow.elapsed())
         if page == 'material':
             return
@@ -191,19 +191,19 @@ def _sweep_material(flow):
     while True:
         # 调用前已由模型确认最前方材料详情的一键扫荡按钮。
         flow.tap(MATERIAL_BUTTON)
-        stamina, auto_stop = flow.read('开始扫荡前体力检查', prompts.STAMINA, _sweep_setup)
+        stamina, auto_stop = flow.read('开始扫荡前体力检查', prompts.EQUIPMENT_STAMINA, _sweep_setup)
         if stamina > 5 and not auto_stop:
             LOGGER.info('材料足够后自动停止未勾选，点击复选框后重新截图确认')
             flow.tap(AUTO_STOP)
             # 只点一次；点击后仅重新识别，避免把勾取消。
-            stamina = flow.read('材料足够后自动停止勾选复查', prompts.STAMINA, _stamina)
+            stamina = flow.read('材料足够后自动停止勾选复查', prompts.EQUIPMENT_STAMINA, _stamina)
         if stamina <= 5:
             LOGGER.info('体力为%d，不大于5，结束装备任务并返回主界面', stamina)
             _close_layers(flow, 'sweep_setup')
             return False
         flow.tap(START_SWEEP)
         _dismiss_sweep_result(flow, stamina)
-        button = flow.read('扫荡后合成检查', prompts.MATERIAL, _material)
+        button = flow.read('扫荡后合成检查', prompt_jev.EQUIPMENT_MATERIAL, _material)
         if button != 'sweep':
             _finish_material(flow, button)
             return True
@@ -225,7 +225,7 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
         for index, point in enumerate(MATERIAL_POINTS, 1):
             LOGGER.info('[装备养成 第%d轮 材料%d/6] 打开材料格，由模型判断弹层操作', round_number, index)
             flow.tap(point)
-            button = flow.read('装备材料详情', prompts.MATERIAL_ENTRY, _material_entry)
+            button = flow.read('装备材料详情', prompt_jev.EQUIPMENT_MATERIAL_ENTRY, _material_entry)
             if button == 'material_info':
                 LOGGER.info('第%d格已装备，信息卡没有操作按钮，关闭后继续下一格', index)
                 _close_layers(flow, 'material_info')
@@ -237,7 +237,7 @@ def handle_equipment_upgrade(client, action, *, model=None, template_matcher=fin
             else:
                 _finish_material(flow, button)
             operated = True
-        can_advance = flow.read('六格遍历后进阶检查', prompts.ADVANCE,
+        can_advance = flow.read('六格遍历后进阶检查', prompt_jev.EQUIPMENT_ADVANCE,
                                 lambda data: _can_advance(data, slot))
         if can_advance:
             LOGGER.info('六格材料遍历完成，模型确认进阶按钮可用，执行进阶')

@@ -6,13 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from naruto_daily.common import main_screen
-from naruto_daily.common.main_screen import main_screen_prompt, parse_main_screen
+from naruto_daily.common.main_screen import parse_main_screen
 from naruto_daily.common.visual import VisualError
-from naruto_daily.equipment import prompts as equipment
 from naruto_daily.equipment.handler import _can_advance, _material, _material_entry
-from naruto_daily.ichiraku import TAKEOUT_PROMPT, _takeout
-from naruto_daily.multimodal.decisions import ChoicePrompt
-from naruto_daily.multimodal import prompts
+from naruto_daily.ichiraku import _takeout
+from naruto_daily.multimodal.prompt_jev import ChoicePrompt, TAKEOUT_PROMPT, main_screen_prompt
+from naruto_daily.multimodal import prompt_jev, prompts
 from naruto_daily.secret_realm.enter import parse_entry_center
 
 
@@ -68,7 +67,7 @@ def test_main_recognition_passes_the_same_frame_candidate_ids_to_choice_prompt(m
 
 def test_secret_entry_choices_only_restore_current_frame_ids_or_no_click():
     centers = {2: (100, 200), 9: (300, 400)}
-    prompt = prompts.secret_entry_prompt('ninja_challenge', '秘境探险', centers)
+    prompt = prompt_jev.secret_entry_prompt('ninja_challenge', '秘境探险', centers)
     assert isinstance(prompt, ChoicePrompt)
     found = [result for result in prompt.choices.values() if result['candidate_id'] is not None]
     assert {result['candidate_id'] for result in found} == set(centers)
@@ -77,32 +76,32 @@ def test_secret_entry_choices_only_restore_current_frame_ids_or_no_click():
     unknown = [result for result in prompt.choices.values() if result['page'] == 'unknown']
     assert unknown == [dict(page='unknown', name=None, candidate_id=None)]
     assert parse_entry_center(unknown[0], 'ninja_challenge', '秘境探险', centers) is None
-    assert list(prompts.secret_entry_prompt('main', '忍者挑战').choices.values()) == unknown
+    assert list(prompt_jev.secret_entry_prompt('main', '忍者挑战').choices.values()) == unknown
 
 
 def test_battle_completion_has_only_confirmed_end_battle_and_safe_unknown():
-    results = list(prompts.BATTLE_COMPLETION.choices.values())
+    results = list(prompt_jev.BATTLE_COMPLETION.choices.values())
     assert {(result['finished'], result['page']) for result in results} == {
         (True, 'finished'), (False, 'battle'), (False, 'unknown'),
     }
     assert all(isinstance(result['reason'], str) and result['reason'] for result in results)
-    assert {result['page'] for result in prompts.ABUNDANCE_AFTER_BATTLE.choices.values()} == {
+    assert {result['page'] for result in prompt_jev.ABUNDANCE_AFTER_BATTLE.choices.values()} == {
         'service_popup', 'abundance', 'home', 'result', 'unknown',
     }
 
 
 def test_equipment_choices_preserve_actions_page_guards_and_selected_slot():
-    assert {_material(result) for result in equipment.MATERIAL.choices.values()
+    assert {_material(result) for result in prompt_jev.EQUIPMENT_MATERIAL.choices.values()
             if result.get('action') in ('sweep', 'synthesize', 'equip')} == {'sweep', 'synthesize', 'equip'}
-    info = next(result for result in equipment.MATERIAL_ENTRY.choices.values()
+    info = next(result for result in prompt_jev.EQUIPMENT_MATERIAL_ENTRY.choices.values()
                 if result['page'] == 'material_info')
     assert _material_entry(info) == 'material_info'
     with pytest.raises(VisualError):
         _material(info)
-    assert {result['page'] for result in equipment.PAGE.choices.values()} == {
+    assert {result['page'] for result in prompt_jev.EQUIPMENT_PAGE.choices.values()} == {
         'equipment', 'material', 'material_info', 'sweep_setup', 'sweep_result', 'unknown',
     }
-    advance = [result for result in equipment.ADVANCE.choices.values() if result['page'] == 'equipment']
+    advance = [result for result in prompt_jev.EQUIPMENT_ADVANCE.choices.values() if result['page'] == 'equipment']
     assert {(result['selected_slot'], _can_advance(result, result['selected_slot']))
             for result in advance} == {(slot, can) for slot in range(1, 7) for can in (False, True)}
     with pytest.raises(VisualError):
@@ -126,7 +125,7 @@ def test_free_text_numbers_and_coordinate_prompts_keep_the_generation_path():
     for prompt in (
         prompts.ACCOUNT_NICKNAME, prompts.FREE_RECRUIT, prompts.SECRET_REALM_TICKETS,
         prompts.SECRET_BATTLE_REALM, prompts.SURVIVAL_RESET_COUNT,
-        equipment.EQUIPMENT, equipment.STAMINA, equipment.SWEEP_RESULT,
+        prompts.EQUIPMENT, prompts.EQUIPMENT_STAMINA, prompts.EQUIPMENT_SWEEP_RESULT,
     ):
         assert type(prompt) is str
 
@@ -136,4 +135,4 @@ def test_candidate_choices_reject_invalid_ids(candidate_id):
     with pytest.raises(ValueError):
         main_screen_prompt('equipment', [candidate_id])
     with pytest.raises(ValueError):
-        prompts.secret_entry_prompt('main', '忍者挑战', [candidate_id])
+        prompt_jev.secret_entry_prompt('main', '忍者挑战', [candidate_id])
