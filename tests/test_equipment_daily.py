@@ -530,22 +530,22 @@ def test_uncertain_stamina_or_wrong_layer_never_starts_sweep(bad):
     assert AUTO_STOP not in client.taps
 
 
-@pytest.mark.parametrize('slots', [[], [1, 2, 3], [2, 3]])
-def test_takeout_clicks_leftmost_claimable_box_once_and_verifies(slots):
+@pytest.mark.parametrize('slots', [[], [1], [1, 2, 3], [2, 3]])
+def test_takeout_clicks_all_three_boxes_and_repeats_if_any_remain(slots):
     client = Client()
     answers = [dict(page='takeout', claimable_slots=slots)]
     if slots:
         answers.append(dict(page='takeout', claimable_slots=[]))
     handle_ichiraku_takeout(client, action(), model=Model(*answers), sleep=lambda _: None)
-    assert client.taps == ([] if not slots else [({1: 450, 2: 880, 3: 1310}[slots[0]], 520)])
+    assert client.taps == [(450, 520), (880, 520), (1310, 520)] * (2 if slots else 1)
 
 
-def test_takeout_unrecognized_page_does_not_click():
+def test_takeout_unrecognized_page_does_not_start_another_round():
     client = Client()
     with pytest.raises(VisualError):
         handle_ichiraku_takeout(client, action(), model=Model(dict(page='unknown'), dict(page='unknown')),
                                sleep=lambda _: None)
-    assert not client.taps
+    assert client.taps == [(450, 520), (880, 520), (1310, 520)]
 
 
 def test_late_model_response_cannot_trigger_click(monkeypatch):
@@ -562,20 +562,21 @@ def test_late_model_response_cannot_trigger_click(monkeypatch):
     assert not client.taps
 
 
-def test_takeout_reward_overlay_dismissed_after_single_claim():
+def test_takeout_reward_overlay_dismissed_after_three_clicks():
     client = Client()
     handle_ichiraku_takeout(client, action(), model=Model(
-        dict(page='takeout', claimable_slots=[1, 2, 3]), dict(page='reward'),
+        dict(page='reward'),
         dict(page='takeout', claimable_slots=[])), sleep=lambda _: None)
-    assert client.taps == [(450, 520), (1550, 740)]
+    assert client.taps == [(450, 520), (880, 520), (1310, 520), (1550, 740)]
 
 
-def test_takeout_claims_remaining_box_if_game_does_not_claim_all_at_once():
+def test_takeout_repeats_three_clicks_after_reward_closes_with_remaining_box():
     client = Client()
     handle_ichiraku_takeout(client, action(), model=Model(
-        dict(page='takeout', claimable_slots=[2, 3]), dict(page='takeout', claimable_slots=[3]),
+        dict(page='reward'), dict(page='takeout', claimable_slots=[3]),
         dict(page='takeout', claimable_slots=[])), sleep=lambda _: None)
-    assert client.taps == [(880, 520), (1310, 520)]
+    points = [(450, 520), (880, 520), (1310, 520)]
+    assert client.taps == points + [(1550, 740)] + points
 
 
 @pytest.mark.parametrize('task_name', ['login', 'all'])
