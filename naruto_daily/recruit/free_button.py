@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from typing import Callable
 
 from naruto_daily.multimodal.client import MultimodalError
 from naruto_daily.multimodal.prompts import FREE_RECRUIT
@@ -37,6 +38,43 @@ def parse_free_recruit(result: dict, target: dict, category: str):
     if not (target['left'] <= x < target['right'] and target['top'] <= y < target['bottom']):
         raise MultimodalError("模型返回的免费招募坐标超出按钮区域")
     return count, (x, y)
+
+
+def make_free_recruit_retry_probe(
+    target: dict, *, category: str, tab: dict, guard: dict,
+    images, model, max_calls: int, clock=time.monotonic,
+) -> Callable[[bytes, float], tuple[int, tuple[int, int]] | None]:
+    """只观察传入的新帧；由结果页流程统一控制重拍、补点次数和截止时间。"""
+    calls = 0
+
+    def probe(png, deadline):
+        nonlocal calls
+        if images.match(png, tab)[0] is None or images.match(png, guard)[0] is None:
+            return None
+        if images.elapsed >= deadline:
+            raise MultimodalError(f'{category}免费招募补点识别超时')
+        if current_execution() is None and calls >= max_calls:
+            raise MultimodalError(f'{category}免费招募补点达到模型调用上限')
+        calls += 1
+        started = clock()
+        try:
+            result = model.complete_json(
+                png, FREE_RECRUIT, timeout_seconds=stage_timeout(deadline - images.elapsed),
+            )
+        finally:
+            if current_execution() is None:
+                images.elapsed += max(0, clock() - started)
+        if images.elapsed >= deadline:
+            raise MultimodalError(f'{category}免费招募补点识别超时，忽略迟到的模型结果')
+        button = parse_free_recruit(result, target, category)
+        if button is not None:
+            LOGGER.info('招募点击后仍确认%s免费 %d 抽，重新定位按钮坐标 (%d, %d)',
+                        category, button[0], *button[1])
+        else:
+            LOGGER.info('招募点击后未确认%s免费按钮，继续观察结果，不补点', category)
+        return button
+
+    return probe
 
 
 def click_free_recruit(client, target: dict, *, category: str, guard: dict, images, model,
