@@ -9,7 +9,7 @@ from typing import Callable
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.execution import current_execution, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient
-from .free_button import click_free_recruit
+from .free_button import click_free_recruit, make_free_recruit_retry_probe
 from naruto_daily.common.visual import VisualError, find_template_in_png
 
 
@@ -122,29 +122,46 @@ def _confirm_recruit_result(
     client, action: dict, *, images: ImageRecognition,
     timeout_seconds: float, poll_seconds: float,
     pre_click_wait: float, post_click_wait: float,
+    retry_button: Callable[[bytes, float], tuple[int, tuple[int, int]] | None] | None = None,
 ) -> bool:
     """忍者展示是可选的第一层，普通结果确定是必需的最后一层。"""
-    options = dict(images=images, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
-                   pre_click_wait=pre_click_wait, post_click_wait=post_click_wait)
     result_target = action["result_confirm"]
-    if "ninja_result_confirm" not in action:
-        return _click_confirmed_target(client, result_target, **options)
-
-    targets = [action["ninja_result_confirm"], result_target]
+    targets = ([action["ninja_result_confirm"]] if "ninja_result_confirm" in action else []) + [result_target]
     deadline = images.elapsed + stage_timeout(timeout_seconds)
+    result_seen = False
+    retry_used = False
+
+    def probe(png):
+        nonlocal result_seen
+        for index, target in enumerate(targets):
+            center, score = images.match(png, target)
+            if center is not None:
+                # 即使结果按钮随后消失，也不能把回到招募页当成首次点击失败。
+                result_seen = True
+                return 'result', (index, center, score)
+        if retry_button is not None and not result_seen and not retry_used:
+            button = retry_button(png, deadline)
+            if button is not None:
+                return 'free', button
+        return None, None
+
+    def observe():
+        return images.check(probe, lambda value: value[0] is not None,
+                            ' / '.join(target['name'] for target in targets), deadline=deadline)
+
     while images.elapsed < deadline:
         LOGGER.info('识别招募结果页面：获得忍者时先关闭展示页，再关闭普通结果页')
-        index, _ = images.either(targets, deadline=deadline)
-        if index is not None:
+        first_kind, first = observe()
+        if first_kind is not None:
             images.sleep(pre_click_wait)
             if images.elapsed >= deadline:
                 break
             # 点击前同时复查两层，页面切换时按最新截图选择按钮。
-            index, results = images.either(targets, deadline=deadline)
+            kind, confirmed = observe()
             if images.elapsed >= deadline:
                 break
-            if index is not None:
-                center, score = results[index]
+            if kind == 'result':
+                index, center, score = confirmed
                 LOGGER.info('再次确认%s，相似度 %.3f，点击坐标：(%d, %d)',
                             targets[index]['name'], score, *center)
                 client.tap(*center)
@@ -154,6 +171,15 @@ def _confirm_recruit_result(
                     targets = [result_target]
                     continue
                 return True
+            if (kind == first_kind == 'free' and confirmed[0] == first[0]
+                    and not result_seen and not retry_used):
+                retry_used = True
+                LOGGER.info('两次新截图确认仍在招募页且免费 %d 抽仍可用，补点 1/1 次，最新坐标 (%d, %d)',
+                            confirmed[0], *confirmed[1])
+                client.tap(*confirmed[1])
+                images.sleep(post_click_wait)
+                LOGGER.info('免费招募补点已执行，继续等待结果页，不再补点招募')
+                continue
         if images.elapsed >= deadline:
             break
         images.sleep(min(poll_seconds, deadline - images.elapsed))
@@ -204,7 +230,11 @@ def handle_free_recruit(
         if not click_free_recruit(client, action["free_button"], category=name, guard=guard,
                                   model=model, max_calls=action["multimodal"]["max_calls"], **options):
             continue
-        _confirm_recruit_result(client, action, **options)
+        retry_button = make_free_recruit_retry_probe(
+            action['free_button'], category=name, tab=tab, guard=guard, images=images,
+            model=model, max_calls=action['multimodal']['max_calls'],
+        )
+        _confirm_recruit_result(client, action, retry_button=retry_button, **options)
         clicks[key] = 1
         LOGGER.info("%s免费次数处理完成", name)
     return RecruitSummary(clicks["advanced"], clicks["ordinary"])
