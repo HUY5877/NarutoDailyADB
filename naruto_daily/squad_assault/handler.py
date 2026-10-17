@@ -1,4 +1,4 @@
-"""仅使用模板观察小队突袭，不操作四倍奖励确认选项或战斗界面。"""
+"""模板观察小队突袭，并在等待战斗结束时按需开启自动战斗。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,6 +21,11 @@ from naruto_daily.common.visual import (
 
 LOGGER = logging.getLogger("naruto_daily")
 READY_BRIGHTNESS_RATIO = 0.8
+AUTO_BATTLE_POINT = (70, 360)
+AUTO_BATTLE_MARKER = dict(
+    name="自动战斗中", template="assets/squad_assault_auto_battle.png",
+    left=820, top=95, right=1120, bottom=180, threshold=.9,
+)
 TARGET_KEYS = (
     "ready_marker", "match_button", "quadruple_checked", "quadruple_unchecked",
     "dialog_marker", "continue_button", "limit_marker",
@@ -146,6 +151,11 @@ def handle_squad_assault(
                 ))
                 if not controls_remain:
                     departed = True
+                    auto_center, _ = images.match(png, AUTO_BATTLE_MARKER)
+                    remaining()
+                    if auto_center is None:
+                        LOGGER.info("小队突袭未检测到“自动战斗中”文案，点击左侧自动按钮一次")
+                        tap(AUTO_BATTLE_POINT)
                 else:
                     LOGGER.info("小队突袭标题未确认但准备页控件仍在，不认定离页或重复匹配")
             LOGGER.info("小队突袭%s，%.2f 秒后重新截图", "页面被遮挡" if ready == "dimmed" else "尚未回到准备页", poll)
