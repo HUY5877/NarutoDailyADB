@@ -25,8 +25,8 @@ def test_real_frames_repeat_matches_until_limit_without_clicking_paid_option(
     names += ["squad_assault_ready_unchecked"] * 2
     if with_dialog:
         names += ["squad_assault_quadruple_dialog"] * 2
-    names += ["abundance_battle", "squad_assault_ready_unchecked",
-              "abundance_battle", limit_fixture]
+    names += ["squad_assault_battle_auto_on", "squad_assault_ready_unchecked",
+              "squad_assault_battle_auto_on", limit_fixture]
     frames = iter((name, (FIXTURES / (name + ".png")).read_bytes()) for name in names)
     taps, waits = [], []
 
@@ -81,7 +81,7 @@ def test_obscured_ready_title_does_not_allow_a_second_match_before_departure():
             assert center is not None and score > .99
 
     frames = iter([ready, obscured, ready,
-                   (FIXTURES / "abundance_battle.png").read_bytes(),
+                   (FIXTURES / "squad_assault_battle_auto_on.png").read_bytes(),
                    (FIXTURES / "squad_assault_limit.png").read_bytes()])
     taps = []
 
@@ -98,3 +98,28 @@ def test_obscured_ready_title_does_not_allow_a_second_match_before_departure():
     result = handle_squad_assault(Replay(), action, asset_root=ROOT, sleep=lambda _: None)
     assert result.matches == 1 and result.continues == 0
     assert len(taps) == 1 and taps[0][0] == 1
+
+
+def test_user_battle_frames_enable_auto_once_then_return_to_original_limit_check():
+    config = json.loads((ROOT / 'config.example.json').read_text(encoding='utf-8'))
+    action = next(a for a in config['tasks']['squad_assault'] if a['type'] == 'handle_squad_assault')
+    names = ['squad_assault_ready_unchecked', 'squad_assault_battle_auto_off',
+             'squad_assault_battle_auto_on', 'squad_assault_limit_unannotated']
+    frames = iter(names)
+    taps = []
+    class Replay:
+        current = None
+        screenshots = 0
+        def screenshot(self):
+            self.screenshots += 1
+            self.current = next(frames)
+            return (FIXTURES / (self.current + '.png')).read_bytes()
+        def tap(self, x, y):
+            taps.append((self.current, x, y))
+    device = Replay()
+    summary = handle_squad_assault(device, action, asset_root=ROOT, sleep=lambda _: None)
+    assert summary.matches == 1 and summary.continues == 0
+    assert device.screenshots == 4
+    assert len(taps) == 2
+    assert taps[0][0] == 'squad_assault_ready_unchecked'
+    assert taps[1] == ('squad_assault_battle_auto_off', 70, 360)
