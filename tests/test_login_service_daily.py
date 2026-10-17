@@ -267,7 +267,6 @@ def test_portrait_qr_waits_for_landscape_authorization_and_keeps_refresh_respons
 
     session.wait_for_authorization(clock() + 30, on_wait=refresh if with_refresh else None)
     assert session._authorized
-    assert not session._already_in_game
     assert matches == ['start_game_button.png']
     assert len(refreshes) == (1 if with_refresh else 0)
     assert calls == []
@@ -312,7 +311,7 @@ def test_login_cleanup_logs_extra_main_check_and_preserves_its_failure(tmp_path,
         assert current_execution().deadline == deadline
         assert '开始扫码登录收尾' in caplog.text
         assert '登录收尾动作已完成，额外复核主界面' not in caplog.text
-        assert actions[0]['type'] == 'finish_login_authorization'
+        assert actions[0]['type'] == 'required_template_tap'
         assert actions[0]['timeout_seconds'] == 30
         clock.sleep(4)
 
@@ -372,12 +371,9 @@ def test_expired_daily_scope_never_runs_more_actions(tmp_path, monkeypatch):
     assert current_execution() is None
 
 
-@pytest.mark.parametrize("marker", [
-    "start_game_button.png", "qq_agree_game_info.png", "main_reward_label.png",
-])
-def test_authorization_returns_on_first_confirmed_page_without_clicks_or_fixed_waits(tmp_path, marker):
+def test_authorization_returns_on_start_game_without_clicks_or_fixed_waits(tmp_path):
     def match(png, path, roi, threshold):
-        return ((900, 900), 1.0) if path.name == marker else (None, 0.0)
+        return ((900, 900), 1.0) if path.name == "start_game_button.png" else (None, 0.0)
 
     session, clock, calls = session_for(tmp_path, matcher=match)
     before = clock()
@@ -402,15 +398,42 @@ def test_disappeared_qr_or_unknown_loading_page_does_not_confirm_authorization(t
     assert not any("tap" in command for command, _ in calls)
 
 
-def test_already_entered_game_does_not_wait_for_start_button_again(tmp_path):
+@pytest.mark.parametrize('marker', ['qq_agree_game_info.png', 'main_reward_label.png'])
+def test_other_markers_never_confirm_scan_or_stop_refresh_polling(tmp_path, marker):
     def match(png, path, roi, threshold):
-        return ((1800, 500), 1.0) if path.name == "main_reward_label.png" else (None, 0.0)
+        return ((900, 900), 1.0) if path.name == marker else (None, 0.0)
 
     session, clock, calls = session_for(tmp_path, matcher=match)
-    session.wait_for_authorization(clock() + 1)
-    session.finish_login(clock() + 300)
+    refreshes = []
+    deadline = clock() + 1
+    with pytest.raises(DailyDeadlineExceeded):
+        session.wait_for_authorization(deadline, on_wait=lambda _: refreshes.append(clock()))
+    assert clock() == deadline
+    assert len(refreshes) == 2
+    assert not session._authorized
     assert not any("tap" in command for command, _ in calls)
-    assert session.run_daily(clock() + 300) == len(TASK_ORDER) - 1
+    with pytest.raises(RuntimeError, match='先完成扫码授权'):
+        session.finish_login(clock() + 300)
+
+
+def test_scan_cleanup_waits_for_start_game_without_clicking_second_agree(tmp_path):
+    state = {}
+
+    def match(png, path, roi, threshold):
+        if path.name == 'qq_agree_game_info.png':
+            return (880, 800), .99
+        if path.name == 'start_game_button.png':
+            return ((900, 900), 1) if state['clock']() >= 108 else (None, 0)
+        if path.name == 'main_reward_label.png':
+            return (1800, 500), 1
+        return None, 0
+
+    session, clock, calls = session_for(tmp_path, matcher=match)
+    state['clock'] = clock
+    session._authorized = True
+    session.finish_login(clock() + 60)
+    assert session._logged_in
+    assert [command[-2:] for command, _ in calls if 'tap' in command] == [['900', '900']]
 
 
 def test_login_wait_extends_past_old_40_second_authorization_timeout(tmp_path):
