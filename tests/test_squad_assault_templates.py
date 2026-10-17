@@ -5,6 +5,9 @@ Clipboard sources, in order: 95701b6b (rewards), 5a93ab88 (unchecked),
 The dialog's window chrome is removed with (1, 34, 737, 448); the other
 sources already contain the 736x414 game. All five are normalized to
 1920x1080 with INTER_CUBIC. Template crops omit the red annotation edges.
+The unannotated limit page is from f16e5b9b, cropped to (0, 32, 1064, 630)
+and normalized the same way. The limit template excludes the annotation
+line below the text in the earlier source.
 """
 
 from pathlib import Path
@@ -43,11 +46,16 @@ def match(name, frame):
 
 
 @pytest.mark.parametrize('frame', [
-    'rewards', 'ready_unchecked', 'quadruple_dialog', 'ready_checked', 'limit',
+    'rewards', 'ready_unchecked', 'quadruple_dialog', 'ready_checked', 'limit', 'limit_unannotated',
 ])
 def test_game_fixtures_use_the_runtime_resolution_without_window_chrome(frame):
     image = cv2.imdecode(np.frombuffer(fixture(frame), np.uint8), cv2.IMREAD_COLOR)
     assert image.shape == (1080, 1920, 3)
+
+
+def test_limit_text_matches_without_the_screenshot_annotation_border():
+    center, score = match('limit', 'limit_unannotated')
+    assert center is not None and score > .98
 
 
 @pytest.mark.parametrize('template,frame,center', [
@@ -62,7 +70,7 @@ def test_game_fixtures_use_the_runtime_resolution_without_window_chrome(frame):
     ('match', 'limit', (1753, 926)),
     ('continue', 'quadruple_dialog', (792, 617)),
     ('dialog', 'quadruple_dialog', (920, 328)),
-    ('limit', 'limit', (981, 1022)),
+    ('limit', 'limit', (981, 1018)),
 ])
 def test_templates_locate_the_actual_game_controls(template, frame, center):
     actual, score = match(template, frame)

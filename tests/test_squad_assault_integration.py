@@ -11,6 +11,29 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
+@pytest.mark.parametrize('fixture', ['squad_assault_limit', 'squad_assault_limit_unannotated'])
+def test_initial_limit_page_without_checkbox_finishes_without_clicking(fixture):
+    config = json.loads((ROOT / 'config.example.json').read_text(encoding='utf-8'))
+    action = next(a for a in config['tasks']['squad_assault']
+                  if a['type'] == 'handle_squad_assault')
+    frame = (FIXTURES / (fixture + '.png')).read_bytes()
+
+    class Replay:
+        screenshots = 0
+
+        def screenshot(self):
+            self.screenshots += 1
+            assert self.screenshots == 1, '已经到收益上限，应在首帧结束'
+            return frame
+
+        def tap(self, x, y):
+            pytest.fail('收益上限页不能点击四倍奖励或匹配')
+
+    summary = handle_squad_assault(Replay(), action, asset_root=ROOT, sleep=lambda _: None)
+    assert summary.matches == 0 and summary.continues == 0
+    assert summary.quadruple_disabled is False
+
+
 @pytest.mark.parametrize("initially_checked", [False, True])
 @pytest.mark.parametrize("with_dialog", [False, True])
 def test_real_frames_repeat_matches_until_limit_without_clicking_paid_option(

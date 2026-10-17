@@ -74,7 +74,7 @@ def handle_squad_assault(
     client, action: dict, *, template_matcher: Callable = find_template_in_png,
     asset_root: Path = Path("."), sleep: Callable[[float], None] = time.sleep,
 ) -> SquadAssaultSummary:
-    """首次必匹配一次；明确离开并回到准备页后才检查收益上限。"""
+    """准备页先检查收益上限，再关闭四倍奖励并匹配。"""
     for key in TARGET_KEYS:
         target = action[key]
         if "template" not in target or "main_menu" in target or "multimodal" in target:
@@ -151,14 +151,14 @@ def handle_squad_assault(
             LOGGER.info("小队突袭%s，%.2f 秒后重新截图", "页面被遮挡" if ready == "dimmed" else "尚未回到准备页", poll)
             wait(poll)
             continue
+        if match(png, "limit_marker") is not None:
+            LOGGER.info("小队突袭今日收益次数已达上限；结束匹配，交给后续动作返回主界面")
+            return SquadAssaultSummary(matches, continues, disabled)
         if awaiting_return:
             if not departed:
                 LOGGER.info("已发送匹配，尚未观察到离开准备页，不重复匹配")
                 wait(poll)
                 continue
-            if match(png, "limit_marker") is not None:
-                LOGGER.info("小队突袭回到准备页，今日收益次数已达上限；交给后续动作返回主界面")
-                return SquadAssaultSummary(matches, continues, disabled)
         checked = match(png, "quadruple_checked")
         unchecked = match(png, "quadruple_unchecked")
         if (checked is None) == (unchecked is None):
@@ -181,7 +181,7 @@ def handle_squad_assault(
             LOGGER.info("未确认小队突袭匹配按钮，等待重新截图")
             wait(poll)
             continue
-        LOGGER.info("小队突袭第%d次匹配，首次匹配前不检查收益上限", matches + 1)
+        LOGGER.info("小队突袭第%d次匹配：本帧未见收益上限提示，四倍奖励已关闭", matches + 1)
         tap(match_center)
         matches += 1
         awaiting_return = True

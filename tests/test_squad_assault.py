@@ -82,13 +82,17 @@ def setup(tmp_path):
     return tmp_path, template, action, run
 
 
-def test_first_round_is_do_while_even_if_initial_limit_is_visible(setup):
+@pytest.mark.parametrize('initial', [CAP, CHECKED | {'limit_marker'},
+                                    {'ready_marker', 'match_button', 'limit_marker'}])
+def test_initial_limit_stops_before_checkbox_or_match(setup, initial):
     _, _, _, run = setup
-    client, waits, summary = run([CAP, set(), CAP])
-    assert summary == SquadAssaultSummary(matches=1, continues=0, quadruple_disabled=False)
-    assert client.taps == [POINTS["match_button"]]
-    assert [number for number, key in client.probes if key == "limit_marker"] == [3]
-    assert waits == [1, 5]
+    client, waits, summary = run([initial])
+    assert summary == SquadAssaultSummary(matches=0, continues=0, quadruple_disabled=False)
+    assert client.taps == []
+    assert [number for number, key in client.probes if key == "limit_marker"] == [1]
+    assert not any(key in ('quadruple_checked', 'quadruple_unchecked', 'match_button')
+                   for _, key in client.probes)
+    assert waits == []
 
 
 def test_checked_is_clicked_once_and_only_explicit_unchecked_allows_matching(setup):
@@ -104,11 +108,11 @@ def test_optional_dialog_only_continues_once_and_does_not_count_as_departure(set
     _, _, _, run = setup
     dialog = Scene(CAP | {"dialog_marker", "continue_button"}, .45)
     dimmed_without_dialog_marker = Scene(CAP, .45)
-    client, _, summary = run([READY, dialog, dialog, dimmed_without_dialog_marker, CAP, set(), CAP])
+    client, _, summary = run([READY, dialog, dialog, dimmed_without_dialog_marker, READY, set(), CAP])
     assert summary.matches == 1 and summary.continues == 1
     assert client.taps == [POINTS["match_button"], POINTS["continue_button"]]
     assert client.screenshot_count == 7
-    assert [number for number, key in client.probes if key == "limit_marker"] == [7]
+    assert [number for number, key in client.probes if key == "limit_marker"] == [1, 5, 7]
 
 
 def test_no_dialog_polls_battle_every_five_seconds_and_repeats_until_limit(setup):
@@ -119,13 +123,24 @@ def test_no_dialog_polls_battle_every_five_seconds_and_repeats_until_limit(setup
     assert waits == [1, 5, 5, 1, 5]
 
 
-def test_still_ready_after_match_does_not_match_or_check_limit_again(setup):
+def test_still_ready_after_match_checks_limit_without_matching_again(setup):
     _, _, _, run = setup
-    client, waits, summary = run([READY, CAP, CAP, set(), CAP])
+    client, waits, summary = run([READY, READY, READY, set(), CAP])
     assert summary.matches == 1
     assert client.taps == [POINTS["match_button"]]
     assert waits == [1, 5, 5, 5]
-    assert [number for number, key in client.probes if key == "limit_marker"] == [5]
+    assert [number for number, key in client.probes if key == "limit_marker"] == [1, 2, 3, 5]
+
+
+def test_limit_after_match_stops_without_waiting_for_departure(setup):
+    _, _, _, run = setup
+    client, waits, summary = run([READY, {'ready_marker', 'match_button', 'limit_marker'}])
+    assert summary == SquadAssaultSummary(matches=1, continues=0, quadruple_disabled=False)
+    assert client.taps == [POINTS['match_button']]
+    assert client.screenshot_count == 2 and waits == [1]
+    assert [key for number, key in client.probes if number == 2] == [
+        'dialog_marker', 'continue_button', 'ready_marker', 'limit_marker',
+    ]
 
 
 @pytest.mark.parametrize("remaining_control", ["match_button", "quadruple_checked", "quadruple_unchecked"])
@@ -134,7 +149,7 @@ def test_missing_title_with_remaining_preparation_control_does_not_count_as_depa
     client, _, summary = run([READY, {remaining_control}, READY, set(), CAP])
     assert summary.matches == 1
     assert client.taps == [POINTS["match_button"]]
-    assert [number for number, key in client.probes if key == "limit_marker"] == [5]
+    assert [number for number, key in client.probes if key == "limit_marker"] == [1, 3, 5]
 
 
 def test_return_page_with_unknown_checkbox_keeps_observing_limit(setup):
@@ -148,7 +163,7 @@ def test_return_page_with_unknown_checkbox_keeps_observing_limit(setup):
 @pytest.mark.parametrize("visible", [set(), READY | {"quadruple_checked"}])
 def test_unknown_or_conflicting_checkbox_never_counts_as_off(setup, visible):
     root, template, action, _ = setup
-    client = SceneClient([visible | {"ready_marker", "match_button", "limit_marker"}], template)
+    client = SceneClient([visible | {"ready_marker", "match_button"}], template)
     with pytest.raises(VisualError, match="超时"):
         handle_squad_assault(client, {**action, "timeout_seconds": 10},
                              template_matcher=client.matcher, asset_root=root, sleep=lambda _: None)
@@ -172,7 +187,7 @@ def test_dialog_without_continue_never_clicks_dimmed_match_button(setup):
         handle_squad_assault(client, {**action, "timeout_seconds": 10},
                              template_matcher=client.matcher, asset_root=root, sleep=lambda _: None)
     assert client.taps == [POINTS["match_button"]]
-    assert not any(key == "limit_marker" for _, key in client.probes)
+    assert [number for number, key in client.probes if key == "limit_marker"] == [1]
 
 
 def test_shared_deadline_clips_wait_and_prevents_further_input(setup):
