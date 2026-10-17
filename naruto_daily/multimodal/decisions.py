@@ -64,6 +64,9 @@ class JevDecisionClient:
 
         def build_request(image):
             image = _prepare_image(image)
+            LOGGER.info('[多模态路由] channel=jev url=%s model=%s scene=%s',
+                        JEV_ENDPOINT, self._model, current_model_scene(),
+                        extra={'backend_only': True})
             payload = {
                 'model': self._model,
                 'state': [
