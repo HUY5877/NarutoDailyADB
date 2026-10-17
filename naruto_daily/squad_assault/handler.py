@@ -156,6 +156,8 @@ def handle_squad_assault(
                     if auto_center is None:
                         LOGGER.info("小队突袭未检测到“自动战斗中”文案，点击左侧自动按钮一次")
                         tap(AUTO_BATTLE_POINT)
+                    else:
+                        LOGGER.info("小队突袭已检测到“自动战斗中”文案，无需点击自动按钮")
                 else:
                     LOGGER.info("小队突袭标题未确认但准备页控件仍在，不认定离页或重复匹配")
             LOGGER.info("小队突袭%s，%.2f 秒后重新截图", "页面被遮挡" if ready == "dimmed" else "尚未回到准备页", poll)

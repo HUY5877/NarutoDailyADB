@@ -93,7 +93,6 @@ class DailySession:
         self._command_timeout = float(command_timeout)
         self._deadline: float | None = None
         self._authorized = False
-        self._already_in_game = False
         self._logged_in = False
         self.client = AdbClient(Path(adb_path), serial=serial,
                                 run_command=self._run_text, run_binary=self._run_binary)
@@ -147,18 +146,17 @@ class DailySession:
                             asset_root=self.asset_root, user_options=self.user_options)
 
     def wait_for_authorization(self, deadline: float, *, on_wait=None) -> None:
-        """观察扫码后的明确页面，立即交接；按钮操作留给登录收尾。"""
+        """只以开始游戏按钮确认扫码授权，按钮操作留给登录收尾。"""
         with execution_scope(deadline, clock=self._clock, sleep=self._sleep_impl):
             self._authorized = False
-            self._already_in_game = False
             self._logged_in = False
             self._set_deadline(deadline)
             if not self._login_actions or self._login_actions[0]["type"] != "finish_login_authorization":
                 raise ConfigError("扫码登录必须先确认授权并开始游戏")
             action = self._login_actions[0]
-            targets = (action["start_game"], action["second_authorization"], self._main_marker)
+            target = action["start_game"]
             images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
-            LOGGER.info("等待手机扫码确认；识别到授权后的页面即结束二维码等待")
+            LOGGER.info("等待手机扫码确认；识别到开始游戏按钮才结束二维码等待")
             def observed():
                 self._remaining()
                 png = self.client.screenshot()
@@ -167,21 +165,12 @@ class DailySession:
                 # 继续交给刷新回调和原截止时间；恢复横屏后再确认扫码授权。
                 if frame is not None and frame.shape[0] > frame.shape[1]:
                     return False
-                for index, target in enumerate(targets):
-                    if index == 2 and on_wait is not None and target.get('main_menu'):
-                        from .qr_navigation import pre_login_image
-                        # Known QR/login pages cannot be the game home screen.
-                        # Keep Redis polling responsive instead of issuing a model
-                        # request on every observation of a waiting QR code.
-                        if pre_login_image(png):
-                            return False
-                    center, _ = images.match(png, target, timeout_seconds=self._remaining())
-                    if center is not None:
-                        self._remaining()
-                        self._authorized = True
-                        self._already_in_game = index == 2
-                        LOGGER.info("已确认扫码授权，识别到%s，立即结束二维码等待", target.get("name", "游戏主界面"))
-                        return True
+                center, _ = images.match(png, target, timeout_seconds=self._remaining())
+                if center is not None:
+                    self._remaining()
+                    self._authorized = True
+                    LOGGER.info("已确认扫码授权，识别到开始游戏按钮，立即结束二维码等待")
+                    return True
                 return False
 
             while True:
@@ -202,9 +191,15 @@ class DailySession:
                 raise RuntimeError("必须先完成扫码授权")
             self._logged_in = False
             self._set_deadline(deadline)
-            actions = deepcopy(self._login_actions[1:] if self._already_in_game else self._login_actions)
-            if not self._already_in_game:
-                actions[0]["timeout_seconds"] = self._remaining()
+            actions = deepcopy(self._login_actions)
+            start = actions[0]
+            # 扫码收尾只点击开始游戏；保存账号登录继续使用原授权流程。
+            actions[0] = {
+                **start["start_game"], "type": "required_template_tap",
+                "timeout_seconds": self._remaining(), "poll_seconds": start["poll_seconds"],
+                "pre_click_wait_seconds": start.get("pre_click_wait_seconds", 3),
+                "post_click_wait_seconds": start.get("post_click_wait_seconds", 3),
+            }
             LOGGER.info("开始扫码登录收尾，执行登录收尾动作；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
             self._runner().run(actions)
             LOGGER.info("登录收尾动作已完成，额外复核主界面；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))

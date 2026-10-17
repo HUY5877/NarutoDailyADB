@@ -287,20 +287,20 @@ def test_invalid_main_entry_configuration_is_rejected(tmp_path, change):
 
 
 @pytest.mark.parametrize('found', [True, False])
-def test_scan_handoff_uses_model_home_confirmation_and_never_clicks(monkeypatch, tmp_path, found):
+def test_scan_handoff_does_not_use_home_model_as_authorization(monkeypatch, tmp_path, found):
     from test_login_service_daily import session_for
+    observations = []
     class MainModel:
         def __init__(self, *a): pass
         def match(self, image, target, timeout):
             assert target['main_menu'] == 'home' and 0 < timeout <= 1
+            observations.append(image)
             return ((960, 540), 1) if found else (None, 0)
     monkeypatch.setattr(main_screen, 'MainScreenRecognition', MainModel)
     session, clock, calls = session_for(tmp_path, matcher=lambda *a: (None, 0),
         change=lambda data: data['tasks']['login'][-1].update(main_page_marker=target('home')))
-    if found:
+    with pytest.raises(TimeoutError):
         session.wait_for_authorization(clock() + 1)
-        assert session._authorized and session._already_in_game
-    else:
-        with pytest.raises(TimeoutError): session.wait_for_authorization(clock() + 1)
-        assert not session._authorized
+    assert not session._authorized
+    assert observations == []
     assert not any('tap' in command for command, _ in calls)
