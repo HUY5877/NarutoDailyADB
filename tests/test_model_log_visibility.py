@@ -104,6 +104,41 @@ def test_request_diagnostics_are_complete_in_backend_and_absent_from_public_logs
     assert "stop_reason=retries_exhausted" in text
 
 
+@pytest.mark.parametrize("model,expected", [
+    ("", "typesafe/jev-1.14"),
+    ("typesafe/custom", "typesafe/custom"),
+])
+def test_jev_url_and_effective_model_are_terminal_only(logs, monkeypatch, model, expected):
+    from naruto_daily.multimodal.decisions import JevDecisionClient
+    from naruto_daily.multimodal.prompt_jev import ChoicePrompt
+
+    monkeypatch.setenv("JEV_API_KEY", "jev-private-key")
+    frame = cv2.imencode(".png", np.zeros((360, 640, 3), np.uint8))[1].tobytes()
+    decision = JevDecisionClient(
+        {"JEV_API_KEY": "jev-private-key", "JEV_MODEL": model},
+        open_request=lambda *args, **kwargs: BytesIO(
+            b'{"answers":{"decision":{"choice":"home"}}}'
+        ),
+    )
+    with diagnostics.model_request_context("主界面识别/home"):
+        result = decision.complete_json(
+            frame, ChoicePrompt("private-prompt", {"home": {"found": True}}),
+            request_timeout=30,
+        )
+    assert result == {"found": True}
+    LOGGER.info("主界面识别完成")
+
+    routes = [line for line in logs.backend.getvalue().splitlines() if "[多模态路由]" in line]
+    assert len(routes) == 1
+    assert "channel=jev" in routes[0]
+    assert "url=https://openrouter.ai/api/alpha/decisions" in routes[0]
+    assert f"model={expected}" in routes[0]
+    assert "scene=主界面识别/home" in routes[0]
+    assert [event["message"] for event in logs.events] == ["主界面识别完成"]
+    assert "jev-private-key" not in logs.backend.getvalue()
+    assert "private-prompt" not in logs.backend.getvalue()
+
+
 def test_sync_request_retry_and_final_api_exception_are_backend_only(logs):
     clock, calls = Clock(), []
 

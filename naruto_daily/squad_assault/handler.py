@@ -181,7 +181,7 @@ def handle_squad_assault(
             LOGGER.info("未确认小队突袭匹配按钮，等待重新截图")
             wait(poll)
             continue
-        LOGGER.info("小队突袭第%d次匹配，首次匹配前不检查收益上限", matches + 1)
+        LOGGER.info("小队突袭第%d次匹配", matches + 1)
         tap(match_center)
         matches += 1
         awaiting_return = True

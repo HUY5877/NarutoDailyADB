@@ -91,6 +91,8 @@ def test_routing_urls_stay_in_backend_while_business_logs_reach_client():
     assert output.count('[多模态路由]') == 3
     assert output.count('url=' + CHANNELS[1].base_url + '/chat/completions') == 2
     assert output.count('url=' + CHANNELS[0].base_url + '/chat/completions') == 1
+    assert output.count('model=deepseek-vision') == 2
+    assert output.count('model=yuwan-vision') == 1
     assert all(secret not in output for secret in ('yuwan-private', 'deepseek-private', 'redis-private'))
 
 

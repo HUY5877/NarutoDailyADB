@@ -13,8 +13,9 @@ FIXTURES = ROOT / "tests" / "fixtures"
 
 @pytest.mark.parametrize("initially_checked", [False, True])
 @pytest.mark.parametrize("with_dialog", [False, True])
+@pytest.mark.parametrize("limit_fixture", ["squad_assault_limit", "squad_assault_limit_unannotated"])
 def test_real_frames_repeat_matches_until_limit_without_clicking_paid_option(
-    initially_checked, with_dialog,
+    initially_checked, with_dialog, limit_fixture,
 ):
     config = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
     action = next(a for a in config["tasks"]["squad_assault"]
@@ -25,7 +26,7 @@ def test_real_frames_repeat_matches_until_limit_without_clicking_paid_option(
     if with_dialog:
         names += ["squad_assault_quadruple_dialog"] * 2
     names += ["abundance_battle", "squad_assault_ready_unchecked",
-              "abundance_battle", "squad_assault_limit"]
+              "abundance_battle", limit_fixture]
     frames = iter((name, (FIXTURES / (name + ".png")).read_bytes()) for name in names)
     taps, waits = [], []
 
