@@ -83,6 +83,17 @@ def test_dry_run_never_sends_input_or_sleeps(tmp_path):
     assert sleeps == []
 
 
+def test_squad_assault_is_an_independently_runnable_command(tmp_path):
+    client = FakeClient(['a'])
+    path = config_path(tmp_path)
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    payload['tasks']['squad_assault'] = [{'type': 'tap', 'x': 10, 'y': 20}]
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    assert main(['run', 'squad_assault', '--config', str(path)],
+                client_factory=factory_for(client), sleep=lambda _: None) == 0
+    assert client.inputs == [('tap', 10, 20)]
+
+
 def test_run_all_counts_down_before_input(tmp_path):
     client = FakeClient(["a"])
     events = []

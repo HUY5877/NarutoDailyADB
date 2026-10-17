@@ -61,11 +61,16 @@ def configured_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(environment, 'PROJECT_ROOT', tmp_path)
     monkeypatch.setattr(environment, '_initialized', True)
     (tmp_path / '.env').write_text('', encoding='utf-8')
-    for name in (*environment.CLOUD_ENV_NAMES, environment.INHERITED_CONFIG_MARKER,
-                 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_KV_NAMESPACE_ID'):
+    for name in (*environment.CLOUD_ENV_NAMES, environment.INHERITED_CONFIG_MARKER, 'APP_ENV',
+                 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_KV_NAMESPACE_ID',
+                 'CLOUDFLARE_KV_NAMESPACE_ID_PROD', 'CLOUDFLARE_KV_NAMESPACE_ID_TEST'):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv('YUWAN_MODEL', 'step-3.7-flash')
     monkeypatch.setenv('YUWAN_API_KEY', 'test-secret')
     monkeypatch.setenv('REDIS_URL', 'redis://test.invalid/0')
+    monkeypatch.setenv('REDIS_QUEUE_KEY', 'naruto:login:tasks')
+    monkeypatch.setenv('OSS_KEY_PREFIX', 'login')
+    monkeypatch.setenv('MULTIMODAL_ROUTING_COUNTER_KEY', 'naruto:multimodal:route:sequence')
+    monkeypatch.setenv('LDPLAYER_STATE_DIR', '.data/login-service/ldplayer')
     monkeypatch.setenv('LOGIN_ACCOUNT_NAME', '离落花开花败')
     return counter

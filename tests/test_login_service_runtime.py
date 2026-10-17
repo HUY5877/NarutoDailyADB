@@ -151,6 +151,7 @@ def test_config_rejects_invalid_values(env):
 
 def test_config_allows_oss_and_non_loopback_credentials():
     config = load_config({
+        **OSS_ENV,
         "HOST": "0.0.0.0", "SERVICE_TOKEN": "unique-token-for-test",
         "OSS_REGION": "oss-cn-hangzhou", "OSS_BUCKET": "example", "OSS_ACCESS_KEY_ID": "test-id",
         "OSS_ACCESS_KEY_SECRET": "test-secret", "OSS_STS_TOKEN": "test-sts", "OSS_KEY_PREFIX": "/login/test/",
@@ -159,7 +160,7 @@ def test_config_allows_oss_and_non_loopback_credentials():
     assert config.oss_sts_token == "test-sts"
 
 
-@pytest.mark.parametrize("name", OSS_ENV)
+@pytest.mark.parametrize("name", ["OSS_REGION", "OSS_BUCKET", "OSS_ACCESS_KEY_ID", "OSS_ACCESS_KEY_SECRET"])
 @pytest.mark.parametrize("value", [None, "", " \t "])
 def test_config_requires_each_oss_setting(name, value):
     env = dict(OSS_ENV)

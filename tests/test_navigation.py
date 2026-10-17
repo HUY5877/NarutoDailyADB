@@ -91,7 +91,7 @@ def test_every_reward_task_uses_same_swipe_for_search_and_alignment(action, alig
 
 
 def test_reward_search_default_limit_is_shared_by_all_tasks():
-    assert len(reward_card_actions()) == 6
+    assert len(reward_card_actions()) == 7
     for action in reward_card_actions():
         client = NavigationClient()
         summary = navigate_to_card(client, action, template_matcher=lambda *args: (None, .1),

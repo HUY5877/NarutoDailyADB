@@ -36,6 +36,58 @@ def test_load_settings_returns_validated_values(tmp_path):
     assert settings.tasks["sign_in"][0] == {"type": "tap", "x": 100, "y": 200}
 
 
+def squad_action():
+    targets = ("ready_marker", "match_button", "quadruple_checked", "quadruple_unchecked",
+               "continue_button", "limit_marker", "dialog_marker")
+    return {
+        "type": "handle_squad_assault", "timeout_seconds": 1800,
+        "poll_seconds": 5, "post_click_wait_seconds": 1,
+        **{key: dict(name=key, template=f"assets/{key}.png", left=0, top=0,
+                     right=1920, bottom=1080, threshold=.9) for key in targets},
+    }
+
+
+def test_squad_assault_configuration_accepts_only_local_cv_targets(tmp_path):
+    payload = valid_payload()
+    payload["screen"] = {"width": 1920, "height": 1080}
+    payload["tasks"]["squad_assault"] = [squad_action()]
+    assert load_settings(write_config(tmp_path, payload)).tasks["squad_assault"] == [squad_action()]
+    payload["tasks"].pop("squad_assault")
+    assert "squad_assault" not in load_settings(write_config(tmp_path, payload)).tasks
+
+
+@pytest.mark.parametrize('change,error', [
+    (lambda action: action.pop('ready_marker'), '缺少字段'),
+    (lambda action: action.pop('dialog_marker'), '缺少字段'),
+    (lambda action: action.update(multimodal={}), '未知字段'),
+    (lambda action: action.update(timeout_seconds=True), 'timeout_seconds'),
+    (lambda action: action.update(timeout_seconds=3601), 'timeout_seconds'),
+    (lambda action: action.update(poll_seconds=0), 'poll_seconds'),
+    (lambda action: action.update(poll_seconds=6), 'poll_seconds'),
+    (lambda action: action.update(timeout_seconds=1, poll_seconds=5), 'poll_seconds'),
+    (lambda action: action.update(post_click_wait_seconds=-1), 'post_click_wait_seconds'),
+    (lambda action: action['match_button'].update(template='../private.png'), '相对路径'),
+    (lambda action: action['quadruple_unchecked'].update(left=-1), '坐标'),
+    (lambda action: action['continue_button'].update(threshold=0), 'threshold'),
+    (lambda action: action['limit_marker'].update(name=''), 'name'),
+])
+def test_invalid_squad_assault_configuration_fails_before_actions(tmp_path, change, error):
+    payload = valid_payload()
+    payload['screen'] = {'width': 1920, 'height': 1080}
+    action = squad_action()
+    change(action)
+    payload['tasks']['squad_assault'] = [action]
+    with pytest.raises(ConfigError, match=error):
+        load_settings(write_config(tmp_path, payload))
+
+
+def test_squad_assault_configuration_rejects_unscaled_screen(tmp_path):
+    payload = valid_payload()
+    payload['tasks']['squad_assault'] = [squad_action()]
+    with pytest.raises(ConfigError, match='1920×1080'):
+        load_settings(write_config(tmp_path, payload))
+
+
 def test_optional_image_retry_has_no_task_wait_budget(tmp_path):
     payload = valid_payload()
     payload["tasks"]["sign_in"] = [{"type": "wait", "seconds": 300}, {

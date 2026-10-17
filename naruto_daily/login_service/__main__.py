@@ -14,7 +14,7 @@ from .ldplayer import LDPlayerError
 
 
 def reset_pool_on_startup(env_file: Path) -> None:
-    """Reset machine-local bindings before loading cloud/service configuration."""
+    """Reset bindings in the selected profile's configured state directory."""
     from .ldplayer import LDPlayerManager
 
     local = environment._read_local_dotenv(env_file)
@@ -33,7 +33,7 @@ def reset_pool_on_startup(env_file: Path) -> None:
         console = environment.PROJECT_ROOT / console
     if not console.is_file():
         raise environment.EnvironmentConfigError("LDPLAYER_CONSOLE_PATH must name an existing file")
-    state_dir = Path(values.get("LDPLAYER_STATE_DIR") or ".data/login-service/ldplayer")
+    state_dir = Path(environment.require_environment(values, 'LDPLAYER_STATE_DIR'))
     if not state_dir.is_absolute():
         state_dir = environment.PROJECT_ROOT / state_dir
     manager = LDPlayerManager(console.resolve(), "", state_dir.resolve(),
@@ -81,8 +81,8 @@ def main(argv: list[str] | None = None) -> None:
     from .config import load_config
 
     try:
-        reset_pool_on_startup(args.env_file)
         environment.initialize_environment(args.env_file)
+        reset_pool_on_startup(args.env_file)
         if not os.environ.get("REDIS_URL", "").strip():
             raise environment.EnvironmentConfigError('请在 Cloudflare KV 配置非空的 REDIS_URL')
         config = load_config()

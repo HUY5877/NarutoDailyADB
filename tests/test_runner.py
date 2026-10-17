@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -319,6 +320,37 @@ def test_completed_card_skips_only_prayer_handler_and_keeps_later_tasks(caplog):
 
     assert client.calls == [("tap", 1, 2)]
     assert "组织祈福今日已完成，跳过对应页面处理" in caplog.text
+
+
+@pytest.mark.parametrize('completed', [False, True])
+def test_squad_assault_dispatch_or_completed_skip_keeps_return_and_secret_route(monkeypatch, completed):
+    from naruto_daily import runner
+    events = []
+    client = RecordingClient()
+    handler = {'type': 'handle_squad_assault'}
+    monkeypatch.setattr(runner, 'navigate_to_card',
+                        lambda *a, **kw: SimpleNamespace(completed=completed))
+
+    def squad(device, action, **kwargs):
+        assert device is client and action is handler
+        assert kwargs['template_matcher'] is matcher and kwargs['asset_root'] == Path('assets-root')
+        events.append('squad')
+
+    matcher = lambda *a: (None, 0)
+    monkeypatch.setattr(runner, 'handle_squad_assault', squad)
+    monkeypatch.setattr(runner, 'return_to_main', lambda *a, **kw: events.append('home'))
+    monkeypatch.setattr(runner, 'enter_secret_realm', lambda *a, **kw: events.append('entry') or True)
+    monkeypatch.setattr(runner, 'handle_secret_realm', lambda *a, **kw: events.append('secret'))
+    actions = [
+        {'type': 'find_card_and_click', 'name': '完成1次小队突袭',
+         'completed_skip_type': 'handle_squad_assault'},
+        handler, {'type': 'return_to_main'},
+        {'type': 'enter_secret_realm'}, {'type': 'handle_secret_realm'},
+    ]
+    summary = ActionRunner(client, sleep=lambda _: None, template_matcher=matcher,
+                           asset_root=Path('assets-root')).run(actions)
+    assert events == ([] if completed else ['squad']) + ['home', 'entry', 'secret']
+    assert summary.action_count == len(actions) and not client.calls
 
 
 def test_action_runner_dispatches_organization_prayer():

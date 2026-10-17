@@ -16,12 +16,12 @@ from redis.backoff import NoBackoff
 from redis.retry import Retry
 from redis.asyncio.retry import Retry as AsyncRetry
 
-from naruto_daily.common.environment import EnvironmentConfigError, read_environment
+from naruto_daily.common.environment import EnvironmentConfigError, read_environment, require_environment
+from naruto_daily.common.namespace import validate_redis_key
 from .channels import CHANNELS, Channel, channel_values
 
 
 LOGGER = logging.getLogger('naruto_daily')
-ROUTING_COUNTER_KEY = 'naruto:multimodal:route:sequence'
 REDIS_TIMEOUT_SECONDS = 5
 
 
@@ -33,6 +33,7 @@ class GatewayRoutingError(OSError):
 class GatewaySettings:
     channels: tuple[Channel, ...]
     redis_url: str = field(repr=False)
+    routing_counter_key: str
 
 
 def load_gateway_settings(values: Mapping[str, str | None] | None = None) -> GatewaySettings:
@@ -57,7 +58,9 @@ def load_gateway_settings(values: Mapping[str, str | None] | None = None) -> Gat
             raise ValueError
     except ValueError:
         raise EnvironmentConfigError('多模态路由需要有效的 REDIS_URL（redis:// 或 rediss://）') from None
-    return GatewaySettings(tuple(active), redis_url)
+    counter_key = validate_redis_key(require_environment(values, 'MULTIMODAL_ROUTING_COUNTER_KEY'),
+                                     'MULTIMODAL_ROUTING_COUNTER_KEY')
+    return GatewaySettings(tuple(active), redis_url, counter_key)
 
 
 def _redis_client(url):
@@ -90,7 +93,7 @@ class MultimodalGateway:
     def select(self):
         try:
             with _redis_client(self.settings.redis_url) as client:
-                sequence = client.incr(ROUTING_COUNTER_KEY)
+                sequence = client.incr(self.settings.routing_counter_key)
         except Exception:
             raise GatewayRoutingError('多模态路由 Redis INCR 失败') from None
         return self._channel(sequence)
@@ -99,7 +102,7 @@ class MultimodalGateway:
         # 每次使用当前事件循环的连接，兼容普通识别的短生命周期 asyncio.run。
         try:
             async with _async_redis_client(self.settings.redis_url) as client:
-                sequence = await client.incr(ROUTING_COUNTER_KEY)
+                sequence = await client.incr(self.settings.routing_counter_key)
         except Exception:
             raise GatewayRoutingError('多模态路由 Redis INCR 失败') from None
         return self._channel(sequence)

@@ -4,7 +4,8 @@ import pytest
 
 from naruto_daily.common.execution import execution_scope
 from naruto_daily.common.visual import VisualError
-from naruto_daily.multimodal.prompts import BATTLE_COMPLETION, SECRET_BATTLE_REALM, SECRET_REALM_TICKETS
+from naruto_daily.multimodal.prompt_jev import BATTLE_COMPLETION
+from naruto_daily.multimodal.prompts import SECRET_BATTLE_REALM, SECRET_REALM_TICKETS
 from naruto_daily.secret_realm import handler
 from test_battle import Clock
 from test_secret_realm import secret_action

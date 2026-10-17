@@ -16,6 +16,14 @@ from test_battle import Clock, battle_config, target
 from test_battle_retry_frames import Device, model_for, request_image, response_for
 
 
+@pytest.fixture(autouse=True)
+def offline_jev_environment(monkeypatch, configured_environment):
+    from naruto_daily.multimodal import decisions
+    monkeypatch.setenv('JEV_API_KEY', 'offline-jev-key')
+    # These timing tests use symbolic frames; real PNG resizing has dedicated tests.
+    monkeypatch.setattr(decisions, '_prepare_image', lambda image: image)
+
+
 class Frames:
     def __init__(self):
         self.frames = []
@@ -248,7 +256,7 @@ def test_workflow_read_ignores_stage_cap_and_retries_new_frames(tmp_path):
         if len(requests) <= 4:
             clock.advance(timeout)
             raise TimeoutError('offline timeout')
-        return response_for(b'room')
+        return response_for(b'room', decision=False)
 
     action = dict(timeout_seconds=.1, multimodal=dict(max_calls=1, timeout_seconds=30))
     model = model_for(tmp_path, clock, request, clock.advance)

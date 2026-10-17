@@ -4,7 +4,7 @@ import pytest
 
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.model_workflow import ModelWorkflow
-from naruto_daily.equipment import prompts
+from naruto_daily.multimodal import prompt_jev, prompts
 from naruto_daily.equipment.handler import (
     handle_equipment_upgrade, lowest_equipment, _finish_material,
     MATERIAL_POINTS, EQUIPMENT_POINTS, BLANK, MATERIAL_BUTTON, AUTO_STOP, START_SWEEP, ADVANCE,
@@ -88,9 +88,9 @@ def test_all_six_slots_are_opened_left_to_right_before_one_advance_check(caplog)
     with caplog.at_level('INFO', logger='naruto_daily'):
         client, model = run(overview(), *filled_slots(), advance(False))
     assert client.taps == [EQUIPMENT_POINTS[4]] + [p for slot in MATERIAL_POINTS for p in (slot, BLANK)]
-    assert model.prompts.count(prompts.MATERIAL_ENTRY) == 6
-    assert model.prompts.count(prompts.ADVANCE) == 1
-    assert model.prompts[-1] == prompts.ADVANCE
+    assert model.prompts.count(prompt_jev.EQUIPMENT_MATERIAL_ENTRY) == 6
+    assert model.prompts.count(prompt_jev.EQUIPMENT_ADVANCE) == 1
+    assert model.prompts[-1] == prompt_jev.EQUIPMENT_ADVANCE
     assert '材料6/6' in caplog.text
 
 
@@ -111,8 +111,8 @@ def test_mixed_slots_synthesize_sweep_equip_then_advance_and_select_new_lowest()
     assert client.taps.count(START_SWEEP) == 1
     assert client.taps.count(MATERIAL_BUTTON) == 7
     assert client.taps.count(ADVANCE) == 1
-    assert model.prompts.count(prompts.ADVANCE) == 1
-    assert model.prompts[:model.prompts.index(prompts.ADVANCE)].count(prompts.MATERIAL_ENTRY) == 6
+    assert model.prompts.count(prompt_jev.EQUIPMENT_ADVANCE) == 1
+    assert model.prompts[:model.prompts.index(prompt_jev.EQUIPMENT_ADVANCE)].count(prompt_jev.EQUIPMENT_MATERIAL_ENTRY) == 6
 
 
 def test_no_advance_after_material_operation_starts_another_full_round():
@@ -121,7 +121,7 @@ def test_no_advance_after_material_operation_starts_another_full_round():
         overview(), *filled_slots(), advance(False),
     )
     assert [p for p in client.taps if p in MATERIAL_POINTS] == list(MATERIAL_POINTS) * 2
-    assert model.prompts.count(prompts.ADVANCE) == 2
+    assert model.prompts.count(prompt_jev.EQUIPMENT_ADVANCE) == 2
     assert ADVANCE not in client.taps
 
 
@@ -160,7 +160,7 @@ def test_advance_without_level_change_continues_full_material_round(advance_roun
     )
     round_taps = [EQUIPMENT_POINTS[4]] + [p for slot in MATERIAL_POINTS for p in (slot, BLANK)]
     assert client.taps == (round_taps + [ADVANCE]) * advance_rounds + round_taps
-    assert model.prompts.count(prompts.ADVANCE) == advance_rounds + 1
+    assert model.prompts.count(prompt_jev.EQUIPMENT_ADVANCE) == advance_rounds + 1
 
 
 def test_sweep_with_partial_materials_rechecks_stamina_on_same_slot_then_finishes():
@@ -173,7 +173,7 @@ def test_sweep_with_partial_materials_rechecks_stamina_on_same_slot_then_finishe
     assert client.taps.count(START_SWEEP) == 2
     first_next_slot = client.taps.index(MATERIAL_POINTS[1])
     assert client.taps[:first_next_slot].count(MATERIAL_POINTS[0]) == 1
-    assert model.prompts.count(prompts.STAMINA) == 2
+    assert model.prompts.count(prompts.EQUIPMENT_STAMINA) == 2
 
 
 def test_partial_sweep_low_stamina_exits_without_skipping_to_next_slot_or_advancing():
@@ -184,7 +184,7 @@ def test_partial_sweep_low_stamina_exits_without_skipping_to_next_slot_or_advanc
     assert [p for p in client.taps if p in MATERIAL_POINTS] == [MATERIAL_POINTS[0]]
     assert client.taps.count(START_SWEEP) == 1
     assert client.taps.count(MATERIAL_BUTTON) == 2
-    assert prompts.ADVANCE not in model.prompts
+    assert prompt_jev.EQUIPMENT_ADVANCE not in model.prompts
 
 
 def test_unchecked_auto_stop_is_confirmed_once_before_starting_sweep(caplog):
@@ -193,7 +193,7 @@ def test_unchecked_auto_stop_is_confirmed_once_before_starting_sweep(caplog):
 
     class RecordingModel(Model):
         def complete_json(self, png, prompt, **kwargs):
-            if prompt == prompts.STAMINA:
+            if prompt == prompts.EQUIPMENT_STAMINA:
                 observed.append((png, len(client.taps)))
             return super().complete_json(png, prompt, **kwargs)
 
@@ -232,9 +232,9 @@ def test_animation_finishes_and_result_layer_closes_before_reading_material():
 
     class GuardModel(Model):
         def complete_json(self, png, prompt, **kwargs):
-            if prompt == prompts.SWEEP_RESULT:
+            if prompt == prompts.EQUIPMENT_SWEEP_RESULT:
                 checks.append(client.taps.count(BLANK))
-            if prompt == prompts.MATERIAL:
+            if prompt == prompt_jev.EQUIPMENT_MATERIAL:
                 assert client.taps.count(BLANK) == 2
             return super().complete_json(png, prompt, **kwargs)
 
@@ -256,7 +256,7 @@ def test_late_sweep_result_cannot_dismiss_or_click_material(monkeypatch):
 
     class LateModel(Model):
         def complete_json(self, png, prompt, **kwargs):
-            if prompt == prompts.SWEEP_RESULT:
+            if prompt == prompts.EQUIPMENT_SWEEP_RESULT:
                 now[0] = 150
             return super().complete_json(png, prompt, **kwargs)
 
@@ -530,22 +530,36 @@ def test_uncertain_stamina_or_wrong_layer_never_starts_sweep(bad):
     assert AUTO_STOP not in client.taps
 
 
-@pytest.mark.parametrize('slots', [[], [1], [1, 2, 3], [2, 3]])
-def test_takeout_clicks_all_three_boxes_and_repeats_if_any_remain(slots):
+@pytest.mark.parametrize('can_claim', [False, True])
+def test_takeout_clicks_all_six_positions_and_repeats_while_claimable(can_claim):
     client = Client()
-    answers = [dict(page='takeout', claimable_slots=slots)]
-    if slots:
-        answers.append(dict(page='takeout', claimable_slots=[]))
-    handle_ichiraku_takeout(client, action(), model=Model(*answers), sleep=lambda _: None)
-    assert client.taps == [(450, 520), (880, 520), (1310, 520)] * (2 if slots else 1)
+    answers = [dict(page='takeout', can_claim=can_claim)]
+    if can_claim:
+        answers.append(dict(page='takeout', can_claim=False))
+    model = Model(*answers)
+    handle_ichiraku_takeout(client, action(), model=model, sleep=lambda _: None)
+    points = [(450, 520), (550, 520), (880, 520), (1100, 520), (1310, 520), (1650, 520)]
+    assert client.taps == points * (2 if can_claim else 1)
+    assert all(prompt is prompt_jev.TAKEOUT_PROMPT
+               and isinstance(prompt, prompt_jev.ChoicePrompt) for prompt in model.prompts)
 
 
 def test_takeout_unrecognized_page_does_not_start_another_round():
     client = Client()
     with pytest.raises(VisualError):
-        handle_ichiraku_takeout(client, action(), model=Model(dict(page='unknown'), dict(page='unknown')),
-                               sleep=lambda _: None)
-    assert client.taps == [(450, 520), (880, 520), (1310, 520)]
+        handle_ichiraku_takeout(client, action(), model=Model(
+            dict(page='unknown', can_claim=None), dict(page='unknown', can_claim=None)),
+            sleep=lambda _: None)
+    assert client.taps == [(450, 520), (550, 520), (880, 520), (1100, 520), (1310, 520), (1650, 520)]
+
+
+@pytest.mark.parametrize('can_claim', [None, 0, 1, 'true', 'false', [], {}])
+def test_takeout_non_boolean_claimability_does_not_start_another_round(can_claim):
+    client = Client()
+    answer = dict(page='takeout', can_claim=can_claim)
+    with pytest.raises(VisualError):
+        handle_ichiraku_takeout(client, action(), model=Model(answer, answer), sleep=lambda _: None)
+    assert client.taps == [(450, 520), (550, 520), (880, 520), (1100, 520), (1310, 520), (1650, 520)]
 
 
 def test_late_model_response_cannot_trigger_click(monkeypatch):
@@ -562,20 +576,22 @@ def test_late_model_response_cannot_trigger_click(monkeypatch):
     assert not client.taps
 
 
-def test_takeout_reward_overlay_dismissed_after_three_clicks():
+def test_takeout_reward_overlay_dismissed_after_six_clicks():
     client = Client()
     handle_ichiraku_takeout(client, action(), model=Model(
-        dict(page='reward'),
-        dict(page='takeout', claimable_slots=[])), sleep=lambda _: None)
-    assert client.taps == [(450, 520), (880, 520), (1310, 520), (1550, 740)]
+        dict(page='reward', can_claim=None),
+        dict(page='takeout', can_claim=False)), sleep=lambda _: None)
+    assert client.taps == [
+        (450, 520), (550, 520), (880, 520), (1100, 520), (1310, 520), (1650, 520), (1550, 740)
+    ]
 
 
-def test_takeout_repeats_three_clicks_after_reward_closes_with_remaining_box():
+def test_takeout_repeats_six_clicks_after_reward_closes_while_claimable():
     client = Client()
     handle_ichiraku_takeout(client, action(), model=Model(
-        dict(page='reward'), dict(page='takeout', claimable_slots=[3]),
-        dict(page='takeout', claimable_slots=[])), sleep=lambda _: None)
-    points = [(450, 520), (880, 520), (1310, 520)]
+        dict(page='reward', can_claim=None), dict(page='takeout', can_claim=True),
+        dict(page='takeout', can_claim=False)), sleep=lambda _: None)
+    points = [(450, 520), (550, 520), (880, 520), (1100, 520), (1310, 520), (1650, 520)]
     assert client.taps == points + [(1550, 740)] + points
 
 

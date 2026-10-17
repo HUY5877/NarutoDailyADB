@@ -10,7 +10,10 @@ from typing import Mapping
 from urllib.parse import urlsplit
 
 from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS
-from naruto_daily.common.environment import EnvironmentConfigError
+from naruto_daily.common.environment import EnvironmentConfigError, require_environment
+from naruto_daily.common.namespace import (
+    DEFAULT_OSS_KEY_PREFIX, DEFAULT_REDIS_QUEUE_KEY, validate_oss_prefix, validate_redis_key,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -20,11 +23,11 @@ DEFAULT_SERVICE_TOKEN = "local-development-token"
 @dataclass(frozen=True)
 class ServiceConfig:
     redis_url: str | None = field(default=None, repr=False)
-    redis_queue_key: str = "naruto:login:tasks"
+    redis_queue_key: str = DEFAULT_REDIS_QUEUE_KEY
     host: str = "127.0.0.1"
     port: int = 4320
     service_token: str = DEFAULT_SERVICE_TOKEN
-    key_prefix: str = "login"
+    key_prefix: str = DEFAULT_OSS_KEY_PREFIX
     concurrency: int = 2
     max_queue_size: int = 100
     max_tasks: int = 500
@@ -85,9 +88,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
                 raise ValueError
         except ValueError:
             raise ValueError("REDIS_URL must be a valid redis:// or rediss:// URL") from None
-    redis_queue_key = env.get("REDIS_QUEUE_KEY", "naruto:login:tasks")
-    if not re.fullmatch(r"[a-zA-Z0-9_:{}-]{1,128}", redis_queue_key):
-        raise ValueError("Invalid REDIS_QUEUE_KEY")
+    redis_queue_key = validate_redis_key(require_environment(env, "REDIS_QUEUE_KEY"))
     emulator_driver = env.get("EMULATOR_DRIVER", "mock")
     if emulator_driver not in {"mock", "ldplayer"}:
         raise ValueError("EMULATOR_DRIVER must be mock or ldplayer")
@@ -108,9 +109,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
             raise ValueError("Invalid LDPLAYER_POOL_INDICES")
     else:
         ldplayer_pool_indices = ()
-    state_dir = Path(env.get(
-        "LDPLAYER_STATE_DIR", str(ServiceConfig.ldplayer_state_dir),
-    ))
+    state_dir = Path(require_environment(env, "LDPLAYER_STATE_DIR"))
     if not state_dir.is_absolute():
         state_dir = PROJECT_ROOT / state_dir
     state_dir = state_dir.resolve()
@@ -134,9 +133,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
             raise ValueError("LDPLAYER_POOL_INDICES requires REDIS_URL worker mode")
         if not daily_config_path.is_file():
             raise ValueError("DAILY_CONFIG_PATH must name an existing JSON configuration")
-    key_prefix = env.get("OSS_KEY_PREFIX", "login").strip("/")
-    if not re.fullmatch(r"[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*", key_prefix):
-        raise ValueError("Invalid OSS_KEY_PREFIX")
+    key_prefix = validate_oss_prefix(require_environment(env, "OSS_KEY_PREFIX"))
     service_token = env.get("SERVICE_TOKEN", DEFAULT_SERVICE_TOKEN)
     if len(service_token) < 16:
         raise ValueError("SERVICE_TOKEN must contain at least 16 characters")
@@ -169,7 +166,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         raise EnvironmentConfigError("Invalid QQ_BOT_APP_SECRET")
     database_url = env.get("DATABASE_URL", "").strip() or None
     if qq["qq_bot_app_id"] and not database_url:
-        raise EnvironmentConfigError("请在 Cloudflare KV 配置 DATABASE_URL，以查询 QQ 通知中的网站用户名")
+        raise EnvironmentConfigError("请配置 DATABASE_URL，以查询 QQ 通知中的网站用户名")
     if database_url:
         try:
             database_address = urlsplit(database_url)

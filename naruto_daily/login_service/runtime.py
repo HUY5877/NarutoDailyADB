@@ -277,6 +277,7 @@ class LoginRuntime:
         child_env["PYTHONIOENCODING"] = "utf-8"
         if daily:
             child_env.update(model_environment_for_child())
+            child_env.pop('REDIS_URL', None)
         if daily and self.config.redis_url:
             # 与常驻 worker 使用同一 Redis 轮询计数；不放进日志或 JSON 协议。
             child_env['REDIS_URL'] = self.config.redis_url

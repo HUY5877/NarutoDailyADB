@@ -8,7 +8,17 @@ import pytest
 from naruto_daily.battle import run_battle
 from naruto_daily.common.adb_client import AdbError
 from naruto_daily.multimodal.client import MultimodalClient, MultimodalRequestError
+from naruto_daily.multimodal.decisions import JEV_ENDPOINT
+from naruto_daily.multimodal.prompt_jev import BATTLE_COMPLETION
 from test_battle import Clock, battle_config
+
+
+@pytest.fixture(autouse=True)
+def offline_jev_environment(monkeypatch, configured_environment):
+    from naruto_daily.multimodal import decisions
+    monkeypatch.setenv('JEV_API_KEY', 'offline-jev-key')
+    # These timing tests use symbolic frames; real PNG resizing has dedicated tests.
+    monkeypatch.setattr(decisions, '_prepare_image', lambda image: image)
 
 
 class Device:
@@ -30,12 +40,24 @@ class Device:
 
 
 def request_image(request):
-    content = json.loads(request.data)['messages'][0]['content']
+    body = json.loads(request.data)
+    if 'state' in body:
+        assert request.full_url == JEV_ENDPOINT
+        question = body['questions']['decision']
+        assert question['type'] == 'choice'
+        assert set(question['criteria']) == set(BATTLE_COMPLETION.choices)
+        content = body['state']
+    else:
+        content = body['messages'][0]['content']
     return base64.b64decode(content[1]['image_url']['url'].split(',', 1)[1])
 
 
-def response_for(image):
+def response_for(image, *, decision=True):
     finished = not image.startswith(b'battle:')
+    if decision:
+        choice = next(label for label, result in BATTLE_COMPLETION.choices.items()
+                      if result['finished'] is finished and result['page'] != 'unknown')
+        return io.BytesIO(json.dumps({'answers': {'decision': {'choice': choice}}}).encode())
     result = dict(finished=finished, page='finished' if finished else 'battle', reason='offline replay')
     return io.BytesIO(json.dumps({'choices': [{'finish_reason': 'stop',
                                              'message': {'content': json.dumps(result)}}]}).encode())

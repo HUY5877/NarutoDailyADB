@@ -13,7 +13,7 @@ from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.execution import current_execution, stage_timeout
 from naruto_daily.multimodal.client import MultimodalClient, MultimodalError
-from naruto_daily.multimodal.prompts import secret_entry_prompt
+from naruto_daily.multimodal.prompt_jev import secret_entry_prompt
 from naruto_daily.return_to_main import return_to_main
 
 LOGGER = logging.getLogger('naruto_daily')
@@ -81,7 +81,7 @@ def _locate_and_tap(images, model, action, page, name, *, clock=time.monotonic):
             return None
         start = clock()
         try:
-            result = model.complete_json(preview, secret_entry_prompt(page, name),
+            result = model.complete_json(preview, secret_entry_prompt(page, name, centers),
                                          timeout_seconds=stage_timeout(deadline-images.elapsed))
             calls += 1
         finally:

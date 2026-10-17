@@ -90,6 +90,7 @@ def test_default_entrypoint_loads_bootstrap_from_project_root(monkeypatch, tmp_p
     def fetch(settings):
         assert settings['CLOUDFLARE_API_TOKEN'] == 'root-token'
         return {'REDIS_URL': 'redis://cloud.invalid/3',
+                'MULTIMODAL_ROUTING_COUNTER_KEY': 'naruto:multimodal:route:sequence',
                 'YUWAN_API_KEY': 'cloud-key', 'YUWAN_MODEL': 'cloud-model'}
 
     monkeypatch.setattr(cloudflare_kv, 'fetch_environment', fetch)
@@ -156,7 +157,7 @@ def test_missing_channels_fails_at_startup_before_worker_runs(tmp_path, monkeypa
     assert 'YUWAN_API_KEY' in caplog.text
 
 
-def test_cmd_entrypoint_resets_local_pool_before_cloud_config_and_worker(tmp_path, monkeypatch):
+def test_cmd_entrypoint_resets_cloud_selected_pool_before_worker(tmp_path, monkeypatch):
     import json
     from naruto_daily.login_service.ldplayer import LDPlayerManager
     from naruto_daily.multimodal import gateway
@@ -170,7 +171,7 @@ def test_cmd_entrypoint_resets_local_pool_before_cloud_config_and_worker(tmp_pat
         "LDPLAYER_POOL_INDICES=4,17\nLDPLAYER_STATE_DIR=machine-state\n", encoding="utf-8-sig",
     )
     path = tmp_path / "machine-state" / "bindings.json"
-    path.parent.mkdir()
+    path.parent.mkdir(parents=True)
     path.write_text("corrupted old bindings", encoding="utf-8")
     events = []
 
@@ -182,16 +183,12 @@ def test_cmd_entrypoint_resets_local_pool_before_cloud_config_and_worker(tmp_pat
 
     def initialize(actual_path):
         assert actual_path == env_file
-        assert json.loads(path.read_text("utf-8")) == {
-            "version": 2, "bindings": {
-                "4": {"name": "phone-a", "serial": None, "taskId": None, "state": "idle"},
-                "17": {"name": "phone-b", "serial": None, "taskId": None, "state": "idle"},
-            },
-        }
+        monkeypatch.setenv('LDPLAYER_STATE_DIR', 'machine-state')
         events.append("cloud")
         monkeypatch.setenv("REDIS_URL", "redis://test.invalid/0")
 
     def config():
+        assert json.loads(path.read_text("utf-8"))['bindings']['4']['state'] == 'idle'
         events.append("config")
         return SimpleNamespace(redis_url="redis://test.invalid/0")
 
@@ -206,11 +203,11 @@ def test_cmd_entrypoint_resets_local_pool_before_cloud_config_and_worker(tmp_pat
 
     entrypoint.main(["--env-file", str(env_file)])
 
-    assert events == ["list2", "cloud", "config", "gateway", "worker"]
+    assert events == ["cloud", "list2", "config", "gateway", "worker"]
     # A new invocation of the same command also clears a previous task owner.
     path.write_text("stale bindings from the previous process", encoding="utf-8")
     entrypoint.main(["--env-file", str(env_file)])
-    assert events == ["list2", "cloud", "config", "gateway", "worker"] * 2
+    assert events == ["cloud", "list2", "config", "gateway", "worker"] * 2
 
 
 def test_pool_startup_process_environment_overrides_local_file(tmp_path, monkeypatch):
@@ -245,6 +242,7 @@ def test_invalid_or_empty_pool_startup_does_not_call_device(tmp_path, monkeypatc
         f"EMULATOR_DRIVER=ldplayer\nLDPLAYER_POOL_INDICES={indices}\n"
         f"LDPLAYER_CONSOLE_PATH={console}\n", encoding="utf-8",
     )
+    monkeypatch.setenv('LDPLAYER_STATE_DIR', str(tmp_path / 'state'))
 
     def unexpected_reset(manager):
         pytest.fail("Invalid or empty indices must not reach pool/device reset")

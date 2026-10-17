@@ -1,4 +1,4 @@
-"""启动时加载 Cloudflare KV；本地文件提供连接凭据、可选鱼玩和机器配置。"""
+"""启动时加载 Cloudflare KV；本地文件提供连接凭据、JEV 和机器配置。"""
 from __future__ import annotations
 
 import logging
@@ -15,9 +15,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CHANNEL_ENV_NAMES = (
     'YUWAN_API_KEY', 'YUWAN_MODEL',
     'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL',
+    'JEV_API_KEY', 'JEV_MODEL',
 )
-LOCAL_CHANNEL_ENV_NAMES = ('YUWAN_API_KEY', 'YUWAN_MODEL')
+JEV_ENV_NAMES = ('JEV_API_KEY', 'JEV_MODEL')
+LOCAL_CHANNEL_ENV_NAMES = ('YUWAN_API_KEY', 'YUWAN_MODEL', *JEV_ENV_NAMES)
 CLOUD_ENV_NAMES = (*CHANNEL_ENV_NAMES, 'REDIS_URL', 'REDIS_QUEUE_KEY',
+                   'MULTIMODAL_ROUTING_COUNTER_KEY', 'LDPLAYER_STATE_DIR',
                    'OSS_REGION', 'OSS_BUCKET', 'OSS_ACCESS_KEY_ID',
                    'OSS_ACCESS_KEY_SECRET', 'OSS_STS_TOKEN', 'OSS_KEY_PREFIX',
                    'QQ_BOT_APP_ID', 'QQ_BOT_APP_SECRET', 'QQ_BOT_GROUP_OPENID', 'DATABASE_URL')
@@ -28,6 +31,14 @@ _initialization_lock = Lock()
 
 class EnvironmentConfigError(ValueError):
     """环境配置缺失或无法读取。"""
+
+
+def resolve_app_env(settings: Mapping[str, str | None]) -> str:
+    """Environment selection belongs to the launcher, never remote configuration."""
+    profile = settings.get('APP_ENV', 'prod')
+    if not isinstance(profile, str) or profile.strip() not in {'prod', 'test'}:
+        raise EnvironmentConfigError('APP_ENV 必须为 prod 或 test')
+    return profile.strip()
 
 
 def _read_local_dotenv(path: Path, *, include_local_channel: bool = False) -> dict[str, str | None]:
@@ -47,26 +58,35 @@ def initialize_environment(env_file: Path | None = None) -> None:
         if _initialized:
             return
         if os.environ.get(INHERITED_CONFIG_MARKER) == '1':
+            resolve_app_env(os.environ)
             _initialized = True
             return
         local = _read_local_dotenv(env_file or PROJECT_ROOT / '.env', include_local_channel=True)
+        profile = resolve_app_env({**local, **os.environ})
         for name, value in local.items():
             if value is not None and name not in LOCAL_CHANNEL_ENV_NAMES:
                 os.environ.setdefault(name, value)
         from .cloudflare_kv import fetch_environment
 
-        values = fetch_environment(os.environ)
+        values = fetch_environment({**os.environ, 'APP_ENV': profile})
         cloud_count = len(values)
         local_yuwan = bool((local.get('YUWAN_API_KEY') or '').strip())
         if local_yuwan:
             if not (local.get('YUWAN_MODEL') or '').strip():
                 raise EnvironmentConfigError('本地启用鱼玩时，请在 .env 配置非空的 YUWAN_MODEL')
-            values.update({name: local[name] for name in LOCAL_CHANNEL_ENV_NAMES})
+            values.update({name: local[name] for name in ('YUWAN_API_KEY', 'YUWAN_MODEL')})
+        # JEV 本地配置独立于生成模型；子进程只继承已解析的值。
+        # 环境变量优先于 .env，明确的空值也不能回退到共享 KV 中的 key。
+        for name in JEV_ENV_NAMES:
+            value = os.environ.get(name, local.get(name))
+            if value is not None:
+                values[name] = value
         # Publish only after every page and value has been read successfully.
         # Missing cloud settings must never reuse stale local/process credentials.
         for name in CLOUD_ENV_NAMES:
             os.environ.pop(name, None)
         os.environ.update(values)
+        os.environ['APP_ENV'] = profile
         _initialized = True
         logging.getLogger(__name__).info('Cloudflare KV 配置已加载：%d 项；鱼玩本地配置：%s',
                                          cloud_count, '启用' if local_yuwan else '未启用',
@@ -74,8 +94,10 @@ def initialize_environment(env_file: Path | None = None) -> None:
 
 
 def model_environment_for_child() -> dict[str, str]:
-    """Only model settings are needed by a daily child; omit OSS and CF credentials."""
-    values = {name: os.environ[name] for name in CHANNEL_ENV_NAMES if name in os.environ}
+    """Pass the selected model/Redis profile; omit OSS, database and CF credentials."""
+    names = (*CHANNEL_ENV_NAMES, 'REDIS_URL', 'MULTIMODAL_ROUTING_COUNTER_KEY')
+    values = {name: os.environ[name] for name in names if name in os.environ}
+    values['APP_ENV'] = resolve_app_env(os.environ)
     values[INHERITED_CONFIG_MARKER] = '1'
     return values
 
@@ -87,6 +109,8 @@ def read_multimodal_environment() -> dict[str, str | None]:
 
 def read_environment() -> dict[str, str | None]:
     initialize_environment()
+    if os.environ.get(INHERITED_CONFIG_MARKER) == '1':
+        return dict(os.environ)
     return {**_read_local_dotenv(PROJECT_ROOT / '.env'), **os.environ}
 
 
