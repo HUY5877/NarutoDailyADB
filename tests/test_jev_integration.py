@@ -30,7 +30,7 @@ def test_choice_uses_jev_without_consuming_generation_route(monkeypatch, configu
     assert configured_environment.value == 0
 
 
-def test_takeout_jev_choices_drive_repeated_three_click_rounds(monkeypatch, configured_environment):
+def test_takeout_jev_choices_drive_repeated_six_click_rounds(monkeypatch, configured_environment):
     from naruto_daily.ichiraku import handle_ichiraku_takeout
 
     monkeypatch.setenv('JEV_API_KEY', 'jev-private')
@@ -63,10 +63,11 @@ def test_takeout_jev_choices_drive_repeated_three_click_rounds(monkeypatch, conf
         device, {'timeout_seconds': 30, 'post_click_wait_seconds': 0, 'multimodal': {'max_calls': 2}},
         model=model, sleep=lambda _: None,
     )
-    points = [(450, 520), (880, 520), (1310, 520)]
+    points = [(450, 520), (550, 520), (880, 520), (1100, 520), (1310, 520), (1650, 520)]
     close = [(1550, 740)]
-    assert device.taps == points + close + points
-    assert observations == [(), tuple(points), tuple(points + close), tuple(points + close + points)]
+    assert device.taps == points * 2 + close + points
+    assert observations == [tuple(points), tuple(points * 2),
+                            tuple(points * 2 + close), tuple(points * 2 + close + points)]
     assert configured_environment.value == 0
 
 
