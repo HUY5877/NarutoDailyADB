@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 from .execution import check_execution, current_execution, DailyDeadlineExceeded
+from .input_logging import log_adb_input
 
 
 class AdbError(RuntimeError):
@@ -64,11 +65,12 @@ class AdbClient:
         if use_serial and self.serial:
             command.extend(["-s", self.serial])
         command.extend(arguments)
-        result = self._run_command(command)
-        check_execution()
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-            raise AdbError(f"ADB 命令执行失败：{detail}")
+        with log_adb_input(self.serial, arguments):
+            result = self._run_command(command)
+            check_execution()
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+                raise AdbError(f"ADB 命令执行失败：{detail}")
         return result
 
     def devices(self) -> list[str]:

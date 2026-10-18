@@ -176,3 +176,37 @@ def test_worker_shutdown_or_cancellation_reaps_the_stderr_reader(tmp_path, caplo
         finally:
             await runtime.stop()
     asyncio.run(scenario())
+
+
+def test_child_input_diagnostics_are_saved_with_task_id_without_public_events(tmp_path, caplog):
+    from naruto_daily.login_service.log_events import local_log_file
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    program = r'''
+import json,sys
+from pathlib import Path
+from naruto_daily.common.adb_client import AdbClient,CommandResult
+from naruto_daily.login_service.log_events import forward_task_logs
+message=json.loads(sys.stdin.readline())
+def send(event):
+    print(json.dumps(event),flush=True)
+with forward_task_logs(send,diagnostic_stream=sys.stderr):
+    client=AdbClient(Path('adb.exe'),'emulator-5554',run_command=lambda _:CommandResult(0,'',''))
+    client.tap(123,456)
+    client.swipe(10,20,30,40,500)
+for event in message['events']:
+    send(event)
+'''
+
+    async def scenario():
+        runtime, reporter, record = make_runtime(tmp_path)
+        with local_log_file(tmp_path):
+            result = await runtime._run_child(record, [sys.executable, '-u', '-c', program],
+                                              {'events': SUCCESS_PROTOCOL}, daily=True)
+        content = (tmp_path / 'logs' / 'worker.log').read_text(encoding='utf-8')
+        assert result == PNG
+        assert f'Task {record.id} |' in content
+        assert '点击 x=123 y=456' in content and 'duration_ms=500' in content
+        assert '[ADB操作完成] time=' in content and 'serial=emulator-5554' in content
+        assert not any('[ADB操作' in (event.get('message') or '') for event in reporter.events)
+        assert no_reader_tasks()
+    asyncio.run(scenario())

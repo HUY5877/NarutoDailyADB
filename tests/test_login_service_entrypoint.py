@@ -50,9 +50,9 @@ def test_missing_redis_fails_before_loading_config_or_starting_worker(
 
 
 @pytest.mark.parametrize("source", ["environment", "cloud"])
-def test_configured_redis_runs_worker(monkeypatch, source):
+def test_configured_redis_runs_worker(monkeypatch, source, tmp_path):
     redis_url = "redis://localhost:6379/0"
-    config = SimpleNamespace(redis_url=redis_url)
+    config = SimpleNamespace(redis_url=redis_url, ldplayer_state_dir=tmp_path)
     calls = []
     env_file = Path("entrypoint-test.env")
 
@@ -94,7 +94,8 @@ def test_default_entrypoint_loads_bootstrap_from_project_root(monkeypatch, tmp_p
                 'YUWAN_API_KEY': 'cloud-key', 'YUWAN_MODEL': 'cloud-model'}
 
     monkeypatch.setattr(cloudflare_kv, 'fetch_environment', fetch)
-    monkeypatch.setattr(service_config, 'load_config', lambda: SimpleNamespace(redis_url=os.environ['REDIS_URL']))
+    monkeypatch.setattr(service_config, 'load_config', lambda: SimpleNamespace(
+        redis_url=os.environ['REDIS_URL'], ldplayer_state_dir=tmp_path))
     calls = []
 
     async def run(config):
@@ -105,8 +106,8 @@ def test_default_entrypoint_loads_bootstrap_from_project_root(monkeypatch, tmp_p
     assert calls == ['redis://cloud.invalid/3']
 
 
-def test_keyboard_interrupt_stops_worker_normally(monkeypatch, caplog):
-    config = SimpleNamespace(redis_url="redis://localhost:6379/0")
+def test_keyboard_interrupt_stops_worker_normally(monkeypatch, caplog, tmp_path):
+    config = SimpleNamespace(redis_url="redis://localhost:6379/0", ldplayer_state_dir=tmp_path)
     monkeypatch.setenv("REDIS_URL", config.redis_url)
     monkeypatch.setattr(service_config, "load_config", lambda: config)
 
@@ -119,11 +120,12 @@ def test_keyboard_interrupt_stops_worker_normally(monkeypatch, caplog):
         entrypoint.main([])
 
     assert "stopped" in caplog.text
+    assert 'stopped' in (tmp_path / 'logs' / 'worker.log').read_text(encoding='utf-8')
 
 
-def test_worker_failure_exits_without_logging_credentials(monkeypatch, caplog):
+def test_worker_failure_exits_without_logging_credentials(monkeypatch, caplog, tmp_path):
     redis_url = "redis://worker:entrypoint-test-secret@localhost:6379/0"
-    config = SimpleNamespace(redis_url=redis_url)
+    config = SimpleNamespace(redis_url=redis_url, ldplayer_state_dir=tmp_path)
     monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setattr(service_config, "load_config", lambda: config)
 
@@ -139,13 +141,16 @@ def test_worker_failure_exits_without_logging_credentials(monkeypatch, caplog):
     assert "RuntimeError" in caplog.text
     assert "entrypoint-test-secret" not in caplog.text
     assert redis_url not in caplog.text
+    local_log = (tmp_path / 'logs' / 'worker.log').read_text(encoding='utf-8')
+    assert 'RuntimeError' in local_log and 'entrypoint-test-secret' not in local_log
 
 
 def test_missing_channels_fails_at_startup_before_worker_runs(tmp_path, monkeypatch, caplog):
     monkeypatch.delenv('YUWAN_API_KEY')
     monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
     monkeypatch.setenv('REDIS_URL', 'redis://test.invalid/0')
-    monkeypatch.setattr(service_config, 'load_config', lambda: SimpleNamespace(redis_url='redis://test.invalid/0'))
+    monkeypatch.setattr(service_config, 'load_config', lambda: SimpleNamespace(
+        redis_url='redis://test.invalid/0', ldplayer_state_dir=tmp_path))
 
     async def forbidden_worker(config):
         pytest.fail('No worker or provider request should run without configured channels')
@@ -190,7 +195,7 @@ def test_cmd_entrypoint_resets_cloud_selected_pool_before_worker(tmp_path, monke
     def config():
         assert json.loads(path.read_text("utf-8"))['bindings']['4']['state'] == 'idle'
         events.append("config")
-        return SimpleNamespace(redis_url="redis://test.invalid/0")
+        return SimpleNamespace(redis_url="redis://test.invalid/0", ldplayer_state_dir=path.parent)
 
     async def run(config):
         events.append("worker")

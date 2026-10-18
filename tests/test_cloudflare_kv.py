@@ -244,10 +244,11 @@ def test_child_inherits_models_without_fetching_cloud_or_loading_local_secrets(m
     assert 'LOGIN_ACCOUNT_NAME' not in environment.read_environment()
 
 
-def test_entrypoint_fetches_kv_before_redis_validation_and_service_creation(monkeypatch):
+def test_entrypoint_fetches_kv_before_redis_validation_and_service_creation(monkeypatch, tmp_path):
     calls = []
     remote = {**OSS_ENV, 'REDIS_URL': 'redis://cloud.invalid/0',
-              'YUWAN_API_KEY': 'cloud-key', 'YUWAN_MODEL': 'cloud-model'}
+              'YUWAN_API_KEY': 'cloud-key', 'YUWAN_MODEL': 'cloud-model',
+              'LDPLAYER_STATE_DIR': str(tmp_path / 'cloud-state')}
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: calls.append('cloud') or remote)
     async def run(config):
         assert config.redis_url == remote['REDIS_URL'] and config.oss_bucket == OSS_ENV['OSS_BUCKET']
