@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -8,15 +10,16 @@ from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 class Backend:
     def __init__(self):
         self.events = []
-        self.focus_error = None
+        self.target_error = None
 
-    def prepare_input(self, window, code):
-        if self.focus_error:
-            raise self.focus_error
-        self.events.append(('focus', window.hwnd))
+    def prepare_input(self, window):
+        if self.target_error:
+            raise self.target_error
+        self.events.append(('prepare', window.hwnd))
+        return window
 
-    def key_event(self, code, *, up):
-        self.events.append(('up' if up else 'down', code))
+    def key_event(self, target, code, *, up):
+        self.events.append(('up' if up else 'down', target.hwnd, code))
 
 
 def keyboard(backend, sleep=lambda _: None):
@@ -29,7 +32,7 @@ def test_press_dispatches_a_complete_native_key_pair(key, code):
     backend = Backend()
     waits = []
     keyboard(backend, waits.append).press(key)
-    assert backend.events == [('focus', 123), ('down', code), ('up', code)]
+    assert backend.events == [('prepare', 123), ('down', 123, code), ('up', 123, code)]
     assert waits == [.08]
 
 
@@ -42,7 +45,7 @@ def test_interrupted_hold_still_releases_the_key(error):
 
     with pytest.raises(type(error)):
         keyboard(backend, interrupted).press('J')
-    assert backend.events[-2:] == [('down', 74), ('up', 74)]
+    assert backend.events[-2:] == [('down', 123, 74), ('up', 123, 74)]
 
 
 def test_expired_execution_releases_key_and_does_not_dispatch_another():
@@ -56,29 +59,43 @@ def test_expired_execution_releases_key_and_does_not_dispatch_another():
     with pytest.raises(DailyDeadlineExceeded):
         with execution_scope(.04, clock=lambda: now[0]):
             device.press('J')
-    assert backend.events[-2:] == [('down', 74), ('up', 74)]
+    assert backend.events[-2:] == [('down', 123, 74), ('up', 123, 74)]
 
 
-def test_focus_failure_does_not_send_keyboard_input():
+def test_invalid_target_does_not_send_keyboard_input():
     from naruto_daily.common.keyboard import KeyboardInputError
     backend = Backend()
-    backend.focus_error = KeyboardInputError('请把雷电放到前台')
-    with pytest.raises(KeyboardInputError, match='前台'):
+    backend.target_error = KeyboardInputError('渲染窗口已失效')
+    with pytest.raises(KeyboardInputError, match='失效'):
         keyboard(backend).press('K')
     assert backend.events == []
 
 
 def test_interrupt_during_key_down_also_attempts_release():
     class InterruptedBackend(Backend):
-        def key_event(self, code, *, up):
-            super().key_event(code, up=up)
+        def key_event(self, target, code, *, up):
+            super().key_event(target, code, up=up)
             if not up:
                 raise KeyboardInterrupt()
 
     backend = InterruptedBackend()
     with pytest.raises(KeyboardInterrupt):
         keyboard(backend).press('J')
-    assert backend.events[-2:] == [('down', 74), ('up', 74)]
+    assert backend.events[-2:] == [('down', 123, 74), ('up', 123, 74)]
+
+
+def test_different_instances_can_hold_keys_at_the_same_time():
+    from naruto_daily.common.keyboard import LDPlayerKeyboard, LDPlayerWindow
+    barrier = Barrier(2, timeout=2)
+    backends = [Backend(), Backend()]
+    devices = [LDPlayerKeyboard(LDPlayerWindow(i, 123 + i, 456 + i), backend=backend,
+                                sleep=lambda _: barrier.wait()) for i, backend in enumerate(backends)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(device.press, key) for device, key in zip(devices, ('J', 'H'))]
+        for future in futures:
+            future.result()
+    assert backends[0].events[-2:] == [('down', 123, 74), ('up', 123, 74)]
+    assert backends[1].events[-2:] == [('down', 124, 72), ('up', 124, 72)]
 
 
 @pytest.mark.parametrize('serial, index', [('emulator-5554', 0), ('emulator-5556', 1)])

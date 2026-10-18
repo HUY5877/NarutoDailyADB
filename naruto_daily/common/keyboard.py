@@ -1,4 +1,4 @@
-"""将战斗按键发送给与 ADB 设备对应的雷电前台窗口。"""
+"""将战斗按键定向发送给与 ADB 设备对应的雷电渲染窗口。"""
 from __future__ import annotations
 
 import ctypes
@@ -21,7 +21,6 @@ DEFAULT_BATTLE_KEYS = {
     '替身': 'SPACE', '通灵': 'R', '秘卷': 'E',
 }
 LOGGER = logging.getLogger('naruto_daily.keyboard')
-_INPUT_LOCK = Lock()
 
 
 class KeyboardInputError(NonRetryableVisualError):
@@ -44,68 +43,84 @@ class LDPlayerWindow:
     pid: int
 
 
-class _KeyboardInput(ctypes.Structure):
-    _fields_ = [('wVk', wintypes.WORD), ('wScan', wintypes.WORD),
-                ('dwFlags', wintypes.DWORD), ('time', wintypes.DWORD),
-                ('dwExtraInfo', ctypes.c_size_t)]
+@dataclass(frozen=True)
+class LDPlayerRenderTarget:
+    window: LDPlayerWindow
+    hwnd: int
 
 
-class _MouseInput(ctypes.Structure):
-    _fields_ = [('dx', wintypes.LONG), ('dy', wintypes.LONG),
-                ('mouseData', wintypes.DWORD), ('dwFlags', wintypes.DWORD),
-                ('time', wintypes.DWORD), ('dwExtraInfo', ctypes.c_size_t)]
-
-
-class _InputUnion(ctypes.Union):
-    _fields_ = [('ki', _KeyboardInput), ('mi', _MouseInput)]
-
-
-class _Input(ctypes.Structure):
-    _fields_ = [('type', wintypes.DWORD), ('data', _InputUnion)]
+_ENUM_WINDOW_PROC = getattr(ctypes, 'WINFUNCTYPE', ctypes.CFUNCTYPE)(
+    wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
 
 class Win32Keyboard:
-    def __init__(self):
-        if sys.platform != 'win32':
-            raise KeyboardInputError('雷电键盘模式只支持 Windows')
-        self.api = ctypes.WinDLL('user32', use_last_error=True)
+    def __init__(self, api=None):
+        if api is None:
+            if sys.platform != 'win32':
+                raise KeyboardInputError('雷电键盘模式只支持 Windows')
+            api = ctypes.WinDLL('user32', use_last_error=True)
+        self.api = api
         signatures = {
             'IsWindow': ([wintypes.HWND], wintypes.BOOL),
-            'IsIconic': ([wintypes.HWND], wintypes.BOOL),
-            'ShowWindow': ([wintypes.HWND, ctypes.c_int], wintypes.BOOL),
-            'SetForegroundWindow': ([wintypes.HWND], wintypes.BOOL),
-            'GetForegroundWindow': ([], wintypes.HWND),
             'GetWindowThreadProcessId': ([wintypes.HWND, ctypes.POINTER(wintypes.DWORD)], wintypes.DWORD),
-            'GetAsyncKeyState': ([ctypes.c_int], ctypes.c_short),
+            'GetClassNameW': ([wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
+            'GetWindowTextW': ([wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
+            'IsChild': ([wintypes.HWND, wintypes.HWND], wintypes.BOOL),
+            'EnumChildWindows': ([wintypes.HWND, _ENUM_WINDOW_PROC, wintypes.LPARAM], wintypes.BOOL),
             'MapVirtualKeyW': ([wintypes.UINT, wintypes.UINT], wintypes.UINT),
-            'SendInput': ([wintypes.UINT, ctypes.POINTER(_Input), ctypes.c_int], wintypes.UINT),
+            'PostMessageW': ([wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM], wintypes.BOOL),
         }
         for name, (arguments, result) in signatures.items():
             function = getattr(self.api, name)
             function.argtypes, function.restype = arguments, result
 
-    def prepare_input(self, window, code):
+    def _has_identity(self, hwnd, expected_pid):
+        if not self.api.IsWindow(hwnd):
+            return False
         pid = wintypes.DWORD()
-        self.api.GetWindowThreadProcessId(window.hwnd, ctypes.byref(pid))
-        if not self.api.IsWindow(window.hwnd) or pid.value != window.pid:
-            raise KeyboardInputError('雷电窗口已关闭或变化，已停止发送按键')
-        if self.api.IsIconic(window.hwnd):
-            self.api.ShowWindow(window.hwnd, 9)  # SW_RESTORE
-        if self.api.GetForegroundWindow() != window.hwnd:
-            self.api.SetForegroundWindow(window.hwnd)
-        if self.api.GetForegroundWindow() != window.hwnd:
-            raise KeyboardInputError('无法激活雷电窗口，请将目标雷电放到前台后重试')
-        if any(self.api.GetAsyncKeyState(key) & 0x8000 for key in (0x10, 0x11, 0x12, 0x5B, 0x5C)):
-            raise KeyboardInputError('当前有修饰键按住，已停止发送战斗按键')
-        if self.api.GetAsyncKeyState(code) & 0x8000:
-            raise KeyboardInputError('目标按键已被按住，已停止发送战斗按键')
+        self.api.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return pid.value == expected_pid
 
-    def key_event(self, code, *, up):
-        event = _Input(type=1)  # INPUT_KEYBOARD；使用原生虚拟键而非输入文本。
-        event.data.ki = _KeyboardInput(wVk=code, wScan=self.api.MapVirtualKeyW(code, 0),
-                                       dwFlags=2 if up else 0)
-        if self.api.SendInput(1, ctypes.byref(event), ctypes.sizeof(_Input)) != 1:
-            raise KeyboardInputError(f'发送雷电键盘事件失败（Windows 错误 {ctypes.get_last_error()}）')
+    def _is_render(self, window, hwnd):
+        if not self._has_identity(hwnd, window.pid) or not self.api.IsChild(window.hwnd, hwnd):
+            return False
+        class_name = ctypes.create_unicode_buffer(256)
+        title = ctypes.create_unicode_buffer(256)
+        self.api.GetClassNameW(hwnd, class_name, len(class_name))
+        self.api.GetWindowTextW(hwnd, title, len(title))
+        return class_name.value == 'RenderWindow' and title.value == 'TheRender'
+
+    def _validate_root(self, window):
+        if not self._has_identity(window.hwnd, window.pid):
+            raise KeyboardInputError('雷电窗口已关闭或变化，已停止发送按键')
+
+    def prepare_input(self, window):
+        self._validate_root(window)
+        matches = []
+
+        @_ENUM_WINDOW_PROC
+        def collect(hwnd, _):
+            if self._is_render(window, hwnd):
+                matches.append(hwnd)
+            return True
+
+        self.api.EnumChildWindows(window.hwnd, collect, 0)
+        self._validate_root(window)
+        if len(matches) != 1:
+            raise KeyboardInputError('未找到唯一的雷电渲染窗口，已停止发送按键')
+        return LDPlayerRenderTarget(window, matches[0])
+
+    def key_event(self, target, code, *, up):
+        self._validate_root(target.window)
+        if not self._is_render(target.window, target.hwnd):
+            raise KeyboardInputError('雷电渲染窗口已关闭或变化，已停止发送按键')
+        # 普通按键的重复次数为 1；松键同时设置 previous-state 和 transition 位。
+        lparam = 1 | (self.api.MapVirtualKeyW(code, 0) << 16)
+        if up:
+            lparam |= (1 << 30) | (1 << 31)
+        if not self.api.PostMessageW(target.hwnd, 0x101 if up else 0x100, code, lparam):
+            error = getattr(ctypes, 'get_last_error', lambda: 0)()
+            raise KeyboardInputError(f'发送雷电后台按键失败（Windows 错误 {error}）')
 
 
 class LDPlayerKeyboard:
@@ -115,6 +130,7 @@ class LDPlayerKeyboard:
         self.hold_seconds = float(hold_seconds)
         self.sleep = sleep
         self.serial = serial
+        self._lock = Lock()
 
     @classmethod
     def from_client(cls, client, options, *, backend=None, run_command=_run_subprocess, sleep=time.sleep):
@@ -160,16 +176,17 @@ class LDPlayerKeyboard:
     def press(self, key):
         key = normalize_key(key)
         code = 32 if key == 'SPACE' else ord(key)
-        # SendInput 使用系统键盘流，同一进程内不能交错两次按下/松开。
-        with _INPUT_LOCK:
+        # 一个适配器内保持完整按下/松开；不同实例使用独立锁及窗口消息队列。
+        with self._lock:
             check_execution()
-            self.backend.prepare_input(self.window, code)
+            target = self.backend.prepare_input(self.window)
             check_execution()
-            LOGGER.info('雷电按键：serial=%s instance=%d hwnd=%d key=%s',
-                        self.serial, self.window.index, self.window.hwnd, key, extra={'backend_only': True})
+            LOGGER.info('雷电后台按键：serial=%s instance=%d hwnd=%d render=%d key=%s',
+                        self.serial, self.window.index, self.window.hwnd, target.hwnd, key,
+                        extra={'backend_only': True})
             try:
-                self.backend.key_event(code, up=False)
+                self.backend.key_event(target, code, up=False)
                 execution_sleep(self.hold_seconds, self.sleep)
             finally:
                 # 清理不能被总时限检查拦住；中断/超时也必须释放已按下的键。
-                self.backend.key_event(code, up=True)
+                self.backend.key_event(target, code, up=True)
