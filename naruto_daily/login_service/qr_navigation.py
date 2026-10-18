@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from .login_types import DEFAULT_LOGIN_TYPE, parse_login_type
+from naruto_daily.common.input_logging import log_adb_input
 
 
 class QRNavigationError(RuntimeError):
@@ -38,12 +39,13 @@ class LoginDevice:
         if remaining <= 0:
             raise QRNavigationError("Login task deadline expired")
         try:
-            result = subprocess.run(
-                [str(self.adb_path), "-s", self.serial, *arguments],
-                capture_output=True, check=True, shell=False,
-                timeout=min(remaining, self.command_timeout),
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
-            )
+            with log_adb_input(self.serial, arguments):
+                result = subprocess.run(
+                    [str(self.adb_path), "-s", self.serial, *arguments],
+                    capture_output=True, check=True, shell=False,
+                    timeout=min(remaining, self.command_timeout),
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+                )
         except (OSError, subprocess.SubprocessError):
             raise QRNavigationError("ADB operation failed or timed out") from None
         return result.stdout

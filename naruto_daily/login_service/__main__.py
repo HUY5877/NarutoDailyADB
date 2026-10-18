@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from contextlib import ExitStack
 import logging
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ from urllib.parse import urlsplit
 
 from naruto_daily.common import environment
 from .ldplayer import LDPlayerError
+from .log_events import local_log_file
 
 
 def reset_pool_on_startup(env_file: Path) -> None:
@@ -80,12 +82,14 @@ def main(argv: list[str] | None = None) -> None:
 
     from .config import load_config
 
+    local_logs = ExitStack()
     try:
         environment.initialize_environment(args.env_file)
         reset_pool_on_startup(args.env_file)
         if not os.environ.get("REDIS_URL", "").strip():
             raise environment.EnvironmentConfigError('请在 Cloudflare KV 配置非空的 REDIS_URL')
         config = load_config()
+        local_logs.enter_context(local_log_file(config.ldplayer_state_dir))
         from naruto_daily.multimodal.gateway import initialize_gateway
         initialize_gateway()
         try:
@@ -102,6 +106,8 @@ def main(argv: list[str] | None = None) -> None:
         # SDK exceptions and connection URLs can contain credentials.
         logging.error("Login worker could not start or continue (%s); check Redis/OSS configuration", type(error).__name__)
         raise SystemExit(1) from None
+    finally:
+        local_logs.close()
 
 
 if __name__ == "__main__":

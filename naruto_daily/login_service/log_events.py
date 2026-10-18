@@ -5,6 +5,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import logging
+from logging.handlers import RotatingFileHandler
+import os
+from pathlib import Path
 import re
 from typing import Callable, Iterable, Iterator, TextIO
 
@@ -14,6 +17,8 @@ from naruto_daily.multimodal.diagnostics import is_model_api_failure
 
 
 MAX_LOG_MESSAGE_LENGTH = 1_000
+LOCAL_LOG_MAX_BYTES = 10 * 1024 * 1024
+LOCAL_LOG_BACKUPS = 5
 _REDACTED = "[REDACTED]"
 _URL_CREDENTIALS = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+@")
 _AUTH_HEADER = re.compile(r"(?im)\b(authorization\s*[:=]\s*)[^\r\n]+")
@@ -54,6 +59,50 @@ def _truncate_message(message: str, max_length: int | None) -> str:
     if max_length is not None and len(message) > max_length:
         message = message[:max_length - 1] + "…"
     return message
+
+
+class _LocalLogFormatter(logging.Formatter):
+    def __init__(self, secrets):
+        super().__init__('%(asctime)s %(levelname)s %(message)s')
+        self.secrets = secrets
+
+    def format(self, record):
+        return '\n'.join(
+            line[:len(line) - len(line.lstrip())] + sanitize_log_message(
+                line, secrets=self.secrets, max_length=None,
+            ) for line in super().format(record).splitlines()
+        )
+
+
+class _LocalFileHandler(RotatingFileHandler):
+    def handleError(self, record: logging.LogRecord) -> None:
+        # The default handler dumps raw messages and arguments to stderr.
+        # A failed file write must not expose credentials or stop game input.
+        pass
+
+
+@contextmanager
+def local_log_file(state_dir: Path):
+    """Append local diagnostics and close the rotating file on every exit path."""
+    directory = Path(state_dir) / 'logs'
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / 'worker.log'
+    secrets = (*model_log_secrets(), *(os.environ.get(name, '') for name in (
+        'CLOUDFLARE_API_TOKEN', 'OSS_ACCESS_KEY_ID', 'OSS_ACCESS_KEY_SECRET',
+        'OSS_STS_TOKEN', 'QQ_BOT_APP_SECRET', 'JWT_SECRET', 'LOGIN_SERVICE_TOKEN',
+    )))
+    handler = _LocalFileHandler(path, maxBytes=LOCAL_LOG_MAX_BYTES,
+                                backupCount=LOCAL_LOG_BACKUPS, encoding='utf-8')
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(_LocalLogFormatter(secrets))
+    logger = logging.getLogger()
+    logger.addHandler(handler)
+    try:
+        logger.info('本地详细日志已开启：%s（单文件 10 MiB，保留 5 份历史）', path)
+        yield path
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
 
 
 def _exception_summary(error: BaseException, *, secrets: Iterable[str], max_length: int) -> str:
