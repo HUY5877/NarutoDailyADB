@@ -36,6 +36,23 @@ Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限，
 
 扫码服务还需配置 OSS、雷电控制台路径和实例池，见[扫码服务说明](naruto_daily/login_service/README.md)。服务按分配到的实例覆盖任务配置中的 ADB 路径和 `serial`。
 
+### 战斗键盘输入
+
+丰饶之间和秘境的 `battle` 支持 `input_mode`：`adb` 为原有坐标点击（省略时默认），`keyboard` 为 Windows 原生键盘信号，由雷电已保存的游戏键位转换成触屏操作。截图、页面导航和结算识别仍使用 ADB。修改对应任务的 `battle` 配置即可切换：
+
+```json
+{
+  "input_mode": "keyboard",
+  "keyboard": {"instance_index": null, "hold_seconds": 0.08}
+}
+```
+
+共享配置的 `battle.buttons` 只包含右侧七个战斗操作：一技能 J、二技能 H、大招 L、普攻 K、替身 SPACE、通灵 R、秘卷 E，采用雷电《火影忍者》官方默认键位。三个技能包含大招，不额外接入训练场、人物更换或其他组合操作。也可在按钮对象里修改 `key`，支持单个英文字母、数字和 `SPACE`，不允许重复按键。丰饶继续跳过“一技能”。旧的四按钮配置仍可加载。
+
+键盘模式适合单个雷电实例在前台运行，不适合多个 worker 同时争用系统键盘。程序通过 ADB 同目录的 `ldconsole.exe`（或 `dnconsole.exe`）查询实例和实际 serial，必须唯一匹配当前设备；`instance_index` 可填写实例索引以缩小范围，也仍须匹配 serial。找不到窗口、无法激活或发送失败时停止战斗输入，不回退坐标点击。每次按键会短按并松开，单次持续时间可设为 0.02～0.5 秒；超时或异常时也会尝试释放。
+
+各实例须在雷电选择并保存《火影忍者》的官方默认按键配置；字母提示位置可能经过偏移，不能代替实际触点。共享配置已启用 `keyboard`；如需运行多个实例池 worker，应改用 `adb` 以避免争用系统键盘。程序不会修改模拟器内保存的键位。
+
 ## 启动
 
 完成配置后，双击唯一启动入口 [启动扫码服务.cmd](启动扫码服务.cmd)。它运行常驻 Redis worker，生成并上传二维码，扫码后执行日常；按 `Ctrl+C` 停止。服务默认是 `mock`，真实运行需设置 `EMULATOR_DRIVER=ldplayer`。

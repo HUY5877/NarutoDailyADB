@@ -6,7 +6,7 @@ import pytest
 
 from agent_fakes import tool_call
 from naruto_daily.common.visual import VisualError
-from naruto_daily.config import load_settings
+from battle_replay import load_legacy_adb_settings
 from naruto_daily.secret_realm import handler, navigation, pre_battle
 
 ROOT = Path(__file__).parents[1]
@@ -113,7 +113,7 @@ class Scenario:
 
 
 def execute(monkeypatch, scenario):
-    action = next(a for a in load_settings(ROOT / 'config.example.json').tasks['secret_realm']
+    action = next(a for a in load_legacy_adb_settings(ROOT / 'config.example.json').tasks['secret_realm']
                   if a['type'] == 'handle_secret_realm')
     action['load_wait_seconds'] = 0
     monkeypatch.setattr(handler, 'MultimodalClient', lambda *a, **kw: scenario)

@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from naruto_daily.common.environment import EnvironmentConfigError, read_environment, resolve_environment
+from naruto_daily.common.keyboard import DEFAULT_BATTLE_KEYS, normalize_key
 
 LOGGER = logging.getLogger("naruto_daily")
 
@@ -199,8 +200,24 @@ def _validate_main_target(target, context, *, marker=False):
 def _validate_battle(battle: Any, width: int, height: int, context: str, max_timeout=180) -> None:
     if not isinstance(battle, dict):
         raise ConfigError(f"{context}.battle 必须是对象")
+    optional = {'input_mode', 'keyboard'}
     _require_exact_keys(battle, {"start_timeout_seconds", "timeout_seconds", "tap_interval_seconds",
-                                "battle_marker", "end_targets", "buttons"}, f"{context}.battle")
+                                "battle_marker", "end_targets", "buttons"} | optional,
+                        f"{context}.battle", optional=optional)
+    mode = battle.get('input_mode', 'adb')
+    if mode not in ('adb', 'keyboard'):
+        raise ConfigError(f'{context}.battle.input_mode 必须是 adb 或 keyboard')
+    keyboard = battle.get('keyboard', {})
+    if not isinstance(keyboard, dict):
+        raise ConfigError(f'{context}.battle.keyboard 必须是对象')
+    _require_exact_keys(keyboard, {'instance_index', 'hold_seconds'}, f'{context}.battle.keyboard',
+                        optional={'instance_index', 'hold_seconds'})
+    index = keyboard.get('instance_index')
+    if index is not None and (isinstance(index, bool) or not isinstance(index, int) or index < 0):
+        raise ConfigError(f'{context}.battle.keyboard.instance_index 必须是非负整数或 null')
+    hold = keyboard.get('hold_seconds', .08)
+    if isinstance(hold, bool) or not isinstance(hold, (int, float)) or not .02 <= hold <= .5:
+        raise ConfigError(f'{context}.battle.keyboard.hold_seconds 必须在 0.02 到 0.5 秒之间')
     for key, lower, upper in (("start_timeout_seconds", 1, 60), ("timeout_seconds", 1, max_timeout),
                               ("tap_interval_seconds", 0, 2)):
         value = battle[key]
@@ -213,18 +230,33 @@ def _validate_battle(battle: Any, width: int, height: int, context: str, max_tim
     for index, target in enumerate(ends):
         _validate_template_target(target, width, height, f"{context}.battle.end_targets[{index}]", True)
     buttons = battle["buttons"]
-    if not isinstance(buttons, list) or len(buttons) != 4:
-        raise ConfigError(f"{context}.battle 必须按顺序配置四个战斗按钮")
-    for button, name in zip(buttons, ("一技能", "二技能", "大招", "普攻")):
+    if not isinstance(buttons, list) or not 4 <= len(buttons) <= 7:
+        raise ConfigError(f"{context}.battle 必须配置四个技能/普攻按钮，可追加替身、通灵、秘卷")
+    keys = set()
+    names = set()
+    core_names = ('一技能', '二技能', '大招', '普攻')
+    for position, button in enumerate(buttons):
         if not isinstance(button, dict):
             raise ConfigError(f"{context}.battle 战斗按钮必须是对象")
-        _require_exact_keys(button, {"name", "x", "y"}, f"{context}.battle.buttons")
-        if button["name"] != name:
-            raise ConfigError(f"{context}.battle 按钮顺序必须为一技能、二技能、大招、普攻")
+        _require_exact_keys(button, {"name", "x", "y", "key"}, f"{context}.battle.buttons", optional={'key'})
+        name = button['name']
+        if not isinstance(name, str) or name not in DEFAULT_BATTLE_KEYS or name in names:
+            raise ConfigError(f'{context}.battle 只允许三个技能、普攻、替身、通灵、秘卷，名称不可重复')
+        names.add(name)
+        if position < 4 and name != core_names[position]:
+            raise ConfigError(f"{context}.battle 前四个按钮顺序必须为一技能、二技能、大招、普攻")
+        try:
+            key = normalize_key(button.get('key', DEFAULT_BATTLE_KEYS[name]))
+        except ValueError as exc:
+            raise ConfigError(f'{context}.battle.buttons：{exc}') from exc
+        if mode == 'keyboard' and key in keys:
+            raise ConfigError(f'{context}.battle.buttons 的键盘按键不能重复：{key}')
+        keys.add(key)
         _coordinate(button["x"], width, context)
         _coordinate(button["y"], height, context)
-        if button["x"] < 1200 or button["y"] < 450:
-            raise ConfigError(f"{context}.battle 按钮必须位于右下战斗操作区域")
+        minimum_y = 150 if name in {'通灵', '秘卷'} else 450
+        if button["x"] < 1200 or button["y"] < minimum_y:
+            raise ConfigError(f"{context}.battle 按钮必须位于右侧战斗操作区域")
 
 
 def _validate_click_waits(action: dict, context: str) -> tuple[float, float]:

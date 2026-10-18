@@ -4,14 +4,14 @@ import pytest
 
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
-from naruto_daily.config import load_settings
+from battle_replay import load_legacy_adb_settings
 
 
 ROOT = Path(__file__).parents[1]
 
 
 def action():
-    return next(a for a in load_settings(ROOT / 'config.example.json').tasks['secret_realm']
+    return next(a for a in load_legacy_adb_settings(ROOT / 'config.example.json').tasks['secret_realm']
                 if a['type'] == 'handle_secret_realm')
 
 

@@ -41,9 +41,9 @@ class SecretClient:
 
 def secret_action():
     from pathlib import Path
-    from naruto_daily.config import load_settings
+    from battle_replay import load_legacy_adb_settings
     root = Path(__file__).parents[1]
-    return next(a for a in load_settings(root / "config.example.json").tasks["secret_realm"]
+    return next(a for a in load_legacy_adb_settings(root / "config.example.json").tasks["secret_realm"]
                 if a["type"] == "handle_secret_realm")
 
 

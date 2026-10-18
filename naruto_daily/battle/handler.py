@@ -5,6 +5,7 @@ import logging
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from contextvars import copy_context
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Callable
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.execution import current_execution, retry_observation, stage_timeout
+from naruto_daily.common.keyboard import DEFAULT_BATTLE_KEYS, LDPlayerKeyboard
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal.diagnostics import model_request_context
 from naruto_daily.multimodal.prompt_jev import BATTLE_COMPLETION
@@ -45,8 +47,11 @@ def run_battle(
     # 调用方已经完成加载等待；一批全部输入完成后再开始下一批。
     tap_seconds = float(check_interval_seconds)
     buttons = battle['buttons']
-    LOGGER.info('进入战斗模块，先检查当前页面；确认后使用 %d 个战斗按钮（%s）并发连点 %g 秒，再停止点击检查结算',
-                len(buttons), '、'.join(button['name'] for button in buttons), tap_seconds)
+    keyboard_mode = battle.get('input_mode', 'adb') == 'keyboard'
+    keyboard = None
+    LOGGER.info('进入战斗模块，先检查当前页面；确认后使用 %d 个战斗按钮（%s），以%s运行 %g 秒，再停止输入检查结算',
+                len(buttons), '、'.join(button['name'] for button in buttons),
+                '雷电键盘逐键短按' if keyboard_mode else 'ADB 并发连点', tap_seconds)
     started, waited = clock(), images.elapsed
     execution = current_execution()
     timeout = stage_timeout(float(battle['timeout_seconds']))
@@ -65,8 +70,13 @@ def run_battle(
     def tap_button(button):
         if remaining() <= 0:
             return 0
-        LOGGER.debug('战斗点击：%s，坐标：(%d, %d)', button['name'], button['x'], button['y'])
-        client.tap(button['x'], button['y'])
+        if keyboard_mode:
+            key = button.get('key', DEFAULT_BATTLE_KEYS[button['name']])
+            LOGGER.debug('战斗按键：%s，按键：%s', button['name'], key)
+            keyboard.press(key)
+        else:
+            LOGGER.debug('战斗点击：%s，坐标：(%d, %d)', button['name'], button['x'], button['y'])
+            client.tap(button['x'], button['y'])
         return 1
 
     targets = battle['end_targets']
@@ -126,7 +136,10 @@ def run_battle(
             raise VisualError('战斗完成识别返回格式无效，已停止点击')
         return None, result
 
-    with ThreadPoolExecutor(max_workers=len(buttons), thread_name_prefix='battle-tap') as pool:
+    # 键盘逐键短按并松开；ADB 保持原来的并发点击。
+    pool_context = nullcontext() if keyboard_mode else ThreadPoolExecutor(
+        max_workers=len(buttons), thread_name_prefix='battle-tap')
+    with pool_context as pool:
         while remaining() > 0:
             if elapsed() >= next_check:
                 # 前一批全部输入均已返回，先停止全部点击，再截图/调用模型。
@@ -158,9 +171,16 @@ def run_battle(
                     LOGGER.info('开始下一段 %g 秒战斗连点', tap_seconds)
             if remaining() <= 0:
                 break
+            if keyboard_mode and keyboard is None:
+                # 只有首轮识别允许继续战斗，才定位窗口；结果页不激活窗口。
+                keyboard = LDPlayerKeyboard.from_client(client, battle.get('keyboard', {}))
             # 等待本批全部输入返回，避免后台点击越过结算处理，也不积压后续批次。
-            pending = [pool.submit(copy_context().run, tap_button, button) for button in buttons]
-            taps += sum(future.result() for future in pending)
+            if keyboard_mode:
+                # 失败后立即退出，不能把尚未发送的键积压到后台继续执行。
+                taps += sum(tap_button(button) for button in buttons)
+            else:
+                pending = [pool.submit(copy_context().run, tap_button, button) for button in buttons]
+                taps += sum(future.result() for future in pending)
             delay = max(0.0, min(interval, remaining(), next_check - elapsed()))
             if delay > 0:
                 images.sleep(delay)
