@@ -14,13 +14,13 @@ from test_battle import Clock, Client, battle_config
 
 EXPECTED_BUTTONS = [
     dict(name="秘卷", x=1730, y=445),
-    dict(name="通灵", x=1730, y=270),
+    dict(name="通灵", x=1730, y=230),
     dict(name="二技能", x=1530, y=750),
     dict(name="普攻", x=1715, y=885),
     dict(name="替身", x=1300, y=965),
     dict(name="大招", x=1730, y=650),
 ]
-EXPECTED_POINTS = {(1730, 445), (1730, 270), (1530, 750), (1715, 885), (1300, 965), (1730, 650)}
+EXPECTED_POINTS = {(1730, 445), (1730, 230), (1530, 750), (1715, 885), (1300, 965), (1730, 650)}
 
 
 class ScreenClient(Client):
