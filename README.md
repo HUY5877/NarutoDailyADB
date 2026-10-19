@@ -36,6 +36,8 @@ Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限，
 
 扫码服务还需配置 OSS、雷电控制台路径和实例池，见[扫码服务说明](naruto_daily/login_service/README.md)。服务按分配到的实例覆盖任务配置中的 ADB 路径和 `serial`。
 
+登录后依次处理公告和领取按钮，再检查通用关闭按钮；未发现关闭按钮时，使用本地图片模板识别“组织争霸赛”弹窗。确认弹窗仍在后，点击底部空白位置 `(1220,975)` 关闭，继续原有主界面检查。未识别到该弹窗时沿用原流程；此规则仅在登录收尾的 `return_to_main.dismiss_popup` 中配置。
+
 ## 启动
 
 完成配置后，双击唯一启动入口 [启动扫码服务.cmd](启动扫码服务.cmd)。它运行常驻 Redis worker，生成并上传二维码，扫码后执行日常；按 `Ctrl+C` 停止。服务默认是 `mock`，真实运行需设置 `EMULATOR_DRIVER=ldplayer`。

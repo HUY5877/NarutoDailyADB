@@ -149,6 +149,19 @@
           "right": 1920,
           "bottom": 300,
           "threshold": 0.95
+        },
+        "dismiss_popup": {
+          "marker": {
+            "name": "组织争霸赛弹窗",
+            "template": "assets/organization_tournament_popup.png",
+            "left": 750,
+            "top": 220,
+            "right": 1700,
+            "bottom": 550,
+            "threshold": 0.9
+          },
+          "x": 1220,
+          "y": 975
         }
       }
     ],
