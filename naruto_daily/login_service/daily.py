@@ -236,7 +236,7 @@ class DailySession:
         if on_arena_started is not None:
             on_arena_started(battle_deadline)
         LOGGER.info('开始决斗场周胜战斗，从本次模块调用起计时 40 分钟，到时结束执行进程')
-        battle = dict(timeout_seconds=ARENA_WEEKLY_SECONDS, tap_interval_seconds=.1, end_targets=[])
+        battle = dict(timeout_seconds=ARENA_WEEKLY_SECONDS, tap_interval_seconds=0, end_targets=[])
         try:
             with execution_scope(battle_deadline, clock=self._clock, sleep=self._sleep_impl):
                 while True:
