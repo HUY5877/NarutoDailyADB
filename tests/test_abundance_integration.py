@@ -10,7 +10,6 @@ from naruto_daily.config import ConfigError, load_settings
 from naruto_daily.runner import ActionRunner
 from naruto_daily.tasks import build_task
 from naruto_daily.common.visual import find_template_in_png
-from battle_replay import load_legacy_adb_settings
 
 
 ROOT = Path(__file__).parents[1]
@@ -35,7 +34,7 @@ def test_real_screens_follow_abundance_from_main_page_through_result_and_back(mo
     now = [0.0]
     monkeypatch.setattr(handler, 'run_battle_without_first_skill',
                         lambda *a, **kw: run_battle_without_first_skill(*a, **kw, clock=lambda: now[0]))
-    settings = load_legacy_adb_settings(ROOT / 'config.example.json')
+    settings = load_settings(ROOT / 'config.example.json')
     frames = {name: (ROOT / 'tests/fixtures' / path).read_bytes() for name, path in {
         'home': 'main_page_reward_dot.png', 'cards': 'abundance_card.png',
         'challenge': 'abundance_challenge.png', 'battle': 'abundance_battle.png',
@@ -131,7 +130,7 @@ def test_completed_page_stops_battle_locally_and_returns_home(
     from naruto_daily.return_to_main import return_to_main
 
     caplog.set_level(logging.INFO, logger='naruto_daily')
-    settings = load_legacy_adb_settings(ROOT / 'config.example.json')
+    settings = load_settings(ROOT / 'config.example.json')
     action, back = deepcopy(settings.tasks['abundance'][3:])
     original_battle = deepcopy(action['battle'])
     frames = {name: (ROOT / 'tests/fixtures' / filename).read_bytes() for name, filename in {

@@ -717,11 +717,6 @@
           "threshold": 0.85
         },
         "battle": {
-          "input_mode": "keyboard",
-          "keyboard": {
-            "instance_index": null,
-            "hold_seconds": 0.08
-          },
           "start_timeout_seconds": 20,
           "timeout_seconds": 120,
           "tap_interval_seconds": 0,
@@ -748,45 +743,23 @@
           "buttons": [
             {
               "name": "一技能",
-              "key": "J",
               "x": 1500,
               "y": 960
             },
             {
               "name": "二技能",
-              "key": "H",
               "x": 1535,
               "y": 750
             },
             {
               "name": "大招",
-              "key": "L",
               "x": 1725,
               "y": 650
             },
             {
               "name": "普攻",
-              "key": "K",
               "x": 1715,
               "y": 885
-            },
-            {
-              "name": "替身",
-              "key": "SPACE",
-              "x": 1301,
-              "y": 966
-            },
-            {
-              "name": "通灵",
-              "key": "R",
-              "x": 1729,
-              "y": 263
-            },
-            {
-              "name": "秘卷",
-              "key": "E",
-              "x": 1728,
-              "y": 443
             }
           ]
         }
@@ -911,11 +884,6 @@
           "max_calls": 6
         },
         "battle": {
-          "input_mode": "keyboard",
-          "keyboard": {
-            "instance_index": null,
-            "hold_seconds": 0.08
-          },
           "start_timeout_seconds": 60,
           "timeout_seconds": 300,
           "tap_interval_seconds": 0,
@@ -960,45 +928,23 @@
           "buttons": [
             {
               "name": "一技能",
-              "key": "J",
               "x": 1500,
               "y": 960
             },
             {
               "name": "二技能",
-              "key": "H",
               "x": 1535,
               "y": 750
             },
             {
               "name": "大招",
-              "key": "L",
               "x": 1725,
               "y": 650
             },
             {
               "name": "普攻",
-              "key": "K",
               "x": 1715,
               "y": 885
-            },
-            {
-              "name": "替身",
-              "key": "SPACE",
-              "x": 1301,
-              "y": 966
-            },
-            {
-              "name": "通灵",
-              "key": "R",
-              "x": 1729,
-              "y": 263
-            },
-            {
-              "name": "秘卷",
-              "key": "E",
-              "x": 1728,
-              "y": 443
             }
           ]
         },
