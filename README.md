@@ -53,6 +53,10 @@ Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限，
 
 六个区域每轮分别提交给六个线程并发点击，等待本轮全部完成后再进入下一轮，不串行逐点点击，也不积压后台输入。坐标取战斗截图中的按钮中心，不使用按键提示的偏移位置；分辨率不为 1920×1080 时停止。决斗场复用公共循环的超时、停点截图及结算识别逻辑，支持 `model`、`end_detector`、`before_attack` 和 `check_interval_seconds`；不会修改传入的日常战斗配置。调用方仍需确保在战斗画面启用循环，坐标点击本身不识别场景。
 
+扫码客户端通过 `userOptions.mainTask: "arena_weekly"` 选择决斗场周胜，省略或选择 `daily` 时沿用完整日常。周胜复用扫码登录收尾和弹窗清理，随后执行 `config.example.json` 中独立的 `tasks.arena_weekly`：进入奖励页，使用同一套滑动逻辑查找“决斗场击败1名忍者”卡片并点击前往。标题模板不含会变化的次数和活跃数字。卡片未能点击前往时停止任务。
+
+第一次调用决斗场六区战斗模块时开始独立计时 40 分钟；准备页面耗时不占用这 40 分钟。进入后持续运行该模块，到时正常结束本次任务，父进程立即终止执行子进程并关闭、释放实例，常驻 worker 继续领取其他任务。该定时结束不经过失败保留现场的 60 秒等待。更新时需同时保留新版 `config.example.json` 和 `assets/arena_weekly_label.png`，并重启常驻 worker。
+
 ## 启动
 
 完成配置后，双击唯一启动入口 [启动扫码服务.cmd](启动扫码服务.cmd)。它运行常驻 Redis worker，生成并上传二维码，扫码后执行日常；按 `Ctrl+C` 停止。服务默认是 `mock`，真实运行需设置 `EMULATOR_DRIVER=ldplayer`。

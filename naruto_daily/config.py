@@ -32,7 +32,7 @@ class Settings:
 
 
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
-TASK_NAMES = {"login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "squad_assault", "secret_realm", "secret_realm_farm"}
+TASK_NAMES = {"login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "squad_assault", "secret_realm", "secret_realm_farm", "arena_weekly"}
 ACTION_KEYS = {
     "main_menu_tap": {"type", "name", "main_menu", "multimodal", "timeout_seconds",
                       "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds"},
@@ -837,7 +837,7 @@ def load_settings(path: Path, *, skip_account_login: bool = False) -> Settings:
     tasks = payload["tasks"]
     if not isinstance(tasks, dict):
         raise ConfigError("tasks 必须是对象")
-    _require_exact_keys(tasks, TASK_NAMES, "tasks", optional={"secret_realm", "secret_realm_farm", "survival_challenge", "squad_assault", "ichiraku_takeout", "equipment_upgrade"})
+    _require_exact_keys(tasks, TASK_NAMES, "tasks", optional={"secret_realm", "secret_realm_farm", "survival_challenge", "squad_assault", "ichiraku_takeout", "equipment_upgrade", "arena_weekly"})
     validated: dict[str, list[dict[str, Any]]] = {}
     for task_name, actions in tasks.items():
         if not isinstance(actions, list):

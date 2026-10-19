@@ -1374,6 +1374,41 @@
           "threshold": 0.95
         }
       }
+    ],
+    "arena_weekly": [
+      {
+        "type": "main_menu_tap",
+        "name": "奖励入口",
+        "timeout_seconds": 60,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "main_menu": "rewards",
+        "multimodal": {
+          "timeout_seconds": 30,
+          "max_calls": 3
+        }
+      },
+      {
+        "type": "find_card_and_click",
+        "name": "决斗场击败1名忍者",
+        "template": "assets/arena_weekly_label.png",
+        "left": 0,
+        "top": 300,
+        "right": 1920,
+        "bottom": 580,
+        "threshold": 0.85,
+        "button_template": "assets/go_now_button.png",
+        "button_threshold": 0.85,
+        "completed_template": "assets/completed_stamp.png",
+        "completed_threshold": 0.9,
+        "button_left_offset": -140,
+        "button_top_offset": 90,
+        "button_right_offset": 140,
+        "button_bottom_offset": 280,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 5
+      }
     ]
   }
 }

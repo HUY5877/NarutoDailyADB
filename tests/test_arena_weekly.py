@@ -1,0 +1,272 @@
+"""周胜协议、独立动作链与从战斗开始计时的停止边界，不连接真实设备。"""
+
+import asyncio
+import io
+import json
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+import cv2
+import numpy as np
+import pytest
+
+from naruto_daily.common.adb_client import AdbError
+from naruto_daily.common.execution import check_execution, current_execution, DailyDeadlineExceeded
+from naruto_daily.config import ConfigError
+from naruto_daily.common.navigation import navigate_to_card, NavigationSummary
+from naruto_daily.common.visual import NonRetryableVisualError
+from naruto_daily.runner import ActionRunner
+from naruto_daily.login_service import daily, ldplayer_worker, runtime as runtime_module
+from naruto_daily.login_service.models import parse_queue_task
+from naruto_daily.login_service.user_options import parse_user_options
+from test_login_service_daily import session_for
+from test_login_service_ldplayer_worker import daily_dependencies, request
+from test_login_service_terminal_logs import make_runtime, PNG, SUCCESS_PROTOCOL, no_reader_tasks, eventually
+from test_login_service_user_options import queue_body
+
+
+@pytest.mark.parametrize('main_task', ['daily', 'arena_weekly'])
+def test_client_main_task_is_preserved_through_queue_options(main_task):
+    supplied = dict(mainTask=main_task, equipmentStamina=False, secretRealmMode='skip')
+    assert parse_user_options(supplied) == supplied
+    record = parse_queue_task(queue_body() | {'userOptions': supplied}, 'login')
+    assert record.user_options == supplied
+    assert record.user_options is not supplied
+
+
+@pytest.mark.parametrize('main_task', [None, '', 'arena', 'DAILY', True, 1, [], {}])
+def test_unknown_main_tasks_are_rejected(main_task):
+    with pytest.raises(ValueError):
+        parse_user_options({'mainTask': main_task})
+
+
+def weekly_session(tmp_path):
+    return session_for(tmp_path, user_options={'mainTask': 'arena_weekly'}, change=lambda data: data['tasks'].update(
+        arena_weekly=[{'type': 'tap', 'x': 123, 'y': 456}, {'type': 'wait', 'seconds': 45}]))
+
+
+def test_weekly_runs_only_its_entry_then_repeats_duel_for_forty_minutes(tmp_path, monkeypatch):
+    session, clock, commands = weekly_session(tmp_path)
+    session._logged_in = True
+    calls, starts = [], []
+    def battle(client, battle, **kwargs):
+        assert client is session.client
+        assert battle['end_targets'] == [] and kwargs.get('model') is None
+        assert current_execution().deadline == starts[0]
+        assert kwargs['clock'] is clock
+        calls.append(clock())
+        clock.sleep(600)
+        check_execution()
+    monkeypatch.setattr(daily, 'run_duel_battle', battle, raising=False)
+    before = clock()
+    assert session.run_daily(before + 60, on_arena_started=starts.append) == 2
+    assert starts == [before + 45 + 2400]
+    assert calls == [before + 45 + offset for offset in (0, 600, 1200, 1800)]
+    assert clock() == starts[0]
+    assert [cmd[-2:] for cmd, _ in commands if 'tap' in cmd] == [['123', '456']]
+    assert current_execution() is None
+
+
+@pytest.mark.parametrize('error', [AdbError('input failed'), RuntimeError('failed'), DailyDeadlineExceeded('early'),
+                                  TimeoutError('early'), subprocess.TimeoutExpired('adb', 20)])
+def test_weekly_does_not_hide_errors_before_its_deadline(tmp_path, monkeypatch, error):
+    session, clock, _ = weekly_session(tmp_path)
+    session._logged_in = True
+    def battle(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(daily, 'run_duel_battle', battle, raising=False)
+    with pytest.raises(type(error)):
+        session.run_daily(clock() + 60)
+
+
+def test_adb_timeout_at_the_battle_deadline_is_a_normal_timed_finish(tmp_path, monkeypatch):
+    session, clock, _ = weekly_session(tmp_path)
+    session._logged_in = True
+    def battle(*args, **kwargs):
+        clock.sleep(2400)
+        raise subprocess.TimeoutExpired('adb', 2400)
+    monkeypatch.setattr(daily, 'run_duel_battle', battle)
+    assert session.run_daily(clock() + 60) == 2
+
+
+def test_weekly_requires_its_own_route_instead_of_running_daily(tmp_path):
+    with pytest.raises(ConfigError, match='周胜|arena_weekly'):
+        session_for(tmp_path, user_options={'mainTask': 'arena_weekly'})
+
+
+def test_example_weekly_route_uses_reward_entry_and_the_existing_card_navigation():
+    payload = json.loads((Path(__file__).resolve().parents[1] / 'config.example.json').read_text(encoding='utf-8'))
+    actions = payload['tasks']['arena_weekly']
+    assert [a['type'] for a in actions] == ['main_menu_tap', 'find_card_and_click']
+    assert actions[0] == payload['tasks']['organization_pray'][0]
+    assert actions[1]['name'] == '决斗场击败1名忍者'
+    assert actions[1]['template'] == 'assets/arena_weekly_label.png'
+    assert actions[1]['button_template'] == 'assets/go_now_button.png'
+
+
+@pytest.mark.parametrize('left', [480, 900, 1450])
+def test_real_weekly_card_and_its_go_button_match_after_changing_counters(left):
+    root = Path(__file__).resolve().parents[1]
+    card = cv2.imread(str(root / 'tests/fixtures/arena_weekly_card.png'))
+    # 次数和活跃进度随账号改变，不能成为标题模板的一部分。
+    card[395:438, 35:330] = (50, 150, 200)
+    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    frame[134:134 + card.shape[0], left:left + card.shape[1]] = card
+    png = cv2.imencode('.png', frame)[1].tobytes()
+    class Client:
+        taps = []
+        def screenshot(self):
+            return png
+        def tap(self, *point):
+            self.taps.append(point)
+        def swipe(self, *args):
+            pytest.fail('已确认卡片和前往按钮，不应滑动')
+    action = json.loads((root / 'config.example.json').read_text(encoding='utf-8'))['tasks']['arena_weekly'][1]
+    client = Client()
+    result = navigate_to_card(client, action, asset_root=root, sleep=lambda _: None)
+    assert not result.completed
+    assert client.taps == [(left + 200, 655)]
+
+
+def test_completed_card_does_not_allow_weekly_battle_to_start(monkeypatch):
+    import naruto_daily.runner as runner
+    monkeypatch.setattr(runner, 'navigate_to_card', lambda *args, **kwargs: NavigationSummary(0, True))
+    action = json.loads((Path(__file__).resolve().parents[1] / 'config.example.json').read_text(encoding='utf-8'))['tasks']['arena_weekly'][1]
+    with pytest.raises(NonRetryableVisualError, match='未能点击前往'):
+        ActionRunner(object(), user_options={'mainTask': 'arena_weekly'}).run([action])
+
+
+def test_child_publishes_battle_deadline_and_completes_normally_at_that_deadline(monkeypatch, tmp_path):
+    now = [1_800_000_000.0]
+    class Session:
+        def __init__(self, **options):
+            assert options['user_options']['mainTask'] == 'arena_weekly'
+        def wait_for_authorization(self, deadline):
+            now[0] += 2
+        def finish_login(self, deadline):
+            now[0] += 3
+        def run_daily(self, deadline, *, on_arena_started):
+            now[0] += 70
+            end = now[0] + 2400
+            on_arena_started(end)
+            now[0] = end
+            return 2
+    monkeypatch.setattr(ldplayer_worker, '_load_daily_session', lambda: Session)
+    monkeypatch.setattr(ldplayer_worker, '_load_dependencies', lambda: daily_dependencies([]))
+    message = request(now[0], dailyConfigPath=str(tmp_path / 'daily.json'), dailyTimeoutSeconds=3000,
+                      userOptions={'mainTask': 'arena_weekly'})
+    output = io.StringIO()
+    code = ldplayer_worker.main(input_stream=io.StringIO(json.dumps(message) + '\n'), output_stream=output,
+                                clock=lambda: now[0], use_watchdog=False)
+    events = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert code == 0
+    assert [e['type'] for e in events if e['type'] != 'log'] == [
+        'stage', 'stage', 'stage', 'qr', 'authorized', 'logged_in', 'arena_started', 'daily_completed']
+    assert next(e for e in events if e['type'] == 'arena_started')['executionDeadline'] == now[0]
+    assert events[-1] == {'type': 'daily_completed', 'actionCount': 2}
+
+
+def test_parent_kills_a_stuck_weekly_child_at_battle_deadline_and_marks_completed(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_module, 'ARENA_WEEKLY_SECONDS', 1, raising=False)
+    program = '''
+import json,sys,time
+message=json.loads(sys.stdin.readline())
+for event in message['events']:
+    print(json.dumps(event),flush=True)
+print(json.dumps({'type':'arena_started','executionDeadline':time.time()+1}),flush=True)
+time.sleep(60)
+'''
+    async def scenario():
+        runtime, reporter, record = make_runtime(tmp_path)
+        record.user_options = parse_user_options({'mainTask': 'arena_weekly'})
+        work = asyncio.create_task(runtime._run_child(record, [sys.executable, '-u', '-c', program],
+            {'events': SUCCESS_PROTOCOL[:3]}, daily=True))
+        try:
+            await eventually(lambda: record.execution_deadline is not None and record.execution_deadline < time.time() + 2)
+            snapshot = json.loads((tmp_path / 'state/runs' / f'{record.id}.json').read_text(encoding='utf-8'))
+            assert snapshot['status'] == 'running_daily'
+            assert snapshot['deadline'] == record.execution_deadline
+            result = await asyncio.wait_for(work, 5)
+        finally:
+            if not work.done():
+                work.cancel()
+                await asyncio.gather(work, return_exceptions=True)
+        assert result == PNG and record.daily_status == 'completed'
+        assert record.daily_error_code is None
+        assert runtime._children[record.id].poll() is not None
+        assert no_reader_tasks()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('events,main_task', [
+    (SUCCESS_PROTOCOL[:3], 'daily'),
+    (SUCCESS_PROTOCOL[:1], 'arena_weekly'),
+])
+def test_parent_rejects_battle_start_for_daily_or_before_login(tmp_path, events, main_task):
+    program = '''
+import json,sys,time
+message=json.loads(sys.stdin.readline())
+for event in message['events']:
+    print(json.dumps(event),flush=True)
+print(json.dumps({'type':'arena_started','executionDeadline':time.time()+2400}),flush=True)
+'''
+    async def scenario():
+        runtime, reporter, record = make_runtime(tmp_path)
+        record.user_options = parse_user_options({'mainTask': main_task})
+        with pytest.raises(ValueError):
+            await runtime._run_child(record, [sys.executable, '-u', '-c', program], {'events': events}, daily=True)
+        assert record.daily_status != 'completed'
+    asyncio.run(scenario())
+
+
+def test_weekly_deadline_closes_instance_without_failure_hold_and_keeps_worker_running(tmp_path, monkeypatch):
+    from test_login_service_daily_runtime import make_runtime as lifecycle_runtime, record_with_ttl
+    monkeypatch.setattr(runtime_module, 'ARENA_WEEKLY_SECONDS', .2)
+    monkeypatch.setattr(runtime_module, 'FAILED_INSTANCE_HOLD_SECONDS', 60)
+    program = '''
+import json,sys,time
+message=json.loads(sys.stdin.readline())
+for event in message['events']:
+    print(json.dumps(event),flush=True)
+print(json.dumps({'type':'arena_started','executionDeadline':time.time()+.2}),flush=True)
+time.sleep(60)
+'''
+    async def scenario():
+        record = record_with_ttl()
+        record.user_options = parse_user_options({'mainTask': 'arena_weekly'})
+        runtime, storage, queue, pool = lifecycle_runtime(tmp_path, monkeypatch, record, [])
+        async def child(current):
+            return await runtime._run_child(current, [sys.executable, '-u', '-c', program],
+                                             {'events': SUCCESS_PROTOCOL[:3]}, daily=True)
+        monkeypatch.setattr(runtime, '_run_ldplayer', child)
+        try:
+            await asyncio.wait_for(runtime._process_record(record), 5)
+            assert record.daily_status == 'completed' and record.daily_error_code is None
+            assert pool.closed == [record.id] and pool.state == 'released'
+            assert not queue.failed_sessions and not runtime._stopping
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('deadline', [None, True, '2400', -1, 0, 1, float('nan'), float('inf'), 'too_long'])
+def test_parent_rejects_invalid_or_excessive_battle_deadline(tmp_path, deadline):
+    program = '''
+import json,sys,time
+message=json.loads(sys.stdin.readline())
+for event in message['events']:
+    print(json.dumps(event),flush=True)
+end=message['deadline']
+if end=='too_long': end=time.time()+2401
+print(json.dumps({'type':'arena_started','executionDeadline':end}),flush=True)
+'''
+    async def scenario():
+        runtime, reporter, record = make_runtime(tmp_path)
+        record.user_options = parse_user_options({'mainTask': 'arena_weekly'})
+        with pytest.raises(ValueError):
+            await runtime._run_child(record, [sys.executable, '-u', '-c', program],
+                                     {'events': SUCCESS_PROTOCOL[:3], 'deadline': deadline}, daily=True)
+        assert record.daily_status != 'completed'
+    asyncio.run(scenario())
