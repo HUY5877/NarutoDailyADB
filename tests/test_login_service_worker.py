@@ -124,9 +124,8 @@ async def assert_interrupted_run(client, runtime, task_id):
     assert run["workerId"] == runtime._redis_queue.owner
     assert run["finishedAt"] is not None
     assert datetime.fromisoformat(run["finishedAt"].replace("Z", "+00:00"))
-    logs = [json.loads(fields["json"]) for _, fields in await client.xrange(f"{prefix}:logs:{task_id}")]
-    assert logs[-1]["level"] == "WARNING"
-    assert "停止" in logs[-1]["message"] and "中断" in logs[-1]["message"]
+    assert run["logSource"] == "disabled"
+    assert await client.exists(f"{prefix}:logs:{task_id}") == 0
     journal_path = runtime.config.ldplayer_state_dir / "runs" / f"{task_id}.json"
     assert journal_path.is_file(), "Stopping a consumed task must persist its interrupted execution journal"
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
@@ -460,7 +459,7 @@ def test_shutdown_before_initial_run_write_still_records_interrupted_run(tmp_pat
                 return getattr(client, name)
 
             async def eval(self, *args):
-                if args[1] == 3 and args[2] == run_key and not publish_started.is_set():
+                if args[1] == 2 and args[2] == run_key and not publish_started.is_set():
                     publish_started.set()
                     await allow_publish.wait()
                 return await client.eval(*args)

@@ -108,6 +108,15 @@ end
 local result = claim()
 -- Stale session entries can be removed; time-ineligible jobs stay queued.
 if result >= 0 then redis.call('RPOP', KEYS[2]) end
+if result == 1 and ARGV[12] == '1' then
+    local cursor = ''
+    if redis.call('TYPE', KEYS[3]).ok == 'string' then
+        local ok, run = pcall(cjson.decode, redis.call('GET', KEYS[3]))
+        if ok and type(run) == 'table' and run.taskId == ARGV[1]
+            and type(run.logCursor) == 'string' then cursor = run.logCursor end
+    end
+    return {1, cursor}
+end
 return result
 """
 
@@ -239,16 +248,20 @@ if runKind ~= 'none' then
     if previous.status == 'completed' or previous.status == 'failed'
         or previous.status == 'expired' or previous.status == 'interrupted' then return 0 end
 end
-local logKind = redis.call('TYPE', KEYS[3]).ok
-if logKind ~= 'none' and logKind ~= 'stream' then return 0 end
 session.status = 'failed'
 session.errorCode = ARGV[5]
 session.error = ARGV[6]
 local encoded = cjson.encode(session)
-redis.call('XADD', KEYS[3], 'MAXLEN', ARGV[10], '*', 'json', ARGV[8])
-redis.call('SET', KEYS[2], ARGV[7], 'EX', ARGV[9])
-redis.call('EXPIRE', KEYS[3], ARGV[9])
+redis.call('SET', KEYS[2], ARGV[7], 'EX', ARGV[8])
 redis.call('SET', KEYS[1], encoded, 'KEEPTTL')
+return 1
+"""
+
+
+_REJECT_LOG_CURSOR = """
+if redis.call('TYPE', KEYS[1]).ok ~= 'string' then return 0 end
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
 return 1
 """
 
@@ -259,6 +272,7 @@ class RedisTaskQueue:
     def __init__(self, config: ServiceConfig, *, client=None) -> None:
         self.config = config
         self.owner = secrets.token_hex(32)
+        self.log_publisher = None
         try:
             if client is None:
                 from redis.asyncio import from_url
@@ -326,17 +340,36 @@ class RedisTaskQueue:
                 "taskId": task_id, "status": "failed", "startedAt": None,
                 "finishedAt": timestamp, "updatedAt": timestamp, "workerId": self.owner,
                 "sequence": 0, "errorCode": code,
+                "logSource": "sls" if self.log_publisher is not None else "disabled",
             }
             event = {"time": timestamp, "level": "ERROR", "message": message}
             prefix = self.config.redis_queue_key
-            accepted = await self._call(
-                "eval", _REJECT_SCRIPT, 3, f"{prefix}:sessions:{task_id}",
-                f"{prefix}:runs:{task_id}", f"{prefix}:logs:{task_id}",
-                task_id, created_at, expires_at, str(expires_ms), code, message,
-                json.dumps(run, ensure_ascii=False), json.dumps(event, ensure_ascii=False),
-                str(getattr(self.config, "run_log_retention_seconds", 86_400)),
-                str(getattr(self.config, "run_log_max_entries", 2_000)),
-            )
+            run_key = f"{prefix}:runs:{task_id}"
+            encoded_run = json.dumps(run, ensure_ascii=False)
+            try:
+                accepted = await self._call(
+                    "eval", _REJECT_SCRIPT, 2, f"{prefix}:sessions:{task_id}", run_key,
+                    task_id, created_at, expires_at, str(expires_ms), code, message,
+                    encoded_run, str(self.config.run_log_retention_seconds),
+                )
+            except RedisQueueError:
+                # A lost reply can follow a successful write. Only our exact
+                # snapshot authorizes publication; foreign/newer state does not.
+                if await self._call("get", run_key) != encoded_run:
+                    raise
+                accepted = 1
+            if accepted and self.log_publisher is not None:
+                self.log_publisher.emit(task_id, {
+                    "time": created_at, "level": "INFO",
+                    "message": "登录申请已提交，等待执行服务器领取任务。",
+                })
+                cursor = self.log_publisher.emit(task_id, event)
+                self.log_publisher.finish(task_id)
+                if cursor is not None:
+                    await self._call(
+                        "eval", _REJECT_LOG_CURSOR, 1, run_key, encoded_run,
+                        json.dumps(dict(run, logCursor=cursor), ensure_ascii=False),
+                    )
             logger.warning("Rejected login queue task %s: %s (failure report %s)",
                            task_id, code, "stored" if accepted else "not authorized")
         except (RedisQueueError, ValueError, TypeError, OverflowError, OSError):
@@ -405,11 +438,17 @@ class RedisTaskQueue:
         lease_start_ms = int(models.time.time() * 1000)
         lease_expiry_ms = lease_start_ms + 600_000
         iso = lambda ms: datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
-        claimed = await self._call('eval', _CLAIM_SCRIPT, 2, self._session_key(record), self.config.redis_queue_key,
+        claimed = await self._call('eval', _CLAIM_SCRIPT, 3, self._session_key(record), self.config.redis_queue_key,
+                                   f'{self.config.redis_queue_key}:runs:{record.id}',
                                    *self._session_args(record), payload, str(models.timestamp_ms(record.created_at)),
                                    str(lease_start_ms),
                                    iso(lease_expiry_ms) if record.login_timeout_seconds else '',
-                                   str(lease_expiry_ms), iso(lease_start_ms))
+                                   str(lease_expiry_ms), iso(lease_start_ms),
+                                   '1' if self.log_publisher is not None else '0')
+        if isinstance(claimed, (list, tuple)):
+            claimed, cursor = claimed
+            if claimed == 1 and cursor and self.log_publisher is not None:
+                self.log_publisher.observe_cursor(cursor, task_id=record.id)
         if claimed == -1:
             await self._defer_timestamps(payload, body)
         if claimed != 1:

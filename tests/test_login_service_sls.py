@@ -1,10 +1,9 @@
-"""Offline SLS migration tests: actual Redis Lua semantics, no cloud calls."""
+"""Offline direct SLS producer tests; no Redis or cloud calls."""
 
 import asyncio
 from dataclasses import replace
 import json
 import os
-import sqlite3
 import threading
 from uuid import uuid4
 
@@ -12,10 +11,9 @@ import pytest
 
 from naruto_daily.common import environment
 from naruto_daily.login_service.config import ServiceConfig, load_config
-from naruto_daily.login_service.queue import RedisTaskQueue
-from naruto_daily.login_service.sls_logs import Checkpoint, Checkpoints, SlsLogMirror, SlsSdkWriter
+from naruto_daily.login_service import sls_logs
+from naruto_daily.login_service.sls_logs import SlsSdkWriter
 from oss_fakes import OSS_ENV
-
 
 SLS_ENV = {**OSS_ENV, "REDIS_URL": "redis://fixture.invalid/0", "SLS_ENABLED": "true",
            "APP_ENV": "test", "SLS_ENDPOINT": "https://cn-shanghai.log.aliyuncs.com",
@@ -29,221 +27,264 @@ class Writer:
         self.fail = False
 
     async def put(self, records):
-        self.batches.append(records)
+        self.batches.append([dict(row) for row in records])
         if self.fail:
             raise RuntimeError("private SDK error credential=fixture-sls-secret")
 
 
-def fixture(tmp_path, **changes):
-    fakeredis = pytest.importorskip("fakeredis.aioredis")
-    pytest.importorskip("lupa")
-    redis = fakeredis.FakeRedis(decode_responses=True)
-    config = replace(load_config(SLS_ENV), ldplayer_state_dir=tmp_path, **changes)
-    queue = RedisTaskQueue(config, client=redis)
-    writer = Writer()
-    mirror = SlsLogMirror(config, queue, writer=writer)
-    return redis, config, writer, mirror
-
-
-async def append(redis, config, task_id, number, message="正常任务节点", **fields):
-    event = {"time": "2026-10-20T09:00:00.000Z", "level": "INFO", "message": message, **fields}
-    return await redis.xadd(f"{config.redis_queue_key}:logs:{task_id}",
-                           {"json": json.dumps(event)}, id=f"1800000000000-{number}")
-
-
-def test_scan_mirrors_submission_and_rejection_without_a_running_task(tmp_path):
-    async def scenario():
-        redis, config, writer, mirror = fixture(tmp_path)
-        first, rejected = str(uuid4()), str(uuid4())
-        await append(redis, config, first, 1, "登录申请已提交")
-        await append(redis, config, rejected, 1, "拒绝无效任务", level="ERROR")
-        await redis.xadd("another:environment:logs:" + str(uuid4()), {"json": "{}"})
-        try:
-            await mirror.sync_once()
-            events = [row for batch in writer.batches for row in batch if row["kind"] == "event"]
-            assert {row["taskId"] for row in events} == {first, rejected}
-            assert all(row["environment"] == "test" for row in events)
-            assert all(row["id"] == "1800000000000-1" for row in events)
-            assert all(row["streamMs"] == "1800000000000" and row["streamSeq"] == "1" for row in events)
-            assert all(batch[-1]["entryCount"] == "1" for batch in writer.batches)
-            await mirror.sync_once()
-            assert len(writer.batches) == 2
-        finally:
-            await redis.aclose()
-    asyncio.run(scenario())
-
-
-def test_bounded_batches_checkpoints_and_restart_resume(tmp_path):
-    async def scenario():
-        redis, config, writer, mirror = fixture(tmp_path)
-        task_id = str(uuid4())
-        for index in range(1, 206):
-            await append(redis, config, task_id, index, actionIndex=index, actionTotal=205)
-        try:
-            assert await mirror.sync_task(task_id)
-            assert len(writer.batches[0]) == 201
-            assert writer.batches[0][-1]["entryCount"] == "200"
-            assert writer.batches[0][-1]["throughId"] == "1800000000000-200"
-            restarted = SlsLogMirror(config, mirror.queue, writer=writer)
-            assert await restarted.sync_task(task_id)
-            marker = writer.batches[-1][-1]
-            assert marker["entryCount"] == "205" and marker["firstId"] == "1800000000000-1"
-            assert marker["truncated"] == "false"
-            assert len(writer.batches[-1]) == 6
-            assert not await restarted.sync_task(task_id)
-            assert (tmp_path / "sls/checkpoints.sqlite3").is_file()
-        finally:
-            await redis.aclose()
-    asyncio.run(scenario())
-
-
-def test_failed_or_ambiguous_upload_replays_identical_ids_and_count(tmp_path):
-    async def scenario():
-        redis, config, writer, mirror = fixture(tmp_path)
-        task_id = str(uuid4())
-        await append(redis, config, task_id, 1)
-        try:
-            writer.fail = True
-            with pytest.raises(RuntimeError):
-                await mirror.sync_task(task_id)
-            assert mirror.checkpoints.get(task_id) == Checkpoint()
-            writer.fail = False
-            await mirror.sync_task(task_id)
-            assert writer.batches[0] == writer.batches[1]
-            assert mirror.checkpoints.get(task_id).entry_count == 1
-        finally:
-            await redis.aclose()
-    asyncio.run(scenario())
-
-
-def test_trim_corruption_recreation_and_expiry_are_explicit(tmp_path):
-    async def scenario():
-        redis, config, writer, mirror = fixture(tmp_path)
-        task_id = str(uuid4())
-        key = f"{config.redis_queue_key}:logs:{task_id}"
-        for index in range(1, 4):
-            await append(redis, config, task_id, index)
-        await redis.xtrim(key, maxlen=2, approximate=False)
-        await redis.xadd(key, {"json": "broken"}, id="1800000000000-4")
-        try:
-            await mirror.sync_task(task_id)
-            marker = writer.batches[-1][-1]
-            assert marker["truncated"] == "true" and marker["entryCount"] == "2"
-            assert marker["firstId"] == "1800000000000-2" and marker["throughId"] == "1800000000000-4"
-            await redis.delete(key)
-            await append(redis, config, task_id, 10, "重新建立的流")
-            await mirror.sync_task(task_id)
-            assert writer.batches[-1][-1]["entryCount"] == "1"
-            assert writer.batches[-1][-1]["firstId"] == "1800000000000-10"
-            await redis.delete(key)
-            assert not await mirror.sync_task(task_id)
-            assert mirror.checkpoints.get(task_id) == Checkpoint()
-        finally:
-            await redis.aclose()
-    asyncio.run(scenario())
-
-
-def test_only_public_fields_and_redacted_message_reach_sls(tmp_path):
-    async def scenario():
-        redis, config, writer, mirror = fixture(tmp_path)
-        task_id = str(uuid4())
-        await append(redis, config, task_id, 1, "token=private fixture-sls-secret",
-                     accessToken="must-not-upload", username="must-not-upload", actionIndex=2, actionTotal=3)
-        try:
-            await mirror.sync_task(task_id)
-            event = writer.batches[0][0]
-            assert event["message"] == "token=[REDACTED] [REDACTED]"
-            assert event["actionIndex"] == "2" and event["actionTotal"] == "3"
-            assert "must-not-upload" not in json.dumps(writer.batches)
-            content = (tmp_path / "sls/checkpoints.sqlite3").read_bytes()
-            assert b"fixture-sls-secret" not in content and b"private" not in content
-        finally:
-            await redis.aclose()
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("new_entries, expected_truncated", [(1, False), (3, False), (4, True)])
-def test_redis_trimming_mirrored_entries_does_not_claim_sls_lost_them(tmp_path, new_entries, expected_truncated):
-    async def scenario():
-        redis, config, writer, mirror = fixture(tmp_path)
-        task_id = str(uuid4())
-        key = f"{config.redis_queue_key}:logs:{task_id}"
-        try:
-            for index in range(1, 4):
-                await append(redis, config, task_id, index)
-            await mirror.sync_task(task_id)
-            for index in range(4, 4 + new_entries):
-                await append(redis, config, task_id, index)
-            await redis.xtrim(key, maxlen=3, approximate=False)
-            await mirror.sync_task(task_id)
-            marker = writer.batches[-1][-1]
-            assert marker["truncated"] == str(expected_truncated).lower()
-            assert marker["entryCount"] == str(3 + min(new_entries, 3))
-            assert marker["firstId"] == "1800000000000-1"
-        finally:
-            await redis.aclose()
-    asyncio.run(scenario())
-
-
-def test_recreated_stream_with_same_added_count_resets_cursor_scope(tmp_path):
-    async def scenario():
-        redis, config, writer, mirror = fixture(tmp_path)
-        task_id = str(uuid4())
-        key = f"{config.redis_queue_key}:logs:{task_id}"
-        try:
-            for index in range(1, 4):
-                await append(redis, config, task_id, index)
-            await mirror.sync_task(task_id)
-            await redis.delete(key)
-            for index in range(10, 13):
-                await append(redis, config, task_id, index)
-            await mirror.sync_task(task_id)
-            marker = writer.batches[-1][-1]
-            assert marker["firstId"] == "1800000000000-10"
-            assert marker["entryCount"] == "3" and marker["truncated"] == "false"
-        finally:
-            await redis.aclose()
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("change", [
-    {"app_env": "prod"}, {"redis_queue_key": "other:tasks"},
-    {"sls_endpoint": "https://cn-hangzhou.log.aliyuncs.com"},
-    {"sls_project": "other-project"}, {"sls_logstore": "other-store"},
-])
-def test_checkpoints_are_scoped_to_selected_environment_and_destination(tmp_path, change):
+def producer(tmp_path, **options):
     config = replace(load_config(SLS_ENV), ldplayer_state_dir=tmp_path)
-    first = Checkpoints(config)
-    task_id = str(uuid4())
-    first.save(task_id, Checkpoint("1800000000000-1", "1800000000000-1", 1))
-    assert Checkpoints(replace(config, **change)).get(task_id) == Checkpoint()
-    assert first.get(task_id).entry_count == 1
+    writer = Writer()
+    publisher = getattr(sls_logs, "SlsLogPublisher", None)
+    assert publisher is not None, "日志应从内存直接上报，而不是读取 Redis 流"
+    return writer, publisher(config, writer=writer, interval=0.01, **options)
 
 
-def test_checkpoint_cleanup_and_no_busy_loop_or_shutdown_wait(tmp_path, caplog):
+def event(message="正常任务节点", **fields):
+    return {"time": "2026-10-20T09:00:00.000Z", "level": "INFO", "message": message, **fields}
+
+
+def events(writer):
+    return [row for batch in writer.batches for row in batch if row["kind"] == "event"]
+
+
+def test_emit_only_enqueues_and_close_uploads_without_redis_or_disk(tmp_path):
     async def scenario():
-        redis, config, writer, mirror = fixture(tmp_path)
+        writer, publisher = producer(tmp_path)
+        files_before = list(tmp_path.iterdir())
         task_id = str(uuid4())
-        mirror.checkpoints.save(task_id, Checkpoint())
-        with sqlite3.connect(mirror.checkpoints.path) as database:
-            database.execute("UPDATE checkpoints SET updated_at=0")
-        mirror.checkpoints.cleanup()
-        with sqlite3.connect(mirror.checkpoints.path) as database:
-            assert database.execute("SELECT count(*) FROM checkpoints").fetchone()[0] == 0
-        calls = []
-        async def broken_scan():
-            calls.append(1)
-            raise RuntimeError("credential=fixture-sls-secret")
-        mirror.sync_once = broken_scan
-        mirror.interval = 0.05
-        mirror.start()
-        await asyncio.sleep(0.13)
-        await asyncio.wait_for(mirror.close(), 0.5)
-        assert 2 <= len(calls) <= 4
-        await redis.aclose()
+        first = publisher.emit(task_id, event("任务开始"))
+        last = publisher.emit(task_id, event("任务完成", actionIndex=1, actionTotal=1))
+        assert writer.batches == []
+        assert first != last
+        publisher.finish(task_id)
+        publisher.start()
+        await publisher.close()
+        rows = events(writer)
+        assert [row["id"] for row in rows] == [first, last]
+        assert all(row.get("firstId") == first for row in rows)
+        assert [row["message"] for row in rows] == ["任务开始", "任务完成"]
+        assert all(row["environment"] == "test" for row in rows)
+        marker = writer.batches[-1][-1]
+        assert marker["firstId"] == first and marker["throughId"] == last
+        assert marker["entryCount"] == "2" and marker["truncated"] == "false"
+        assert list(tmp_path.iterdir()) == files_before
+        assert publisher.emit(task_id, event()) is None
+    asyncio.run(scenario())
+
+
+def test_failed_or_ambiguous_batch_retries_identical_ids_and_marker(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path, retry_interval=0.01)
+        writer.fail = True
+        task_id = str(uuid4())
+        publisher.emit(task_id, event())
+        publisher.start()
+        while not writer.batches:
+            await asyncio.sleep(0.001)
+        publisher.emit(task_id, event("第二条"))
+        writer.fail = False
+        await publisher.close()
+        assert writer.batches[0] == writer.batches[1]
+        assert writer.batches[-1][-1]["entryCount"] == "2"
+    asyncio.run(scenario())
+
+
+def test_overflow_keeps_latest_and_marks_gap_in_checkpoint(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path, buffer_limit=3, batch_size=2)
+        task_id = str(uuid4())
+        ids = [publisher.emit(task_id, event(str(i))) for i in range(8)]
+        publisher.finish(task_id)
+        publisher.start()
+        await publisher.close()
+        assert [row["message"] for row in events(writer)] == ["5", "6", "7"]
+        assert writer.batches[-1][-1]["throughId"] == ids[-1]
+        assert writer.batches[-1][-1]["entryCount"] == "3"
+        assert writer.batches[-1][-1]["truncated"] == "true"
+    asyncio.run(scenario())
+
+
+def test_public_fields_redaction_and_bounded_message(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path)
+        task_id = str(uuid4())
+        publisher.emit(task_id, event("token=private fixture-sls-secret", username="must-not-upload",
+                                       accessToken="must-not-upload", actionIndex=2, actionTotal=3))
+        publisher.emit(task_id, event("中文" * 2000))
+        publisher.start()
+        await publisher.close()
+        rows = events(writer)
+        assert rows[0]["message"] == "token=[REDACTED] [REDACTED]"
+        assert rows[0]["actionIndex"] == "2" and rows[0]["actionTotal"] == "3"
+        assert len(rows[1]["message"]) <= 1000
+        assert "must-not-upload" not in json.dumps(writer.batches)
+    asyncio.run(scenario())
+
+
+def test_slow_upload_does_not_block_emit_or_bounded_shutdown(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path)
+        entered = asyncio.Event()
+        async def slow(records):
+            entered.set()
+            await asyncio.Event().wait()
+        writer.put = slow
+        publisher.emit(str(uuid4()), event())
+        publisher.start()
+        await asyncio.wait_for(entered.wait(), 0.5)
+        assert publisher.emit(str(uuid4()), event("执行继续"))
+        await asyncio.wait_for(publisher.close(timeout=0.02), 0.5)
+    asyncio.run(scenario())
+
+
+def test_failed_uploads_back_off_and_never_log_sdk_secrets(tmp_path, caplog):
+    async def scenario():
+        writer, publisher = producer(tmp_path, retry_interval=0.05)
+        writer.fail = True
+        publisher.emit(str(uuid4()), event())
+        publisher.start()
+        await asyncio.sleep(0.12)
+        await publisher.close(timeout=0.01)
+        assert 2 <= len(writer.batches) <= 4
     asyncio.run(scenario())
     assert "fixture-sls-secret" not in caplog.text
-    assert caplog.text.count("SLS 日志同步暂不可用") == 1
+
+
+def test_ids_stay_ordered_if_clock_moves_backwards_and_are_distinct_between_producers(tmp_path, monkeypatch):
+    writer, first = producer(tmp_path)
+    _, second = producer(tmp_path)
+    monkeypatch.setattr(sls_logs.time, "time", lambda: 1800000000.0)
+    task_id = str(uuid4())
+    ids = [first.emit(task_id, event()), first.emit(task_id, event())]
+    monkeypatch.setattr(sls_logs.time, "time", lambda: 1700000000.0)
+    ids.append(first.emit(task_id, event()))
+    assert [tuple(map(int, i.split('-'))) for i in ids] == sorted(tuple(map(int, i.split('-'))) for i in ids)
+    assert second.emit(task_id, event()) not in ids
+    assert all(int(i.split('-')[1]) < 2**53 for i in ids)
+
+
+def test_new_owner_observes_old_cursor_before_generating_logs(tmp_path, monkeypatch):
+    _, publisher = producer(tmp_path)
+    observe = getattr(publisher, "observe_cursor", None)
+    assert observe is not None, "重新领取任务必须接续旧游标"
+    monkeypatch.setattr(sls_logs.time, "time", lambda: 1700000000.0)
+    observe("1800000000000-9007199254740990")
+    item_id = publisher.emit(str(uuid4()), event())
+    assert tuple(map(int, item_id.split('-'))) > (1800000000000, 9007199254740990)
+    for bad in (None, "", "-1-0", "10-x", "999999999999999999999-0"):
+        observe(bad)
+
+
+def test_reclaimed_task_marks_unknown_previous_uploads_as_truncated(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path)
+        task_id = str(uuid4())
+        publisher.observe_cursor("1800000000000-1", task_id=task_id)
+        publisher.emit(task_id, event())
+        await publisher.close()
+        assert writer.batches[-1][-1]["truncated"] == "true"
+    asyncio.run(scenario())
+
+
+def test_byte_bound_and_invalid_events_do_not_escape_logger(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path, byte_limit=1024)
+        task_id = str(uuid4())
+        assert publisher.emit(task_id, event("文" * 1000)) is None
+        assert publisher.emit("not-a-task", event()) is None
+        assert publisher.emit(task_id, event(level={})) is None
+        assert publisher.emit(task_id, event(actionIndex=3, actionTotal=2)) is None
+        assert publisher.emit(task_id, event(time="not-a-dateZ")) is None
+        assert publisher.emit(task_id, event("tail"))
+        await publisher.close()
+        assert [row["message"] for row in events(writer)] == ["tail"]
+        assert writer.batches[-1][-1]["truncated"] == "true"
+    asyncio.run(scenario())
+
+
+def test_inflight_events_survive_overflow_and_completed_task_can_be_reused(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path, buffer_limit=4, batch_size=2)
+        entered, release = asyncio.Event(), asyncio.Event()
+        put = writer.put
+        async def hold_first(records):
+            if not entered.is_set():
+                entered.set()
+                await release.wait()
+            await put(records)
+        writer.put = hold_first
+        first, second = str(uuid4()), str(uuid4())
+        publisher.emit(first, event("first-a"))
+        publisher.emit(second, event("second-a"))
+        publisher.start()
+        await asyncio.wait_for(entered.wait(), 0.5)
+        for i in range(5):
+            publisher.emit(first, event(f"first-{i}"))
+        publisher.finish(first)
+        publisher.finish(second)
+        release.set()
+        while len(events(writer)) < 4:
+            await asyncio.sleep(0.001)
+        assert [row["message"] for row in events(writer)] == ["first-a", "second-a", "first-3", "first-4"]
+        restarted_id = publisher.emit(first, event("reclaimed"))
+        publisher.finish(first)
+        await publisher.close()
+        marker = writer.batches[-1][-1]
+        assert marker["firstId"] == restarted_id and marker["entryCount"] == "1"
+        assert events(writer)[-1]["message"] == "reclaimed"
+    asyncio.run(scenario())
+
+
+def test_overflow_after_batch_started_publishes_corrected_gap_marker(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path, byte_limit=1024)
+        entered, release = asyncio.Event(), asyncio.Event()
+        put = writer.put
+        async def hold_first(records):
+            await put(records)
+            if not entered.is_set():
+                entered.set()
+                await release.wait()
+        writer.put = hold_first
+        task_id = str(uuid4())
+        last = publisher.emit(task_id, event("accepted"))
+        publisher.start()
+        await asyncio.wait_for(entered.wait(), 0.5)
+        assert publisher.emit(task_id, event("文" * 1000)) is None
+        publisher.finish(task_id)
+        release.set()
+        await publisher.close()
+        assert events(writer)[0]["id"] == last
+        marker = writer.batches[-1][-1]
+        assert marker["throughId"] == last and marker["entryCount"] == "1"
+        assert marker["truncated"] == "true"
+    asyncio.run(scenario())
+
+
+def test_other_tasks_cannot_evict_an_accepted_final_log(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path, buffer_limit=3, batch_size=1)
+        entered, release = asyncio.Event(), asyncio.Event()
+        put = writer.put
+        async def hold_first(records):
+            if not entered.is_set():
+                entered.set()
+                await release.wait()
+            await put(records)
+        writer.put = hold_first
+        first, second = str(uuid4()), str(uuid4())
+        publisher.emit(first, event("first-start"))
+        publisher.start()
+        await asyncio.wait_for(entered.wait(), 0.5)
+        tail = publisher.emit(first, event("first-finish"))
+        publisher.finish(first)
+        publisher.emit(second, event("second-start"))
+        publisher.emit(second, event("second-finish"))
+        release.set()
+        await publisher.close()
+        assert tail in {row["id"] for row in events(writer)}
+    asyncio.run(scenario())
 
 
 def test_sdk_work_does_not_block_event_loop_or_cancellation():
@@ -334,32 +375,3 @@ def test_cloud_sls_configuration_clears_stale_values_and_never_enters_child(monk
     environment.initialize_environment(local)
     assert all(name not in os.environ for name in names)
     assert not load_config().sls_enabled
-
-
-def test_runtime_starts_and_stops_mirror_only_when_enabled(monkeypatch, tmp_path):
-    from naruto_daily.login_service import sls_logs
-    from naruto_daily.login_service.runtime import LoginRuntime
-    from test_login_service_runtime import MemoryStorage
-
-    calls = []
-    class Mirror:
-        def __init__(self, config, queue):
-            calls.append(("create", config.app_env))
-        def start(self):
-            calls.append("start")
-        async def close(self):
-            calls.append("close")
-    monkeypatch.setattr(sls_logs, "SlsLogMirror", Mirror)
-
-    async def scenario():
-        for enabled in (False, True):
-            redis, config, _, mirror = fixture(tmp_path, sls_enabled=enabled)
-            runtime = LoginRuntime(config, MemoryStorage(), redis_queue=mirror.queue)
-            try:
-                await runtime.start()
-                await runtime.stop()
-                assert calls == ([("create", "test"), "start", "close"] if enabled else [])
-            finally:
-                await runtime.stop()
-                await redis.aclose()
-    asyncio.run(scenario())

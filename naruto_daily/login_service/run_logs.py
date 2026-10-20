@@ -1,4 +1,4 @@
-"""Bounded, best-effort publication of task progress to shared Redis streams."""
+"""Nonblocking SLS events and coalesced Redis task summaries."""
 
 from __future__ import annotations
 
@@ -52,10 +52,8 @@ SAFE_RUN_ERRORS = {
 # Once the QR session expires, the existing run still authorizes its own worker.
 _PUBLISH = """
 local runKind = redis.call('TYPE', KEYS[1]).ok
-local logKind = redis.call('TYPE', KEYS[2]).ok
-local sessionKind = redis.call('TYPE', KEYS[3]).ok
-if (runKind ~= 'none' and runKind ~= 'string')
-    or (logKind ~= 'none' and logKind ~= 'stream') then return 0 end
+local sessionKind = redis.call('TYPE', KEYS[2]).ok
+if runKind ~= 'none' and runKind ~= 'string' then return 0 end
 local old = nil
 if runKind == 'string' then
     local ok, value = pcall(cjson.decode, redis.call('GET', KEYS[1]))
@@ -64,7 +62,7 @@ if runKind == 'string' then
 end
 local session = nil
 if sessionKind == 'string' then
-    local ok, value = pcall(cjson.decode, redis.call('GET', KEYS[3]))
+    local ok, value = pcall(cjson.decode, redis.call('GET', KEYS[2]))
     if ok and type(value) == 'table' then session = value end
 end
 local ok, update = pcall(cjson.decode, ARGV[3])
@@ -89,9 +87,7 @@ if old and old.workerId == ARGV[1] and not activeClaim
         or old.status == 'interrupted' or old.status == 'expired')
     and update.status ~= 'completed' and update.status ~= 'failed'
     and update.status ~= 'interrupted' and update.status ~= 'expired' then return 0 end
-redis.call('XADD', KEYS[2], 'MAXLEN', ARGV[6], '*', 'json', ARGV[4])
-redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[7])
-redis.call('EXPIRE', KEYS[2], ARGV[5])
+redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[4])
 return 1
 """
 
@@ -105,30 +101,28 @@ def iso_time(value: float | None = None) -> str:
 @dataclass
 class _Update:
     snapshot: dict
-    event: dict
 
 
 class RedisRunReporter:
     """Queue in memory; a slow/unavailable Redis must never block the game loop.
 
-    Keep the newest 256 updates per task and at most the configured task capacity.
-    Redis retains the newest 2,000 entries, by default for seven days. Run
-    summaries always last at least seven days, even with a shorter log setting,
+    Keep only the newest summary per task, at most the configured task capacity.
+    Events enter the SLS publisher immediately, independently of Redis. Run
+    summaries always last at least seven days, even with a shorter legacy setting,
     so the website's recent-history view retains scan and completion times.
     Active runs also reserve their full daily execution budget.
     """
 
     def __init__(self, config, queue, *, retention_seconds: int = 604_800,
-                 stream_limit: int = 2_000, buffer_limit: int = 256) -> None:
+                 stream_limit: int = 2_000, buffer_limit: int = 256, log_publisher=None) -> None:
         self.config = config
         self.queue = queue
+        self.log_publisher = log_publisher
         self.retention_seconds = retention_seconds
-        self.stream_limit = stream_limit
-        self.buffer_limit = buffer_limit
+        # Legacy keyword arguments remain accepted for existing callers.
         self._states: dict[str, dict] = {}
         self._pending: dict[str, deque[_Update]] = {}
         self._finished: set[str] = set()
-        self._dropped: dict[str, int] = {}
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._closed = False
@@ -193,16 +187,26 @@ class RedisRunReporter:
         }
         if action_index is not None and action_total is not None:
             event.update(actionIndex=action_index, actionTotal=action_total)
+        state["logSource"] = "sls" if self.log_publisher is not None else "disabled"
+        if self.log_publisher is not None:
+            if previous is None:
+                self.log_publisher.emit(record.id, {
+                    "time": record.created_at, "level": "INFO",
+                    "message": "登录申请已提交，等待执行服务器领取任务。",
+                })
+            cursor = self.log_publisher.emit(record.id, event)
+            if cursor is not None:
+                state["logCursor"] = cursor
         self._states[record.id] = state
         pending = self._pending.setdefault(record.id, deque())
-        if len(pending) >= self.buffer_limit:
-            pending.popleft()
-            self._dropped[record.id] = self._dropped.get(record.id, 0) + 1
-        pending.append(_Update(state, event))
+        pending.clear()
+        pending.append(_Update(state))
         self._wake.set()
 
     def finish(self, task_id: str) -> None:
         """Release local buffers once all accepted updates have been delivered."""
+        if self.log_publisher is not None:
+            self.log_publisher.finish(task_id)
         self._finished.add(task_id)
         self._discard_finished(task_id)
 
@@ -223,34 +227,25 @@ class RedisRunReporter:
             self._finished.discard(task_id)
             self._states.pop(task_id, None)
             self._pending.pop(task_id, None)
-            self._dropped.pop(task_id, None)
 
     async def _write(self, task_id: str, update: _Update) -> None:
         prefix = self.config.redis_queue_key
-        ttl = self.retention_seconds
         run_ttl = max(self.retention_seconds, 604_800)
         if update.snapshot["status"] not in TERMINAL:
-            ttl += self.config.daily_timeout_seconds
             run_ttl += self.config.daily_timeout_seconds
-        event = update.event
-        dropped = self._dropped.get(task_id, 0)
-        if dropped:
-            # Attach an explicit gap notice without changing the final state.
-            event = dict(event, message=f"部分执行日志因网络中断未保留（{dropped} 条）；" + event["message"])
-            event["message"] = event["message"][:1000]
-        accepted = await self.queue._call(
-            "eval", _PUBLISH, 3, f"{prefix}:runs:{task_id}", f"{prefix}:logs:{task_id}",
+        await self.queue._call(
+            "eval", _PUBLISH, 2, f"{prefix}:runs:{task_id}",
             f"{prefix}:sessions:{task_id}", self.queue.owner, str(update.snapshot["sequence"]),
-            json.dumps(update.snapshot, ensure_ascii=False), json.dumps(event, ensure_ascii=False),
-            str(ttl), str(self.stream_limit), str(run_ttl),
+            json.dumps(update.snapshot, ensure_ascii=False), str(run_ttl),
         )
-        if accepted:
-            self._dropped[task_id] = max(0, self._dropped.get(task_id, 0) - dropped)
 
     async def _publish_loop(self) -> None:
         while not self._closed:
             await self._wake.wait()
             self._wake.clear()
+            # Logs arriving on separate event-loop turns still share one state
+            # write. SLS enqueue is immediate; only Redis summaries wait here.
+            await asyncio.sleep(0.25)
             failed = False
             for task_id, pending in list(self._pending.items()):
                 if not pending:

@@ -1,124 +1,25 @@
-"""Mirror retained public Redis events to SLS without changing task execution.
-
-Redis remains the retry source. Checkpoints contain only cursors, never log
-messages or credentials. A lost SLS response can duplicate an event; readers
-deduplicate by environment/taskId/id and verify the checkpoint's entryCount.
-"""
-
+"""Bounded in-memory task logger; upload directly to SLS, never via Redis."""
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
+from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
-import hashlib
-import json
+from datetime import datetime
 import logging
-from pathlib import Path
 import re
-import sqlite3
+import secrets
 import threading
 import time
 
 from .log_events import sanitize_log_message
 from .models import UUID_PATTERN
 
-
 LOGGER = logging.getLogger(__name__)
-_CURSOR = re.compile(r"(?:0|[1-9][0-9]*)-(?:0|[1-9][0-9]*)")
-_PAGE_SIZE = 200
-_SNAPSHOT = """
-if redis.call('TYPE', KEYS[1]).ok ~= 'stream' then return {} end
-local info = redis.call('XINFO', 'STREAM', KEYS[1])
-local firstId, lastId, added, length = '', '', 0, 0
-for i = 1, #info, 2 do
-  if info[i] == 'first-entry' and type(info[i+1]) == 'table' then firstId = info[i+1][1] end
-  if info[i] == 'last-entry' and type(info[i+1]) == 'table' then lastId = info[i+1][1] end
-  if info[i] == 'entries-added' then added = info[i+1] end
-  if info[i] == 'length' then length = info[i+1] end
-end
-local entries = redis.call('XRANGE', KEYS[1], '(' .. ARGV[1], '+', 'COUNT', ARGV[2])
-return {entries, firstId, lastId, added, length}
-"""
-
-
-def _cursor(value: str) -> tuple[int, int]:
-    if not isinstance(value, str) or not _CURSOR.fullmatch(value):
-        raise ValueError("Invalid stream cursor")
-    parts = tuple(map(int, value.split("-")))
-    # SLS long indexes are signed 64-bit. Real Redis timestamp/sequence values
-    # fit comfortably; refuse outliers rather than changing their sort order.
-    if any(part > 2**63 - 1 for part in parts):
-        raise ValueError("Unsupported stream cursor")
-    return parts
-
-
-@dataclass(frozen=True)
-class Checkpoint:
-    cursor: str = "0-0"
-    first_id: str = ""
-    entry_count: int = 0
-    truncated: bool = False
-    entries_added: int = 0
-
-
-class Checkpoints:
-    def __init__(self, config):
-        self.path = Path(config.ldplayer_state_dir) / "sls" / "checkpoints.sqlite3"
-        scope = [config.app_env, config.redis_queue_key, config.sls_endpoint,
-                 config.sls_project, config.sls_logstore]
-        self.scope = hashlib.sha256(json.dumps(scope).encode()).hexdigest()
-
-    @contextmanager
-    def _connect(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        database = sqlite3.connect(self.path, timeout=2)
-        try:
-            with database:
-                database.execute("""CREATE TABLE IF NOT EXISTS checkpoints (
-                    scope TEXT NOT NULL, task_id TEXT NOT NULL, cursor TEXT NOT NULL,
-                    first_id TEXT NOT NULL, entry_count INTEGER NOT NULL,
-                    truncated INTEGER NOT NULL, entries_added INTEGER NOT NULL,
-                    updated_at REAL NOT NULL, PRIMARY KEY(scope, task_id))""")
-                yield database
-        finally:
-            database.close()
-
-    def get(self, task_id: str) -> Checkpoint:
-        with self._connect() as database:
-            row = database.execute("""SELECT cursor, first_id, entry_count, truncated, entries_added
-                FROM checkpoints WHERE scope=? AND task_id=?""", (self.scope, task_id)).fetchone()
-        if row is None:
-            return Checkpoint()
-        _cursor(row[0])
-        if row[1]:
-            _cursor(row[1])
-        return Checkpoint(row[0], row[1], row[2], bool(row[3]), row[4])
-
-    def save(self, task_id: str, checkpoint: Checkpoint) -> None:
-        with self._connect() as database:
-            database.execute("""INSERT INTO checkpoints VALUES (?,?,?,?,?,?,?,?)
-                ON CONFLICT(scope,task_id) DO UPDATE SET cursor=excluded.cursor,
-                first_id=excluded.first_id, entry_count=excluded.entry_count,
-                truncated=excluded.truncated, entries_added=excluded.entries_added,
-                updated_at=excluded.updated_at""", (self.scope, task_id, checkpoint.cursor,
-                checkpoint.first_id, checkpoint.entry_count, int(checkpoint.truncated),
-                checkpoint.entries_added, time.time()))
-
-    def delete(self, task_id: str) -> None:
-        with self._connect() as database:
-            database.execute("DELETE FROM checkpoints WHERE scope=? AND task_id=?", (self.scope, task_id))
-
-    def cleanup(self) -> None:
-        # One day beyond the maximum Redis retention, including execution time.
-        with self._connect() as database:
-            database.execute("DELETE FROM checkpoints WHERE updated_at < ?", (time.time() - 8 * 86400,))
 
 
 class SlsSdkWriter:
     def __init__(self, config):
         from aliyun.log import LogClient, LogItem, PutLogsRequest
-
         self.client = LogClient(config.sls_endpoint, config.sls_access_key_id,
                                 config.sls_access_key_secret, securityToken=config.sls_sts_token)
         self.client.timeout = 5
@@ -131,8 +32,6 @@ class SlsSdkWriter:
         for record in records:
             milliseconds = int(record["streamMs"])
             item = self._item(contents=list(record.items()))
-            # Explicit setters preserve even zero; SDK constructor defaults use
-            # truthiness and otherwise substitute the current fractional time.
             item.set_time(milliseconds // 1000)
             item.set_time_nano_part(milliseconds % 1000 * 1_000_000)
             items.append(item)
@@ -141,19 +40,16 @@ class SlsSdkWriter:
         self.client.put_logs(request)
 
     async def put(self, records: list[dict[str, str]]) -> None:
-        # The SDK retries some server failures internally. A daemon thread keeps
-        # that bounded network work out of the event loop AND interpreter exit;
-        # cancelling this await never advances our durable cursor.
+        # SDK retries run outside both the game event loop and interpreter exit.
         loop = asyncio.get_running_loop()
         result = loop.create_future()
 
         def settle(failed: bool) -> None:
-            if result.done():
-                return
-            if failed:
-                result.set_exception(RuntimeError("SLS upload failed"))
-            else:
-                result.set_result(None)
+            if not result.done():
+                if failed:
+                    result.set_exception(RuntimeError("SLS upload failed"))
+                else:
+                    result.set_result(None)
 
         def send() -> None:
             failed = False
@@ -164,151 +60,270 @@ class SlsSdkWriter:
             try:
                 loop.call_soon_threadsafe(settle, failed)
             except RuntimeError:
-                pass  # Worker stopped; retained Redis events will replay.
+                pass
 
         threading.Thread(target=send, name="sls-log-upload", daemon=True).start()
         await result
 
 
-class SlsLogMirror:
-    def __init__(self, config, queue, *, writer=None, checkpoints=None, interval: float = 5):
+@dataclass
+class _TaskLogs:
+    first_id: str
+    uploaded: int = 0
+    pending: int = 0
+    truncated: bool = False
+    finished: bool = False
+    marker: dict[str, str] | None = None
+
+
+class SlsLogPublisher:
+    """emit() does no network/disk work; one background task batches and retries.
+
+    Pending logs, including the active upload, are bounded by count and bytes.
+    Overflow drops older queued logs while preserving each task's accepted tail.
+    A failed batch is retried unchanged: readers deduplicate its stable IDs.
+    There is intentionally no durable spool or Redis fallback for new logs.
+    """
+    def __init__(self, config, *, writer=None, interval: float = 1,
+                 retry_interval: float = 5, buffer_limit: int = 4096,
+                 byte_limit: int = 16 * 1024 * 1024, batch_size: int = 200):
         self.config = config
-        self.queue = queue
         self.writer = writer if writer is not None else SlsSdkWriter(config)
-        self.checkpoints = checkpoints if checkpoints is not None else Checkpoints(config)
-        self.interval = interval
+        self.interval = max(0.001, interval)
+        self.retry_interval = max(0.001, retry_interval)
+        self.buffer_limit = max(2, buffer_limit)
+        self.byte_limit = max(1024, byte_limit)
+        self.batch_size = max(1, min(batch_size, self.buffer_limit // 2))
+        self._pending: deque[tuple[dict[str, str], int]] = deque()
+        self._tasks: dict[str, _TaskLogs] = {}
+        self._corrections: dict[str, dict[str, str]] = {}
+        self._uploading: set[str] = set()
+        self._inherited: set[str] = set()
+        self._count = self._bytes = 0
+        self._last_ms = 0
+        self._sequence = secrets.randbits(52)
+        self._lock = threading.Lock()
+        self._wake = asyncio.Event()
+        self._loop = None
         self._task: asyncio.Task | None = None
-        self._stopped = asyncio.Event()
+        self._closing = self._closed = False
         self._next_warning = 0.0
-        self._next_cleanup = 0.0
 
     def start(self) -> None:
-        if self._task is None:
-            self._task = asyncio.create_task(self._loop(), name="sls-log-mirror")
+        if self._task is None and not self._closed:
+            self._loop = asyncio.get_running_loop()
+            self._task = self._loop.create_task(self._upload_loop(), name="sls-task-logs")
 
-    async def close(self) -> None:
-        self._stopped.set()
-        if self._task is not None:
-            self._task.cancel()
-            await asyncio.gather(self._task, return_exceptions=True)
+    def _notify(self) -> None:
+        if self._loop is not None:
+            try:
+                self._loop.call_soon_threadsafe(self._wake.set)
+            except RuntimeError:
+                pass
 
-    def _event(self, task_id: str, item_id: str, fields: list) -> dict[str, str] | None:
-        ms, sequence = _cursor(item_id)
-        if (not isinstance(fields, list) or len(fields) % 2 or len(fields) > 20
-                or any(not isinstance(value, str) for value in fields)):
+    def observe_cursor(self, cursor: str | None, *, task_id: str | None = None) -> None:
+        """Continue after the previous owner's watermark, even after clock skew."""
+        if not isinstance(cursor, str) or not re.fullmatch(r"[0-9]{1,16}-[0-9]{1,16}", cursor):
+            return
+        ms, sequence = map(int, cursor.split("-"))
+        if ms >= 2**53 or sequence >= 2**53:
+            return
+        with self._lock:
+            self._last_ms = max(self._last_ms, ms)
+            self._sequence = max(self._sequence, sequence)
+            if (cursor != '0-0' and task_id is not None and UUID_PATTERN.fullmatch(task_id)
+                    and task_id not in self._tasks and len(self._inherited) < self.config.max_tasks):
+                self._inherited.add(task_id)
+
+    def _event(self, task_id: str, value: dict) -> dict[str, str] | None:
+        if not isinstance(task_id, str) or not UUID_PATTERN.fullmatch(task_id) or not isinstance(value, dict):
             return None
-        raw = dict(zip(fields[::2], fields[1::2])).get("json")
-        if not isinstance(raw, str) or len(raw) > 20000:
+        stamp, message, level = value.get("time"), value.get("message"), value.get("level")
+        if (not isinstance(stamp, str) or not stamp.endswith("Z") or len(stamp) > 40
+                or not isinstance(message, str) or not message
+                or not isinstance(level, str) or level not in {"INFO", "WARNING", "ERROR"}):
             return None
         try:
-            value = json.loads(raw)
-            if not isinstance(value, dict):
-                return None
-            stamp = value.get("time")
-            if not isinstance(stamp, str) or not stamp.endswith("Z") or len(stamp) > 40:
-                return None
             datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-            if value.get("level") not in {"INFO", "WARNING", "ERROR"}:
-                return None
-            message = value.get("message")
-            if not isinstance(message, str) or not 1 <= len(message) <= 1000:
-                return None
-            event = {"kind": "event", "taskId": task_id, "environment": self.config.app_env,
-                     "id": item_id, "streamMs": str(ms), "streamSeq": str(sequence),
-                     "time": stamp, "level": value["level"],
-                     "message": sanitize_log_message(message, secrets=(self.config.sls_access_key_id,
-                         self.config.sls_access_key_secret, self.config.sls_sts_token or ""))}
-            if "actionIndex" in value or "actionTotal" in value:
-                index, total = value.get("actionIndex"), value.get("actionTotal")
-                if type(index) is not int or type(total) is not int or not 0 <= index <= total <= 100000:
-                    return None
-                event.update(actionIndex=str(index), actionTotal=str(total))
-            return event
-        except (ValueError, TypeError):
+        except ValueError:
             return None
+        fields = {"kind": "event", "taskId": task_id, "environment": self.config.app_env,
+                  "time": stamp, "level": level,
+                  "message": sanitize_log_message(message, secrets=(self.config.sls_access_key_id,
+                      self.config.sls_access_key_secret, self.config.sls_sts_token or ""))}
+        if "actionIndex" in value or "actionTotal" in value:
+            index, total = value.get("actionIndex"), value.get("actionTotal")
+            if type(index) is not int or type(total) is not int or not 0 <= index <= total <= 100000:
+                return None
+            fields.update(actionIndex=str(index), actionTotal=str(total))
+        return fields
 
-    async def sync_task(self, task_id: str) -> bool:
-        """Send at most one bounded page; return whether a page made progress."""
-        if not UUID_PATTERN.fullmatch(task_id):
+    def emit(self, task_id: str, event: dict) -> str | None:
+        fields = self._event(task_id, event)
+        if fields is None:
+            return None
+        with self._lock:
+            if self._closing or self._closed:
+                return None
+            state = self._tasks.get(task_id)
+            if state is None and len(self._tasks) >= self.config.max_tasks:
+                return None
+            self._last_ms = max(self._last_ms, int(time.time() * 1000))
+            self._sequence += 1
+            if self._sequence >= 2**53:
+                self._last_ms += 1
+                self._sequence = 0
+            item_id = f"{self._last_ms}-{self._sequence}"
+            fields.update(id=item_id, streamMs=str(self._last_ms), streamSeq=str(self._sequence),
+                          firstId=state.first_id if state is not None else item_id)
+            size = sum(len(k.encode()) + len(v.encode()) for k, v in fields.items()) + 256
+            if state is None:
+                state = self._tasks[task_id] = _TaskLogs(item_id, truncated=task_id in self._inherited)
+                self._inherited.discard(task_id)
+            if not self._reserve(task_id, size):
+                self._mark_gap(task_id)
+                self._notify()
+                return None
+            self._tasks[task_id] = state
+            state.pending += 1
+            state.finished = False
+            self._pending.append((fields, size))
+            self._count += 1
+            self._bytes += size
+        self._notify()
+        return item_id
+
+    def finish(self, task_id: str) -> None:
+        with self._lock:
+            state = self._tasks.get(task_id)
+            if state is not None:
+                state.finished = True
+                if not state.pending and task_id not in self._corrections and task_id not in self._uploading:
+                    self._tasks.pop(task_id, None)
+
+    def _reserve(self, task_id: str, size: int) -> bool:
+        if self._count < self.buffer_limit and self._bytes + size <= self.byte_limit:
+            return True
+        # Plan evictions first: never discard an accepted tail if the replacement
+        # cannot fit, and never discard another task's final queued log.
+        latest = {event["taskId"]: i for i, (event, _) in enumerate(self._pending)}
+        count, byte_count = self._count, self._bytes
+        removed = set()
+        for i, (event, event_size) in enumerate(self._pending):
+            if count < self.buffer_limit and byte_count + size <= self.byte_limit:
+                break
+            if event["taskId"] != task_id and latest[event["taskId"]] == i:
+                continue
+            removed.add(i)
+            count -= 1
+            byte_count -= event_size
+        if count >= self.buffer_limit or byte_count + size > self.byte_limit:
             return False
-        saved = await asyncio.to_thread(self.checkpoints.get, task_id)
-        key = f"{self.config.redis_queue_key}:logs:{task_id}"
-        snapshot = await self.queue._call("eval", _SNAPSHOT, 1, key, saved.cursor, str(_PAGE_SIZE))
-        if not snapshot:
-            await asyncio.to_thread(self.checkpoints.delete, task_id)
-            return False
-        entries, first, last, added, length = snapshot
-        if not last:
-            return False
-        rebuilt = (_cursor(last) < _cursor(saved.cursor) or added < saved.entries_added
-                   or (not saved.truncated and saved.cursor != "0-0" and first
-                       and _cursor(first) > _cursor(saved.cursor)
-                       and added - saved.entry_count < length))
-        if rebuilt:
-            # The same key was rebuilt. Do not skip the new stream's contents.
-            saved = Checkpoint()
-            snapshot = await self.queue._call("eval", _SNAPSHOT, 1, key, saved.cursor, str(_PAGE_SIZE))
-            if not snapshot:
-                return False
-            entries, first, last, added, length = snapshot
-        if not entries:
-            return False
-        # With no previous gap, entry_count is also our position in Redis's
-        # entries-added counter. Trimming already mirrored events is harmless;
-        # only flag loss when unread entries outnumber the retained stream.
-        truncated = saved.truncated or added - saved.entry_count > length
-        events = []
-        cursor = saved.cursor
-        for item_id, fields in entries:
-            if _cursor(item_id) <= _cursor(cursor):
-                raise ValueError("Invalid stream order")
-            cursor = item_id
-            event = self._event(task_id, item_id, fields)
-            if event is None:
-                truncated = True
+        kept = deque()
+        for i, (event, event_size) in enumerate(self._pending):
+            if i in removed:
+                self._mark_gap(event["taskId"])
+                self._release(event, event_size)
             else:
-                events.append(event)
-        first_id = saved.first_id or (events[0]["id"] if events else "")
-        checkpoint = Checkpoint(cursor, first_id, saved.entry_count + len(events), truncated, added)
-        if first_id:
-            ms, sequence = _cursor(cursor)
-            marker = {"kind": "checkpoint", "taskId": task_id, "environment": self.config.app_env,
-                      "id": cursor, "streamMs": str(ms), "streamSeq": str(sequence),
-                      "time": datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat(
-                          timespec="milliseconds").replace("+00:00", "Z"),
-                      "firstId": first_id, "throughId": cursor,
-                      "entryCount": str(checkpoint.entry_count), "truncated": str(truncated).lower()}
-            await self.writer.put([*events, marker])
-        # Never acknowledge before SLS succeeds. A failed local save safely
-        # replays the same IDs and marker count on the next pass.
-        await asyncio.to_thread(self.checkpoints.save, task_id, checkpoint)
+                kept.append((event, event_size))
+        self._pending = kept
         return True
 
-    async def sync_once(self) -> None:
-        cursor = 0
-        prefix = f"{self.config.redis_queue_key}:logs:"
-        while not self._stopped.is_set():
-            cursor, keys = await self.queue._call("scan", cursor=cursor, match=prefix + "*", count=100)
-            for key in keys:
-                await self.sync_task(key[len(prefix):])
-                if self._stopped.is_set():
-                    return
-            if int(cursor) == 0:
-                break
-            await asyncio.sleep(0)
-        if time.monotonic() >= self._next_cleanup:
-            await asyncio.to_thread(self.checkpoints.cleanup)
-            self._next_cleanup = time.monotonic() + 3600
+    def _mark_gap(self, task_id: str) -> None:
+        state = self._tasks[task_id]
+        state.truncated = True
+        if state.marker is not None and state.marker["truncated"] != "true":
+            self._corrections[task_id] = dict(state.marker, truncated="true")
 
-    async def _loop(self) -> None:
-        while not self._stopped.is_set():
+    def _release(self, event: dict, size: int) -> None:
+        self._count -= 1
+        self._bytes -= size
+        state = self._tasks[event["taskId"]]
+        state.pending -= 1
+        if (state.finished and not state.pending and event["taskId"] not in self._corrections
+                and event["taskId"] not in self._uploading):
+            self._tasks.pop(event["taskId"], None)
+
+    def _take_batch(self):
+        with self._lock:
+            batch = [self._pending.popleft() for _ in range(min(self.batch_size, len(self._pending)))]
+            grouped: dict[str, list[dict[str, str]]] = {}
+            for event, _ in batch:
+                grouped.setdefault(event["taskId"], []).append(event)
+            markers = []
+            for task_id in list(self._corrections):
+                if task_id not in grouped:
+                    markers.append(self._corrections.pop(task_id))
+            for task_id, events in grouped.items():
+                state, last = self._tasks[task_id], events[-1]
+                self._corrections.pop(task_id, None)
+                markers.append({"kind": "checkpoint", "taskId": task_id, "environment": self.config.app_env,
+                                "id": last["id"], "streamMs": last["streamMs"], "streamSeq": last["streamSeq"],
+                                "time": last["time"], "firstId": state.first_id, "throughId": last["id"],
+                                "entryCount": str(state.uploaded + len(events)), "truncated": str(state.truncated).lower()})
+            self._uploading = set(grouped) | {marker["taskId"] for marker in markers}
+            return batch, [event for event, _ in batch] + markers
+
+    async def _upload_loop(self) -> None:
+        batch, records = [], []
+        while True:
+            if not records:
+                if not self._pending and not self._corrections:
+                    if self._closing:
+                        return
+                    self._wake.clear()
+                    if not self._pending and not self._corrections:
+                        await self._wake.wait()
+                if not self._closing:
+                    await asyncio.sleep(self.interval)
+                batch, records = self._take_batch()
+                if not records:
+                    continue
             try:
-                await self.sync_once()
+                await self.writer.put(records)
             except Exception:
                 if time.monotonic() >= self._next_warning:
-                    LOGGER.warning("SLS 日志同步暂不可用；保留 Redis 日志并稍后重试")
+                    LOGGER.warning("SLS 日志上报暂不可用，将重试内存中的日志")
                     self._next_warning = time.monotonic() + 60
-            try:
-                await asyncio.wait_for(self._stopped.wait(), timeout=self.interval)
-            except TimeoutError:
-                pass
+                await asyncio.sleep(self.retry_interval)
+                continue
+            with self._lock:
+                for marker in records:
+                    if marker["kind"] == "checkpoint":
+                        state = self._tasks[marker["taskId"]]
+                        state.marker = marker
+                        if state.truncated and marker["truncated"] != "true":
+                            self._mark_gap(marker["taskId"])
+                        elif marker["truncated"] == "true":
+                            self._corrections.pop(marker["taskId"], None)
+                for event, size in batch:
+                    self._tasks[event["taskId"]].uploaded += 1
+                    self._release(event, size)
+                self._uploading.clear()
+                for task_id, state in list(self._tasks.items()):
+                    if state.finished and not state.pending and task_id not in self._corrections:
+                        self._tasks.pop(task_id, None)
+            batch, records = [], []
+
+    async def close(self, *, timeout: float = 2) -> None:
+        if self._closed:
+            return
+        self.start()
+        with self._lock:
+            self._closing = True
+        self._notify()
+        try:
+            await asyncio.wait_for(asyncio.shield(self._task), timeout)
+        except TimeoutError:
+            LOGGER.warning("SLS 日志上报未在关闭期限内完成，剩余内存日志将丢失")
+        finally:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+            with self._lock:
+                self._closed = True
+                self._pending.clear()
+                self._tasks.clear()
+                self._corrections.clear()
+                self._uploading.clear()
+                self._inherited.clear()
+                self._count = self._bytes = 0

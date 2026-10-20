@@ -73,15 +73,146 @@ async def eventually(predicate, *, timeout=5):
             await asyncio.sleep(0.01)
 
 
-async def entries(client, key, minimum="-"):
-    return [(item_id, json.loads(fields["json"])) for item_id, fields in await client.xrange(key, min=minimum)]
+class RecordingPublisher:
+    def __init__(self):
+        self.events = {}
+        self.finished = []
+        self.sequence = 0
+        self.observed = []
+
+    def emit(self, task_id, event):
+        self.sequence += 1
+        cursor = f"1800000000000-{self.sequence}"
+        self.events.setdefault(task_id, []).append((cursor, dict(event)))
+        return cursor
+
+    def finish(self, task_id):
+        self.finished.append(task_id)
+
+    def observe_cursor(self, cursor, *, task_id=None):
+        self.observed.append((cursor, task_id))
+
+
+def make_reporter(cfg, queue, **kwargs):
+    kwargs.setdefault("log_publisher", RecordingPublisher())
+    return RedisRunReporter(cfg, queue, **kwargs)
+
+
+def published(reporter, task_id):
+    return [(cursor, event) for cursor, event in reporter.log_publisher.events.get(task_id, [])
+            if event["message"] != "登录申请已提交，等待执行服务器领取任务。"]
+
+
+def test_direct_publication_does_not_wait_for_redis_and_coalesces_summaries():
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        publisher = RecordingPublisher()
+        reporter = make_reporter(cfg, queue, log_publisher=publisher)
+        try:
+            reporter.emit(record, status="running_daily")
+            for index in range(20):
+                reporter.emit(record, message=f"step {index}")
+            reporter.emit(record, status="completed")
+            reporter.finish(record.id)
+            assert len(publisher.events[record.id]) == 23  # Submitted, start, steps, finish.
+            assert publisher.events[record.id][0][1]["time"] == record.created_at
+            assert len(reporter._pending[record.id]) == 1
+            snapshot = reporter._pending[record.id][0].snapshot
+            assert snapshot["logSource"] == "sls"
+            assert snapshot["logCursor"] == publisher.events[record.id][-1][0]
+            assert publisher.finished == [record.id]
+            reporter.start()
+            await drain(reporter)
+            run_key, stream_key, _ = keys(cfg, record)
+            assert json.loads(await client.get(run_key)) == snapshot
+            assert await client.exists(stream_key) == 0
+        finally:
+            await reporter.close(timeout=0.1)
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+def test_disabled_logs_do_not_create_or_refresh_a_legacy_redis_stream():
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        run_key, stream_key, _ = keys(cfg, record)
+        await client.xadd(stream_key, {"json": json.dumps({"message": "old event"})})
+        await client.expire(stream_key, 60)
+        old = await client.xrange(stream_key)
+        ttl = await client.pttl(stream_key)
+        reporter = RedisRunReporter(cfg, queue)
+        reporter.start()
+        try:
+            reporter.emit(record, status="completed", message="new event")
+            await drain(reporter)
+            assert json.loads(await client.get(run_key))["logSource"] == "disabled"
+            assert await client.xrange(stream_key) == old
+            assert 0 < await client.pttl(stream_key) <= ttl
+        finally:
+            await reporter.close()
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+def test_claim_seeds_publisher_from_previous_attempt_cursor():
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        cursor = "1900000000000-999"
+        await client.set(keys(cfg, record)[0], json.dumps({
+            "taskId": record.id, "status": "interrupted", "logCursor": cursor,
+        }))
+        assert await queue.requeue(record)
+        queue.log_publisher = RecordingPublisher()
+        claimed = await queue.pop()
+        assert claimed is not None and claimed.id == record.id
+        assert queue.log_publisher.observed == [(cursor, record.id)]
+        assert queue.log_publisher.events == {}
+        await client.aclose()
+    asyncio.run(scenario())
+
+
+def test_rapid_log_events_coalesce_redis_writes_across_event_loop_turns():
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        writes = []
+
+        class CountingTransport:
+            async def eval(self, *args):
+                writes.append(args)
+                return await client.eval(*args)
+
+        queue._client = CountingTransport()
+        reporter = make_reporter(cfg, queue)
+        reporter.start()
+        try:
+            reporter.emit(record, status="running_daily")
+            for index in range(10):
+                await asyncio.sleep(0)
+                reporter.emit(record, message=f"step {index}")
+            reporter.emit(record, status="completed")
+            await drain(reporter)
+            assert len(writes) == 1
+            assert len(published(reporter, record.id)) == 12
+            assert json.loads(await client.get(keys(cfg, record)[0]))["status"] == "completed"
+        finally:
+            await reporter.close()
+            await client.aclose()
+    asyncio.run(scenario())
 
 
 def test_two_task_streams_and_snapshots_are_isolated_and_public():
     async def scenario():
         client, cfg = fake_client(), config()
         queue = RedisTaskQueue(cfg, client=client)
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         first, second = await claim(client, queue), await claim(client, queue)
         reporter.start()
         try:
@@ -95,7 +226,7 @@ def test_two_task_streams_and_snapshots_are_isolated_and_public():
             assert first_state["taskId"] == first.id and first_state["status"] == "running_daily"
             assert first_state["actionIndex"] == 2 and first_state["actionTotal"] == 9
             assert second_state["taskId"] == second.id and second_state["status"] == "waiting_scan"
-            first_items, second_items = await entries(client, first_logs), await entries(client, second_logs)
+            first_items, second_items = published(reporter, first.id), published(reporter, second.id)
             assert [item[1]["message"] for item in first_items] == ["first task started", "api_key=[REDACTED]"]
             assert [item[1]["message"] for item in second_items] == ["second task waiting"]
             public = json.dumps([first_state, second_state, first_items, second_items])
@@ -103,7 +234,7 @@ def test_two_task_streams_and_snapshots_are_isolated_and_public():
             reporter.finish(first.id)
             reporter.finish(second.id)
             assert not reporter._states
-            assert await client.exists(first_run, first_logs, second_run, second_logs) == 4
+            assert await client.exists(first_run, first_logs, second_run, second_logs) == 2
         finally:
             await reporter.close()
             await client.aclose()
@@ -120,7 +251,7 @@ def test_run_username_survives_progress_terminal_and_missing_session(terminal, e
         queue = RedisTaskQueue(cfg, client=client)
         record = await claim(client, queue)
         record.username = "小鸣人"
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         reporter.start()
         try:
             run_key, stream_key, session_key = keys(cfg, record)
@@ -151,7 +282,7 @@ def test_run_username_survives_progress_terminal_and_missing_session(terminal, e
             assert await client.exists(session_key) == 0
             assert record.id not in reporter._states
 
-            logs = await entries(client, stream_key)
+            logs = published(reporter, record.id)
             assert all("username" not in event for _, event in logs)
             public = json.dumps([final, logs])
             for private_value in ("userId", "private-user-id", "tokenHash", "access_token", "accessToken"):
@@ -169,7 +300,7 @@ def test_same_status_publishes_new_username_once_and_keeps_legacy_snapshot_compa
         queue = RedisTaskQueue(cfg, client=client)
         record = await claim(client, queue)
         record.username = missing_username
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         reporter.start()
         try:
             run_key, stream_key, _ = keys(cfg, record)
@@ -185,38 +316,37 @@ def test_same_status_publishes_new_username_once_and_keeps_legacy_snapshot_compa
             assert named["username"] == "小鸣人"
             assert named["status"] == original["status"]
             assert named["sequence"] > original["sequence"]
-            assert len(await entries(client, stream_key)) == 2
+            assert len(published(reporter, record.id)) == 2
 
             reporter.emit(record, status="starting_emulator")
             await drain(reporter)
             assert json.loads(await client.get(run_key))["sequence"] == named["sequence"]
-            assert len(await entries(client, stream_key)) == 2
+            assert len(published(reporter, record.id)) == 2
         finally:
             await reporter.close()
             await client.aclose()
     asyncio.run(scenario())
 
 
-def test_stream_ids_support_incremental_reads_and_exact_bounded_trimming():
+def test_publisher_backpressure_keeps_last_accepted_cursor_in_summary():
     async def scenario():
         client, cfg = fake_client(), config()
         queue = RedisTaskQueue(cfg, client=client)
         record = await claim(client, queue)
-        reporter = RedisRunReporter(cfg, queue, stream_limit=3)
+        publisher = RecordingPublisher()
+        reporter = make_reporter(cfg, queue, log_publisher=publisher)
         reporter.start()
         try:
-            reporter.emit(record, status="running_daily", message="message 0")
+            reporter.emit(record, status="running_daily")
+            cursor = publisher.events[record.id][-1][0]
+            publisher.emit = lambda *args: None
+            reporter.emit(record, status="completed")
             await drain(reporter)
-            _, stream_key, _ = keys(cfg, record)
-            original_cursor = (await entries(client, stream_key))[0][0]
-            for index in range(1, 6):
-                reporter.emit(record, message=f"message {index}")
-            await drain(reporter)
-            page = await entries(client, stream_key, "(" + original_cursor)
-            assert [event["message"] for _, event in page] == ["message 3", "message 4", "message 5"]
-            assert len(await client.xrange(stream_key)) == 3
-            assert await entries(client, stream_key, "(" + page[-1][0]) == []
-            assert await entries(client, stream_key) == page  # Reading never consumes stream entries.
+            run_key, stream_key, _ = keys(cfg, record)
+            state = json.loads(await client.get(run_key))
+            assert state["status"] == "completed"
+            assert state["logCursor"] == cursor
+            assert await client.exists(stream_key) == 0
         finally:
             await reporter.close()
             await client.aclose()
@@ -228,7 +358,7 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
         client, cfg = fake_client(), config(daily_timeout_seconds=600)
         queue = RedisTaskQueue(cfg, client=client)
         record = await claim(client, queue, session_ttl=5_000)
-        reporter = RedisRunReporter(cfg, queue, retention_seconds=120)
+        reporter = make_reporter(cfg, queue, retention_seconds=120)
         reporter.start()
         try:
             run_key, stream_key, session_key = keys(cfg, record)
@@ -240,13 +370,13 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
             assert authorized["status"] == "finishing_login"
             assert authorized["authorizedAt"] == iso_time(record.authorized_at)
             assert authorized["startedAt"] is None
-            assert (await entries(client, stream_key))[-1][1]["message"] == "扫码授权已完成，正在进入游戏"
+            assert (published(reporter, record.id))[-1][1]["message"] == "扫码授权已完成，正在进入游戏"
             record.daily_started_at = datetime.now(timezone.utc).timestamp()
             reporter.emit(record, status="running_daily")
             await drain(reporter)
             assert 0 < await client.pttl(session_key) <= before
             assert 605398 <= await client.ttl(run_key) <= 605400
-            assert 718 <= await client.ttl(stream_key) <= 720
+            assert await client.exists(stream_key) == 0
             await client.delete(session_key)  # Simulate QR-session expiration while daily work continues.
             reporter.emit(record, message="daily after QR expiration")
             reporter.emit(record, status="completed")
@@ -258,7 +388,7 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
             assert state["startedAt"] == iso_time(record.daily_started_at)
             assert state["finishedAt"] is not None
             assert 604798 <= await client.ttl(run_key) <= 604800
-            assert 118 <= await client.ttl(stream_key) <= 120
+            assert await client.exists(stream_key) == 0
             assert await client.exists(session_key) == 0
             assert record.id not in reporter._states
         finally:
@@ -295,8 +425,7 @@ def test_owner_handoff_rejects_old_owner_before_and_after_qr_session_expiration(
             await second_reporter._write(record.id, second_reporter._pending[record.id][-1])
             state = json.loads(await client.get(run_key))
             assert state["status"] == "completed" and state["workerId"] == second.owner
-            assert [item[1]["message"] for item in await entries(client, stream_key)][:2] == ["old worker", "new worker"]
-            assert len(await entries(client, stream_key)) == 3
+            assert await client.exists(stream_key) == 0
         finally:
             await first_reporter.close(timeout=0)
             await second_reporter.close(timeout=0)
@@ -310,7 +439,7 @@ def test_interrupted_run_rejects_late_progress_without_an_active_claim(session_s
         client, cfg = fake_client(), config()
         queue = RedisTaskQueue(cfg, client=client)
         record = await claim(client, queue)
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         try:
             reporter.emit(record, status="interrupted", error_code="worker_stopped")
             await reporter._write(record.id, reporter._pending[record.id][-1])
@@ -326,7 +455,7 @@ def test_interrupted_run_rejects_late_progress_without_an_active_claim(session_s
             reporter.emit(record, status="starting_emulator", message="late progress")
             await reporter._write(record.id, reporter._pending[record.id][-1])
             assert await client.get(run_key) == before
-            assert len(await entries(client, stream_key)) == 1
+            assert await client.exists(stream_key) == 0
             if session_state == "queued":
                 retried = await queue.pop()
                 assert retried is not None
@@ -363,7 +492,7 @@ def test_same_worker_reclaims_task_after_local_cleanup_without_resetting_sequenc
         client, cfg = fake_client(), config()
         queue = RedisTaskQueue(cfg, client=client)
         record = await claim(client, queue)
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         reporter.start()
         try:
             reporter.emit(record, status="starting_emulator", message="first attempt")
@@ -380,7 +509,7 @@ def test_same_worker_reclaims_task_after_local_cleanup_without_resetting_sequenc
             state = json.loads(await client.get(run_key))
             assert state["sequence"] > original_sequence
             assert state["status"] == "opening_game"
-            assert [event["message"] for _, event in await entries(client, stream_key)] == ["first attempt", "retry attempt"]
+            assert [event["message"] for _, event in published(reporter, record.id)] == ["first attempt", "retry attempt"]
         finally:
             await reporter.close()
             await client.aclose()
@@ -405,7 +534,7 @@ def test_write_accepted_then_response_lost_retries_without_duplicate_stream_even
 
         transport = LoseFirstReply()
         queue._client = transport
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         reporter.start()
         try:
             reporter.emit(record, status="completed", message="exactly one completion")
@@ -413,7 +542,7 @@ def test_write_accepted_then_response_lost_retries_without_duplicate_stream_even
             await drain(reporter)
             run_key, stream_key, _ = keys(cfg, record)
             assert transport.calls == 2
-            assert len(await entries(client, stream_key)) == 1
+            assert len(published(reporter, record.id)) == 1
             assert json.loads(await client.get(run_key))["sequence"] == 1
             assert record.id not in reporter._states
         finally:
@@ -440,7 +569,7 @@ def test_disconnection_has_bounded_nonblocking_buffers_and_recovers_final_state(
 
         transport = OfflineTransport()
         queue._client = transport
-        reporter = RedisRunReporter(cfg, queue, buffer_limit=4)
+        reporter = make_reporter(cfg, queue, buffer_limit=4)
         reporter.start()
         try:
             reporter.emit(records[0], status="running_daily")
@@ -452,7 +581,7 @@ def test_disconnection_has_bounded_nonblocking_buffers_and_recovers_final_state(
             reporter.finish(records[0].id)
             assert len(reporter._states) == 2
             assert records[2].id not in reporter._states
-            assert all(len(pending) <= 4 for pending in reporter._pending.values())
+            assert all(len(pending) == 1 for pending in reporter._pending.values())
             assert reporter._pending[records[0].id][-1].snapshot["status"] == "completed"
             assert records[0].id in reporter._finished
             # The game coroutine continues while the reporter sleeps/retries offline.
@@ -466,8 +595,9 @@ def test_disconnection_has_bounded_nonblocking_buffers_and_recovers_final_state(
             await drain(reporter)
             run_key, stream_key, _ = keys(cfg, records[0])
             assert json.loads(await client.get(run_key))["status"] == "completed"
-            messages = [event["message"] for _, event in await entries(client, stream_key)]
-            assert any("未保留" in message for message in messages)
+            messages = [event["message"] for _, event in published(reporter, records[0].id)]
+            assert "step 0" in messages and "step 29" in messages
+            assert await client.exists(stream_key) == 0
             assert records[0].id not in reporter._states
             reporter.emit(records[2], status="running_daily")
             await drain(reporter)
@@ -492,7 +622,7 @@ def test_slow_inflight_write_does_not_remove_a_newer_buffered_event():
                 return await client.eval(*args)
 
         queue._client = SlowTransport()
-        reporter = RedisRunReporter(cfg, queue, buffer_limit=2)
+        reporter = make_reporter(cfg, queue, buffer_limit=2)
         reporter.start()
         try:
             reporter.emit(record, status="running_daily", message="inflight")
@@ -505,8 +635,8 @@ def test_slow_inflight_write_does_not_remove_a_newer_buffered_event():
             await drain(reporter)
             run_key, stream_key, _ = keys(cfg, record)
             assert json.loads(await client.get(run_key))["status"] == "completed"
-            assert (await entries(client, stream_key))[-1][1]["message"] == "final event"
-            assert any("new 3" in event["message"] for _, event in await entries(client, stream_key))
+            assert (published(reporter, record.id))[-1][1]["message"] == "final event"
+            assert any("new 3" in event["message"] for _, event in published(reporter, record.id))
         finally:
             release.set()
             await reporter.close()
@@ -527,7 +657,7 @@ def test_shutdown_abandons_unreachable_redis_within_deadline_without_leaking_det
                 await asyncio.Event().wait()
 
         queue._client = HangingTransport()
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         reporter.start()
         reporter.emit(record, status="completed")
         await asyncio.wait_for(blocked.wait(), 1)
@@ -549,13 +679,54 @@ class MemoryStorage:
     async def delete(self, task_id):
         pass
 
+    async def initialize(self):
+        pass
+
+    async def sweep(self):
+        pass
+
+
+def test_runtime_shares_publisher_and_owns_its_lifecycle(monkeypatch):
+    from naruto_daily.login_service import sls_logs
+
+    async def scenario():
+        client, cfg = fake_client(), config(sls_enabled=True)
+        calls = []
+
+        class Publisher(RecordingPublisher):
+            def __init__(self, supplied):
+                super().__init__()
+                assert supplied is cfg
+
+            def start(self):
+                calls.append("start")
+
+            async def close(self, *, timeout):
+                calls.append(("close", timeout))
+
+        monkeypatch.setattr(sls_logs, "SlsLogPublisher", Publisher, raising=False)
+        queue = RedisTaskQueue(cfg, client=client)
+        runtime = LoginRuntime(cfg, MemoryStorage(), redis_queue=queue)
+        assert runtime._log_publisher is queue.log_publisher
+        assert runtime._run_reporter.log_publisher is queue.log_publisher
+
+        async def consume():
+            await runtime._stop_event.wait()
+
+        monkeypatch.setattr(runtime, "_consume_redis", consume)
+        await runtime.start()
+        assert calls == ["start"]
+        await runtime.stop()
+        assert calls == ["start", ("close", 2)]
+    asyncio.run(scenario())
+
 
 def test_mock_completed_run_is_not_overwritten_when_its_qr_later_expires(monkeypatch):
     async def scenario():
         client, cfg = fake_client(), config()
         queue = RedisTaskQueue(cfg, client=client)
         record = await claim(client, queue)
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         runtime = LoginRuntime(cfg, MemoryStorage(), redis_queue=queue, run_reporter=reporter)
 
         async def make_qr(current):
@@ -568,14 +739,14 @@ def test_mock_completed_run_is_not_overwritten_when_its_qr_later_expires(monkeyp
             await drain(reporter)
             run_key, stream_key, _ = keys(cfg, record)
             completed_snapshot = await client.get(run_key)
-            completed_logs = await entries(client, stream_key)
+            completed_logs = published(reporter, record.id)
             assert json.loads(completed_snapshot)["status"] == "completed"
             assert completed_logs[-1][1]["message"] == "模拟二维码已生成"
             assert all(event["message"] != STAGE_MESSAGES["completed"] for _, event in completed_logs)
             runtime._expire(record)
             await drain(reporter)
             assert await client.get(run_key) == completed_snapshot
-            assert await entries(client, stream_key) == completed_logs
+            assert published(reporter, record.id) == completed_logs
         finally:
             await reporter.close()
             await client.aclose()
@@ -591,7 +762,7 @@ def test_real_child_log_events_preserve_protocol_and_publish_terminal_after_clea
         queue = RedisTaskQueue(cfg, client=client)
         record = await claim(client, queue)
         storage = MemoryStorage()
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         runtime = LoginRuntime(cfg, storage, redis_queue=queue, run_reporter=reporter)
         cleaning, release = threading.Event(), threading.Event()
 
@@ -641,7 +812,7 @@ def test_real_child_log_events_preserve_protocol_and_publish_terminal_after_clea
             if cleanup_fails:
                 assert state["errorCode"] == "instance_cleanup_failed"
             assert json.loads(await client.get(session_key))["status"] == "qr_ready"
-            logs = [event for _, event in await entries(client, stream_key)]
+            logs = [event for _, event in published(reporter, record.id)]
             assert any(event["message"] == "daily action" and event["actionTotal"] == 3 for event in logs)
             assert [event["message"] for event in logs] == [
                 STAGE_MESSAGES["starting_emulator"], STAGE_MESSAGES["opening_game"],
@@ -665,7 +836,7 @@ def test_failure_before_child_admission_has_a_safe_specific_error_log(monkeypatc
         redis, cfg = fake_client(), config()
         queue = RedisTaskQueue(cfg, client=redis)
         record = await claim(redis, queue)
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         runtime = LoginRuntime(cfg, MemoryStorage(), redis_queue=queue, run_reporter=reporter)
 
         async def fail(current):
@@ -680,7 +851,7 @@ def test_failure_before_child_admission_has_a_safe_specific_error_log(monkeypatc
             await drain(reporter)
             run_key, stream_key, _ = keys(cfg, record)
             state = json.loads(await redis.get(run_key))
-            logs = await entries(redis, stream_key)
+            logs = published(reporter, record.id)
             expected = code or "unexpected_error"
             assert state["errorCode"] == expected
             assert logs[-1][1]["level"] == "ERROR"
@@ -769,7 +940,7 @@ def test_redis_run_preserves_secret_completion_when_execution_stops(terminal, co
         client, cfg = fake_client(), config()
         queue = RedisTaskQueue(cfg, client=client)
         record = await claim(client, queue)
-        reporter = RedisRunReporter(cfg, queue)
+        reporter = make_reporter(cfg, queue)
         reporter.start()
         try:
             record.daily_status = 'running_daily'
