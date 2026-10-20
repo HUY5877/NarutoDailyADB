@@ -34,6 +34,7 @@ def test_each_tap_and_back_has_local_time_coordinates_and_result(monkeypatch, de
     after = datetime.now(timezone.utc)
     text = terminal.getvalue()
     assert '[ADB操作开始]' in text and '[ADB操作完成]' in text
+    assert all(line.startswith(log_events.FILE_ONLY_PREFIX) for line in text.splitlines())
     assert '点击 x=123 y=456' in text and '返回 keycode=4' in text
     assert 'serial=emulator-5554' in text and 'elapsed_ms=' in text
     for line in text.splitlines():
@@ -41,6 +42,32 @@ def test_each_tap_and_back_has_local_time_coordinates_and_result(monkeypatch, de
         assert before <= instant <= after
     assert len(commands) == 2
     assert public == []
+
+
+def test_local_file_keeps_inputs_while_terminal_keeps_other_backend_logs(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    terminal = io.StringIO()
+    handler = logging.StreamHandler(terminal)
+    original_filters = handler.filters[:]
+    root = logging.getLogger()
+    root.addHandler(handler)
+    client = AdbClient(Path('adb.exe'), 'emulator-5554',
+                       run_command=lambda _: CommandResult(0, '', ''))
+    try:
+        with log_events.local_log_file(tmp_path):
+            client.tap(123, 456)
+            logging.getLogger('naruto_daily').info('普通动作进度')
+            logging.getLogger('naruto_daily').warning('模型后台诊断', extra={'backend_only': True})
+        assert handler.filters == original_filters
+        content = (tmp_path / 'logs' / 'worker.log').read_text(encoding='utf-8')
+        assert '[ADB操作开始]' in content and '[ADB操作完成]' in content
+        assert '点击 x=123 y=456' in content
+        assert '[ADB操作' not in terminal.getvalue()
+        for message in ('普通动作进度', '模型后台诊断'):
+            assert message in content and message in terminal.getvalue()
+    finally:
+        root.removeHandler(handler)
+        handler.close()
 
 
 @pytest.mark.parametrize('device', ['daily', 'login'])

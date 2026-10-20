@@ -29,7 +29,7 @@ def log_adb_input(serial, arguments):
     def emit(level, outcome, suffix=''):
         LOGGER.log(level, '[ADB操作%s] time=%s %s%s', outcome,
                    datetime.now().astimezone().isoformat(timespec='microseconds'), context, suffix,
-                   extra={'backend_only': True})
+                   extra={'backend_only': True, 'file_only': True})
 
     emit(logging.INFO, '开始')
     try:

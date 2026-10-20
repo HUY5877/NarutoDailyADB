@@ -19,6 +19,7 @@ from naruto_daily.multimodal.diagnostics import is_model_api_failure
 MAX_LOG_MESSAGE_LENGTH = 1_000
 LOCAL_LOG_MAX_BYTES = 10 * 1024 * 1024
 LOCAL_LOG_BACKUPS = 5
+FILE_ONLY_PREFIX = 'FILE_ONLY '
 _REDACTED = "[REDACTED]"
 _URL_CREDENTIALS = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+@")
 _AUTH_HEADER = re.compile(r"(?im)\b(authorization\s*[:=]\s*)[^\r\n]+")
@@ -81,6 +82,11 @@ class _LocalFileHandler(RotatingFileHandler):
         pass
 
 
+class _TerminalLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not getattr(record, 'file_only', False)
+
+
 @contextmanager
 def local_log_file(state_dir: Path):
     """Append local diagnostics and close the rotating file on every exit path."""
@@ -96,6 +102,13 @@ def local_log_file(state_dir: Path):
     handler.setLevel(logging.INFO)
     handler.setFormatter(_LocalLogFormatter(secrets))
     logger = logging.getLogger()
+    terminal_filter = _TerminalLogFilter()
+    terminal_handlers = [
+        candidate for candidate in logger.handlers
+        if isinstance(candidate, logging.StreamHandler) and not isinstance(candidate, logging.FileHandler)
+    ]
+    for candidate in terminal_handlers:
+        candidate.addFilter(terminal_filter)
     logger.addHandler(handler)
     try:
         logger.info('本地详细日志已开启：%s（单文件 10 MiB，保留 5 份历史）', path)
@@ -103,6 +116,8 @@ def local_log_file(state_dir: Path):
     finally:
         logger.removeHandler(handler)
         handler.close()
+        for candidate in terminal_handlers:
+            candidate.removeFilter(terminal_filter)
 
 
 def _exception_summary(error: BaseException, *, secrets: Iterable[str], max_length: int) -> str:
@@ -154,10 +169,12 @@ class DiagnosticLogHandler(logging.StreamHandler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             secrets = (*self._secrets, *model_log_secrets())
+            # stderr is a pipe to the parent; preserve file-only routing there.
+            prefix = FILE_ONLY_PREFIX if getattr(record, 'file_only', False) else ''
             for line in self.format(record).splitlines():
                 indent = line[:len(line) - len(line.lstrip())]
                 message = sanitize_log_message(line, secrets=secrets, max_length=None)
-                self.stream.write(indent + message + "\n")
+                self.stream.write(prefix + indent + message + "\n")
             self.flush()
         except Exception:
             # A closed terminal must not replace the original game error.
