@@ -3,6 +3,7 @@
 import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
+import io
 import logging
 import sys
 from uuid import uuid4
@@ -178,13 +179,13 @@ def test_worker_shutdown_or_cancellation_reaps_the_stderr_reader(tmp_path, caplo
     asyncio.run(scenario())
 
 
-def test_child_input_diagnostics_are_saved_with_task_id_without_public_events(tmp_path, caplog):
+def test_child_input_diagnostics_are_saved_with_task_id_without_terminal_or_public_events(tmp_path, caplog):
     from naruto_daily.login_service.log_events import local_log_file
     caplog.set_level(logging.INFO, logger=LOGGER)
     program = r'''
-import json,sys
+import json,logging,sys
 from pathlib import Path
-from naruto_daily.common.adb_client import AdbClient,CommandResult
+from naruto_daily.common.adb_client import AdbClient,AdbError,CommandResult
 from naruto_daily.login_service.log_events import forward_task_logs
 message=json.loads(sys.stdin.readline())
 def send(event):
@@ -193,20 +194,42 @@ with forward_task_logs(send,diagnostic_stream=sys.stderr):
     client=AdbClient(Path('adb.exe'),'emulator-5554',run_command=lambda _:CommandResult(0,'',''))
     client.tap(123,456)
     client.swipe(10,20,30,40,500)
+    client.back()
+    failed=AdbClient(Path('adb.exe'),'emulator-5554',run_command=lambda _:CommandResult(1,'','private-device-output'))
+    try:
+        failed.tap(789,123)
+    except AdbError:
+        pass
+    logging.getLogger('naruto_daily').info('普通动作诊断')
+    logging.getLogger('naruto_daily').warning('模型重试诊断',extra={'backend_only':True})
 for event in message['events']:
     send(event)
 '''
 
     async def scenario():
         runtime, reporter, record = make_runtime(tmp_path)
-        with local_log_file(tmp_path):
-            result = await runtime._run_child(record, [sys.executable, '-u', '-c', program],
-                                              {'events': SUCCESS_PROTOCOL}, daily=True)
+        terminal = io.StringIO()
+        terminal_handler = logging.StreamHandler(terminal)
+        logging.getLogger().addHandler(terminal_handler)
+        try:
+            with local_log_file(tmp_path):
+                result = await runtime._run_child(record, [sys.executable, '-u', '-c', program],
+                                                  {'events': SUCCESS_PROTOCOL}, daily=True)
+        finally:
+            logging.getLogger().removeHandler(terminal_handler)
+            terminal_handler.close()
         content = (tmp_path / 'logs' / 'worker.log').read_text(encoding='utf-8')
         assert result == PNG
         assert f'Task {record.id} |' in content
         assert '点击 x=123 y=456' in content and 'duration_ms=500' in content
+        assert '返回 keycode=4' in content
         assert '[ADB操作完成] time=' in content and 'serial=emulator-5554' in content
+        assert 'WARNING Task ' in content and '[ADB操作失败] time=' in content
+        assert '点击 x=789 y=123' in content and 'error_type=AdbError' in content
+        assert 'FILE_ONLY ' not in content and 'private-device-output' not in content
+        assert '[ADB操作' not in terminal.getvalue() and 'FILE_ONLY ' not in terminal.getvalue()
+        for message in ('普通动作诊断', '模型重试诊断'):
+            assert message in content and message in terminal.getvalue()
         assert not any('[ADB操作' in (event.get('message') or '') for event in reporter.events)
         assert no_reader_tasks()
     asyncio.run(scenario())
