@@ -91,7 +91,7 @@ def test_every_reward_task_uses_same_swipe_for_search_and_alignment(action, alig
 
 
 def test_reward_search_default_limit_is_shared_by_all_tasks():
-    assert len(reward_card_actions()) == 8
+    assert len(reward_card_actions()) == 7
     for action in reward_card_actions():
         client = NavigationClient()
         def search():
@@ -101,7 +101,7 @@ def test_reward_search_default_limit_is_shared_by_all_tasks():
             summary = search()
             assert summary.completed and summary.swipes == 20
         else:
-            # 周胜入口是必需卡片，不能在未找到时假装已经进入决斗场。
+            # 必需卡片未找到时应停止，不能假装已经进入目标页面。
             with pytest.raises(VisualError, match='20'):
                 search()
         assert client.swipes == [(1450, 550, 1000, 550, 600)] * 20

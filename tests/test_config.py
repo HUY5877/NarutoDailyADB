@@ -36,6 +36,68 @@ def test_load_settings_returns_validated_values(tmp_path):
     assert settings.tasks["sign_in"][0] == {"type": "tap", "x": 100, "y": 200}
 
 
+def arena_entry_action():
+    return {
+        'type': 'enter_arena', 'timeout_seconds': 300, 'poll_seconds': 1,
+        'pre_click_wait_seconds': 1, 'post_click_wait_seconds': 3, 'max_swipes': 15,
+        'multimodal': {'timeout_seconds': 30, 'max_calls': 3},
+        'battle_entry': {
+            'name': '忍术对战图标', 'template': 'assets/arena_ninjutsu_battle.png',
+            'left': 180, 'top': 820, 'right': 650, 'bottom': 1080, 'threshold': .85,
+        },
+        'ready_marker': {
+            'name': '好友切磋', 'template': 'assets/arena_friendly_match.png',
+            'left': 1600, 'top': 280, 'right': 1920, 'bottom': 650, 'threshold': .9,
+        },
+    }
+
+
+@pytest.mark.parametrize('max_swipes', [0, 15])
+def test_arena_entry_accepts_scan_limits_and_nested_templates(tmp_path, max_swipes):
+    payload = valid_payload()
+    payload['screen'] = {'width': 1920, 'height': 1080}
+    action = arena_entry_action()
+    action['max_swipes'] = max_swipes
+    payload['tasks']['arena_weekly'] = [action]
+    assert load_settings(write_config(tmp_path, payload)).tasks['arena_weekly'] == [action]
+
+
+@pytest.mark.parametrize('change,error', [
+    (lambda a: a.update(max_swipes=16), 'max_swipes'),
+    (lambda a: a.update(max_swipes=-1), 'max_swipes'),
+    (lambda a: a.update(max_swipes=True), 'max_swipes'),
+    (lambda a: a.update(max_swipes=1.5), 'max_swipes'),
+    (lambda a: a.update(timeout_seconds=601), 'timeout_seconds'),
+    (lambda a: a.update(timeout_seconds=True), 'timeout_seconds'),
+    (lambda a: a.update(poll_seconds=.1), 'poll_seconds'),
+    (lambda a: a.update(poll_seconds=6), 'poll_seconds'),
+    (lambda a: a.update(timeout_seconds=1, poll_seconds=2), 'poll_seconds'),
+    (lambda a: a.update(pre_click_wait_seconds=-1), 'pre_click_wait_seconds'),
+    (lambda a: a['multimodal'].update(timeout_seconds=31), 'multimodal'),
+    (lambda a: a['battle_entry'].update(template='../private.png'), 'battle_entry.*相对路径'),
+    (lambda a: a['battle_entry'].update(right=1930), 'battle_entry.*right'),
+    (lambda a: a['battle_entry'].pop('name'), 'battle_entry.*缺少字段'),
+    (lambda a: a['ready_marker'].update(name=''), 'ready_marker.*name'),
+    (lambda a: a['ready_marker'].update(threshold=0), 'ready_marker.*threshold'),
+    (lambda a: a.update(ready_marker=[]), 'ready_marker.*模板目标对象'),
+])
+def test_arena_entry_rejects_invalid_scan_and_nested_template_settings(tmp_path, change, error):
+    payload = valid_payload()
+    payload['screen'] = {'width': 1920, 'height': 1080}
+    action = arena_entry_action()
+    change(action)
+    payload['tasks']['arena_weekly'] = [action]
+    with pytest.raises(ConfigError, match=error):
+        load_settings(write_config(tmp_path, payload))
+
+
+def test_arena_entry_rejects_unscaled_screen(tmp_path):
+    payload = valid_payload()
+    payload['tasks']['arena_weekly'] = [arena_entry_action()]
+    with pytest.raises(ConfigError, match='1920×1080'):
+        load_settings(write_config(tmp_path, payload))
+
+
 def squad_action():
     targets = ("ready_marker", "match_button", "quadruple_checked", "quadruple_unchecked",
                "continue_button", "limit_marker", "dialog_marker")

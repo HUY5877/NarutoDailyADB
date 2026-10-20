@@ -25,10 +25,12 @@ from .survival_challenge import handle_survival_challenge
 from .squad_assault import handle_squad_assault
 from .ichiraku import handle_ichiraku_takeout
 from .equipment import handle_equipment_upgrade
+from .arena import enter_arena
 
 
 LOGGER = logging.getLogger("naruto_daily")
 ACTION_NAMES = {
+    "enter_arena": "滑动主场景查找决斗场并确认好友切磋入口",
     "main_menu_tap": "大模型识别主界面入口后点击",
     "handle_ichiraku_takeout": "判断并领取一乐外卖",
     "handle_equipment_upgrade": "优先最低装备扫荡材料、合成和进阶",
@@ -186,6 +188,11 @@ class ActionRunner:
                     template_matcher=self.template_matcher,
                     asset_root=self.asset_root,
                     sleep=self.sleep,
+                )
+            elif action_type == "enter_arena":
+                enter_arena(
+                    self.client, action, template_matcher=self.template_matcher,
+                    asset_root=self.asset_root, sleep=self.sleep,
                 )
             elif action_type == "enter_secret_realm":
                 entered = enter_secret_realm(self.client, action, template_matcher=self.template_matcher,

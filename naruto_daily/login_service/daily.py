@@ -230,7 +230,7 @@ class DailySession:
             self._remaining()
         if self.user_options.get('mainTask') != 'arena_weekly':
             return summary.action_count
-        # 登录和奖励入口不占用周胜的 40 分钟；离开旧预算后再开始战斗预算。
+        # 登录和决斗场入口不占用周胜的 40 分钟；离开旧预算后再开始战斗预算。
         battle_deadline = self._clock() + ARENA_WEEKLY_SECONDS
         self._set_deadline(battle_deadline)
         if on_arena_started is not None:

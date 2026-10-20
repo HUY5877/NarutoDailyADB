@@ -34,6 +34,10 @@ class Settings:
 ROOT_KEYS = {"adb_path", "serial", "screen", "tasks"}
 TASK_NAMES = {"login", "ichiraku_takeout", "equipment_upgrade", "organization_pray", "sign_in", "stamina", "recruit", "abundance", "survival_challenge", "squad_assault", "secret_realm", "secret_realm_farm", "arena_weekly"}
 ACTION_KEYS = {
+    "enter_arena": {
+        "type", "timeout_seconds", "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds",
+        "max_swipes", "multimodal", "battle_entry", "ready_marker",
+    },
     "main_menu_tap": {"type", "name", "main_menu", "multimodal", "timeout_seconds",
                       "poll_seconds", "pre_click_wait_seconds", "post_click_wait_seconds"},
     "handle_ichiraku_takeout": {"type", "timeout_seconds", "post_click_wait_seconds", "multimodal"},
@@ -355,7 +359,23 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         # 兼容旧配置；装备流程已全部使用模型判断，不再依赖这四个模板。
         optional_keys = optional_keys | {"one_click_sweep", "start_sweep", "sweep_done", "advance"}
     _require_exact_keys(action, ACTION_KEYS[action_type], context, optional_keys)
-    if action_type == "tap":
+    if action_type == "enter_arena":
+        if (width, height) != (1920, 1080):
+            raise ConfigError(f"{context} 的决斗场入口只支持 1920×1080 安卓画面")
+        for key, lower, upper in (("timeout_seconds", 1, 600), ("poll_seconds", 0.2, 5)):
+            value = action[key]
+            if type(value) not in (int, float) or not lower <= value <= upper:
+                raise ConfigError(f"{context}.{key} 必须在 {lower} 到 {upper} 之间")
+        if action["poll_seconds"] > action["timeout_seconds"]:
+            raise ConfigError(f"{context}.poll_seconds 不能大于 timeout_seconds")
+        if type(action["max_swipes"]) is not int or not 0 <= action["max_swipes"] <= 15:
+            raise ConfigError(f"{context}.max_swipes 必须在 0 到 15 之间")
+        _validate_click_waits(action, context)
+        _validate_multimodal_config(action["multimodal"], f"{context}.multimodal")
+        for key in ("battle_entry", "ready_marker"):
+            _validate_template_target(action[key], width, height, f"{context}.{key}", require_name=True)
+        return
+    elif action_type == "tap":
         _coordinate(action["x"], width, context)
         _coordinate(action["y"], height, context)
     elif action_type == "swipe":

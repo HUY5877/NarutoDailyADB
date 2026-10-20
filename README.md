@@ -55,9 +55,9 @@ Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限，
 
 高速通道预检设备名、触点数量、1920×1080 坐标范围、写权限和 Android 事件格式；预检不兼容时沿用六线程 ADB 坐标点击，保持六个按钮同频且不增加轮间等待。发送后发生通道错误则停止，不补发同一批次。普通日常战斗继续使用原有输入方式。决斗场复用公共循环的超时、停点截图及结算识别逻辑，支持 `model`、`end_detector`、`before_attack` 和 `check_interval_seconds`；不会修改传入的日常战斗配置。调用方仍需确保在战斗画面启用循环，坐标点击本身不识别场景。
 
-扫码客户端通过 `userOptions.mainTask: "arena_weekly"` 选择决斗场周胜，省略或选择 `daily` 时沿用完整日常。周胜复用扫码登录收尾和弹窗清理，随后执行 `config.example.json` 中独立的 `tasks.arena_weekly`：进入奖励页，使用同一套滑动逻辑查找“决斗场击败1名忍者”卡片并点击前往。标题模板不含会变化的次数和活跃数字。卡片未能点击前往时停止任务。
+扫码客户端通过 `userOptions.mainTask: "arena_weekly"` 选择决斗场周胜，省略或选择 `daily` 时沿用完整日常。周胜复用扫码登录收尾和弹窗清理，随后执行 `config.example.json` 中独立的 `tasks.arena_weekly`：先在主场景安全区域向右滑动 5 次，归位到最左侧；再逐屏向左滑动查找决斗场，最多 15 次。每屏先由 JEV 判断是否出现清晰的决斗场图标，确认后再由大模型返回按钮位置并通过 ADB 点击。进入决斗场后，使用 OpenCV 模板点击左下角忍术对战图标，并确认“好友切磋”标记出现后开始战斗。识别或入场失败时停止本次任务。
 
-第一次调用决斗场六区战斗模块时开始独立计时 40 分钟；准备页面耗时不占用这 40 分钟。进入后持续运行该模块，到时正常结束本次任务，父进程立即终止执行子进程并关闭、释放实例，常驻 worker 继续领取其他任务。该定时结束不经过失败保留现场的 60 秒等待。更新时需同时保留新版 `config.example.json` 和 `assets/arena_weekly_label.png`，并重启常驻 worker。
+第一次调用决斗场六区战斗模块时开始独立计时 40 分钟；准备页面耗时不占用这 40 分钟。进入后持续运行该模块，到时正常结束本次任务，父进程立即终止执行子进程并关闭、释放实例，常驻 worker 继续领取其他任务。该定时结束不经过失败保留现场的 60 秒等待。更新时需同时保留新版 `config.example.json`、`assets/arena_ninjutsu_battle.png` 和 `assets/arena_friendly_match.png`，并重启常驻 worker。
 
 ## 启动
 

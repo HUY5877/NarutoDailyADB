@@ -96,14 +96,44 @@ def test_weekly_requires_its_own_route_instead_of_running_daily(tmp_path):
         session_for(tmp_path, user_options={'mainTask': 'arena_weekly'})
 
 
-def test_example_weekly_route_uses_reward_entry_and_the_existing_card_navigation():
+def test_example_weekly_route_scans_main_scene_and_confirms_friendly_match():
     payload = json.loads((Path(__file__).resolve().parents[1] / 'config.example.json').read_text(encoding='utf-8'))
     actions = payload['tasks']['arena_weekly']
-    assert [a['type'] for a in actions] == ['main_menu_tap', 'find_card_and_click']
-    assert actions[0] == payload['tasks']['organization_pray'][0]
-    assert actions[1]['name'] == '决斗场击败1名忍者'
-    assert actions[1]['template'] == 'assets/arena_weekly_label.png'
-    assert actions[1]['button_template'] == 'assets/go_now_button.png'
+    assert [a['type'] for a in actions] == ['enter_arena']
+    action = actions[0]
+    assert action['max_swipes'] == 15
+    assert action['battle_entry']['template'] == 'assets/arena_ninjutsu_battle.png'
+    assert action['ready_marker']['template'] == 'assets/arena_friendly_match.png'
+
+
+def test_runner_dispatches_arena_entry_with_recognition_dependencies(monkeypatch, tmp_path):
+    import naruto_daily.runner as runner
+    action = json.loads((Path(__file__).resolve().parents[1] / 'config.example.json').read_text(encoding='utf-8'))['tasks']['arena_weekly'][0]
+    client, matcher, calls = object(), object(), []
+    def enter(actual_client, actual_action, **kwargs):
+        calls.append((actual_client, actual_action, kwargs))
+    monkeypatch.setattr(runner, 'enter_arena', enter)
+    result = ActionRunner(client, template_matcher=matcher, asset_root=tmp_path,
+                          sleep=lambda _: None, user_options={'mainTask': 'arena_weekly'}).run([action])
+    assert result.action_count == 1
+    assert len(calls) == 1
+    assert calls[0][0] is client and calls[0][1] == action
+    assert calls[0][2]['template_matcher'] is matcher
+    assert calls[0][2]['asset_root'] == tmp_path
+
+
+def legacy_weekly_card_action():
+    """保留通用奖励卡片导航的回归覆盖，周胜入口已不再依赖该卡片。"""
+    return {
+        'type': 'find_card_and_click', 'name': '决斗场击败1名忍者',
+        'template': 'assets/arena_weekly_label.png',
+        'left': 0, 'top': 300, 'right': 1920, 'bottom': 580, 'threshold': .85,
+        'button_template': 'assets/go_now_button.png', 'button_threshold': .85,
+        'completed_template': 'assets/completed_stamp.png', 'completed_threshold': .9,
+        'button_left_offset': -140, 'button_top_offset': 90,
+        'button_right_offset': 140, 'button_bottom_offset': 280,
+        'pre_click_wait_seconds': 1, 'post_click_wait_seconds': 5,
+    }
 
 
 @pytest.mark.parametrize('left', [480, 900, 1450])
@@ -123,7 +153,7 @@ def test_real_weekly_card_and_its_go_button_match_after_changing_counters(left):
             self.taps.append(point)
         def swipe(self, *args):
             pytest.fail('已确认卡片和前往按钮，不应滑动')
-    action = json.loads((root / 'config.example.json').read_text(encoding='utf-8'))['tasks']['arena_weekly'][1]
+    action = legacy_weekly_card_action()
     client = Client()
     result = navigate_to_card(client, action, asset_root=root, sleep=lambda _: None)
     assert not result.completed
@@ -133,7 +163,7 @@ def test_real_weekly_card_and_its_go_button_match_after_changing_counters(left):
 def test_completed_card_does_not_allow_weekly_battle_to_start(monkeypatch):
     import naruto_daily.runner as runner
     monkeypatch.setattr(runner, 'navigate_to_card', lambda *args, **kwargs: NavigationSummary(0, True))
-    action = json.loads((Path(__file__).resolve().parents[1] / 'config.example.json').read_text(encoding='utf-8'))['tasks']['arena_weekly'][1]
+    action = legacy_weekly_card_action()
     with pytest.raises(NonRetryableVisualError, match='未能点击前往'):
         ActionRunner(object(), user_options={'mainTask': 'arena_weekly'}).run([action])
 
