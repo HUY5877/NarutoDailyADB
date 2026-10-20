@@ -1377,6 +1377,71 @@
     ],
     "arena_weekly": [
       {
+        "type": "prepare_arena_matchmaking",
+        "timeout_seconds": 120,
+        "poll_seconds": 1,
+        "pre_click_wait_seconds": 1,
+        "post_click_wait_seconds": 1,
+        "scroll_swipes": 10,
+        "settings_button": {
+          "name": "主界面设置",
+          "template": "assets/main_settings.png",
+          "left": 0,
+          "top": 160,
+          "right": 200,
+          "bottom": 300,
+          "threshold": 0.9
+        },
+        "advanced_tab": {
+          "name": "高级设置",
+          "template": "assets/settings_advanced_tab.png",
+          "left": 200,
+          "top": 400,
+          "right": 470,
+          "bottom": 610,
+          "threshold": 0.9
+        },
+        "players_only_label": {
+          "name": "决斗场只匹配玩家",
+          "template": "assets/arena_players_only_label.png",
+          "left": 900,
+          "top": 300,
+          "right": 1680,
+          "bottom": 910,
+          "threshold": 0.93
+        },
+        "checked_template": "assets/settings_checkbox_checked.png",
+        "unchecked_template": "assets/settings_checkbox_unchecked.png",
+        "checkbox_threshold": 0.95,
+        "checkbox_x_offset": 337,
+        "checkbox_y_offset": 3,
+        "return_to_main": {
+          "type": "return_to_main",
+          "max_rounds": 10,
+          "idle_rounds": 2,
+          "poll_seconds": 1,
+          "pre_click_wait_seconds": 1,
+          "post_click_wait_seconds": 1,
+          "main_page_marker": {
+            "name": "游戏主界面",
+            "main_menu": "home",
+            "multimodal": {
+              "timeout_seconds": 30,
+              "max_calls": 3
+            }
+          },
+          "close_target": {
+            "name": "通用关闭按钮",
+            "template": "assets/promo_close.png",
+            "left": 1500,
+            "top": 0,
+            "right": 1920,
+            "bottom": 300,
+            "threshold": 0.95
+          }
+        }
+      },
+      {
         "type": "enter_arena",
         "timeout_seconds": 300,
         "poll_seconds": 1,

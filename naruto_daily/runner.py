@@ -25,11 +25,12 @@ from .survival_challenge import handle_survival_challenge
 from .squad_assault import handle_squad_assault
 from .ichiraku import handle_ichiraku_takeout
 from .equipment import handle_equipment_upgrade
-from .arena import enter_arena
+from .arena import enter_arena, prepare_arena_matchmaking
 
 
 LOGGER = logging.getLogger("naruto_daily")
 ACTION_NAMES = {
+    "prepare_arena_matchmaking": "进入高级设置并取消决斗场只匹配玩家",
     "enter_arena": "滑动主场景查找决斗场并确认好友切磋入口",
     "main_menu_tap": "大模型识别主界面入口后点击",
     "handle_ichiraku_takeout": "判断并领取一乐外卖",
@@ -188,6 +189,11 @@ class ActionRunner:
                     template_matcher=self.template_matcher,
                     asset_root=self.asset_root,
                     sleep=self.sleep,
+                )
+            elif action_type == "prepare_arena_matchmaking":
+                prepare_arena_matchmaking(
+                    self.client, action, template_matcher=self.template_matcher,
+                    asset_root=self.asset_root, sleep=self.sleep,
                 )
             elif action_type == "enter_arena":
                 enter_arena(

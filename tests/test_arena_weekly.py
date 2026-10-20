@@ -99,20 +99,29 @@ def test_weekly_requires_its_own_route_instead_of_running_daily(tmp_path):
 def test_example_weekly_route_scans_main_scene_and_confirms_friendly_match():
     payload = json.loads((Path(__file__).resolve().parents[1] / 'config.example.json').read_text(encoding='utf-8'))
     actions = payload['tasks']['arena_weekly']
-    assert [a['type'] for a in actions] == ['enter_arena']
-    action = actions[0]
+    assert [a['type'] for a in actions] == ['prepare_arena_matchmaking', 'enter_arena']
+    preparation, action = actions
+    assert preparation['scroll_swipes'] == 10
+    assert (preparation['checkbox_x_offset'], preparation['checkbox_y_offset']) == (337, 3)
+    assert preparation['settings_button']['template'] == 'assets/main_settings.png'
+    assert preparation['players_only_label']['template'] == 'assets/arena_players_only_label.png'
+    assert preparation['return_to_main']['type'] == 'return_to_main'
+    assert preparation['return_to_main']['close_target']['left'] == 1500
+    login_return = next(a for a in payload['tasks']['login'] if a['type'] == 'return_to_main')
+    assert login_return['close_target']['left'] == 1650
     assert action['max_swipes'] == 15
     assert action['battle_entry']['template'] == 'assets/arena_ninjutsu_battle.png'
     assert action['ready_marker']['template'] == 'assets/arena_friendly_match.png'
 
 
-def test_runner_dispatches_arena_entry_with_recognition_dependencies(monkeypatch, tmp_path):
+@pytest.mark.parametrize('action_index,handler_name', [(0, 'prepare_arena_matchmaking'), (1, 'enter_arena')])
+def test_runner_dispatches_arena_steps_with_recognition_dependencies(monkeypatch, tmp_path, action_index, handler_name):
     import naruto_daily.runner as runner
-    action = json.loads((Path(__file__).resolve().parents[1] / 'config.example.json').read_text(encoding='utf-8'))['tasks']['arena_weekly'][0]
+    action = json.loads((Path(__file__).resolve().parents[1] / 'config.example.json').read_text(encoding='utf-8'))['tasks']['arena_weekly'][action_index]
     client, matcher, calls = object(), object(), []
     def enter(actual_client, actual_action, **kwargs):
         calls.append((actual_client, actual_action, kwargs))
-    monkeypatch.setattr(runner, 'enter_arena', enter)
+    monkeypatch.setattr(runner, handler_name, enter)
     result = ActionRunner(client, template_matcher=matcher, asset_root=tmp_path,
                           sleep=lambda _: None, user_options={'mainTask': 'arena_weekly'}).run([action])
     assert result.action_count == 1
