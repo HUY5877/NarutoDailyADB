@@ -96,6 +96,7 @@ def local_log_file(state_dir: Path):
     secrets = (*model_log_secrets(), *(os.environ.get(name, '') for name in (
         'CLOUDFLARE_API_TOKEN', 'OSS_ACCESS_KEY_ID', 'OSS_ACCESS_KEY_SECRET',
         'OSS_STS_TOKEN', 'QQ_BOT_APP_SECRET', 'JWT_SECRET', 'LOGIN_SERVICE_TOKEN',
+        'SLS_ACCESS_KEY_ID', 'SLS_ACCESS_KEY_SECRET', 'SLS_STS_TOKEN',
     )))
     handler = _LocalFileHandler(path, maxBytes=LOCAL_LOG_MAX_BYTES,
                                 backupCount=LOCAL_LOG_BACKUPS, encoding='utf-8')

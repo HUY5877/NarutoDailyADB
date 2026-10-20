@@ -55,15 +55,96 @@ async def enqueue(redis, body, *, overrides=None, ttl=30_000):
 async def read_failure(redis, body):
     session_key, run_key, log_key = task_keys(body)
     session, run = json.loads(await redis.get(session_key)), json.loads(await redis.get(run_key))
-    entries = await redis.xrange(log_key)
-    assert len(entries) == 1
-    event = json.loads(entries[0][1]["json"])
+    assert await redis.exists(log_key) == 0
     assert session["status"] == run["status"] == "failed"
-    assert event["level"] == "ERROR"
-    assert event["message"] == session["error"] == SAFE_REJECTION_ERRORS[session["errorCode"]]
+    assert session["error"] == SAFE_REJECTION_ERRORS[session["errorCode"]]
     assert run["errorCode"] == session["errorCode"]
-    assert run["updatedAt"] == run["finishedAt"] == event["time"]
-    return session, run, event
+    assert run["updatedAt"] == run["finishedAt"]
+    assert run["logSource"] == "disabled"
+    return session, run
+
+
+@pytest.mark.parametrize("authorized", [True, False])
+def test_rejection_publishes_directly_only_after_authorization(authorized):
+    async def scenario():
+        redis = client()
+        try:
+            body = message(version=2)
+            await enqueue(redis, body, overrides={} if authorized else {"workerId": "other"})
+            published, finished = [], []
+
+            def emit(task_id, event):
+                published.append((task_id, event))
+                return f"1800000000000-{len(published)}"
+
+            queue = RedisTaskQueue(configuration(), client=redis)
+            queue.log_publisher = SimpleNamespace(emit=emit, finish=finished.append)
+            assert await queue.pop() is None
+            session_key, run_key, log_key = task_keys(body)
+            assert await redis.exists(log_key) == 0
+            if authorized:
+                state = json.loads(await redis.get(run_key))
+                assert state["logSource"] == "sls"
+                assert state["logCursor"] == "1800000000000-2"
+                assert len(published) == 2
+                assert published[0][1]["time"] == body["createdAt"]
+                assert published[1][1]["level"] == "ERROR"
+                assert published[1][1]["message"] == SAFE_REJECTION_ERRORS["invalid_task_payload"]
+                assert published[1][1]["time"] == state["finishedAt"]
+                assert finished == [body["id"]]
+                assert 119 <= await redis.ttl(run_key) <= 120
+            else:
+                assert published == finished == []
+                assert await redis.exists(run_key) == 0
+        finally:
+            await redis.aclose()
+    asyncio.run(scenario())
+
+
+def test_rejection_cursor_cas_cannot_overwrite_a_newer_run():
+    async def scenario():
+        redis = client()
+        try:
+            body = message(version=2)
+            await enqueue(redis, body)
+            run_key = task_keys(body)[1]
+            newer = json.dumps({"taskId": body["id"], "workerId": "next-owner", "status": "completed"})
+
+            class RacingTransport:
+                def __getattr__(self, name):
+                    return getattr(redis, name)
+
+                async def eval(self, *args):
+                    from naruto_daily.login_service.queue import _REJECT_LOG_CURSOR
+                    if args[0] == _REJECT_LOG_CURSOR:
+                        await redis.set(run_key, newer, ex=30)
+                    return await redis.eval(*args)
+
+            queue = RedisTaskQueue(configuration(), client=RacingTransport())
+            queue.log_publisher = SimpleNamespace(emit=lambda *args: "1800000000000-1", finish=lambda _: None)
+            assert await queue.pop() is None
+            assert await redis.get(run_key) == newer
+            assert 29 <= await redis.ttl(run_key) <= 30
+        finally:
+            await redis.aclose()
+    asyncio.run(scenario())
+
+
+def test_legacy_log_key_does_not_block_rejection_or_get_modified():
+    async def scenario():
+        redis = client()
+        try:
+            body = message(version=2)
+            await enqueue(redis, body)
+            run_key, log_key = task_keys(body)[1:]
+            await redis.set(log_key, "legacy reserved value", ex=30)
+            assert await RedisTaskQueue(configuration(), client=redis).pop() is None
+            assert json.loads(await redis.get(run_key))["status"] == "failed"
+            assert await redis.get(log_key) == "legacy reserved value"
+            assert 29 <= await redis.ttl(log_key) <= 30
+        finally:
+            await redis.aclose()
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("offset,ttl", [(-25, 60), (25, 10)])
@@ -106,7 +187,7 @@ def test_attributable_invalid_envelopes_are_distinguished_from_clock_skew(change
             body = message(**changes)
             await enqueue(redis, body)
             assert await RedisTaskQueue(configuration(), client=redis).pop() is None
-            session, _, _ = await read_failure(redis, body)
+            session, _ = await read_failure(redis, body)
             assert session["errorCode"] == code
         finally:
             await redis.aclose()
@@ -206,7 +287,7 @@ def test_rejection_cannot_recreate_expired_or_untrusted_sessions(kind):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("kind", ["run_terminal", "run_foreign", "run_wrong_type", "run_invalid_json", "log_wrong_type"])
+@pytest.mark.parametrize("kind", ["run_terminal", "run_foreign", "run_wrong_type", "run_invalid_json"])
 def test_rejection_does_not_clobber_existing_terminal_or_foreign_run_data(kind):
     async def scenario():
         redis = client()
@@ -289,5 +370,5 @@ def test_failed_rejection_reporting_does_not_stop_next_queue_task_or_expose_driv
         finally:
             await redis.aclose()
     asyncio.run(scenario())
-    assert "failure report unavailable" in caplog.text
+    assert ("failure report unavailable" in caplog.text) == (failure != "lost_reply")
     assert "private-secret" not in caplog.text and "private-host" not in caplog.text

@@ -217,7 +217,10 @@ def test_configured_test_queue_refresh_logs_cleanup_leave_production_untouched()
             reporter.start()
             reporter.emit(record, status='waiting_scan')
             await reporter.flush(task_id)
-            assert await client.xlen(f'{prefix}:logs:{task_id}') == 1
+            assert await client.exists(f'{prefix}:logs:{task_id}') == 0
+            summary = json.loads(await client.get(f'{prefix}:runs:{task_id}'))
+            assert summary['status'] == 'waiting_scan'
+            assert summary['logSource'] == 'disabled'
             record.daily_error_code = 'worker_stopped'
             assert await queue.finish_failed(record)
             assert await client.get(f'{prefix}:users:{user_id}:active') is None

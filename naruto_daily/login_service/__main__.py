@@ -50,13 +50,22 @@ async def run_worker(config) -> None:
     runtime = LoginRuntime(config)
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
-    signal_installed = False
+    previous_handlers = {}
+
+    def request_stop(_signum, _frame):
+        # signal.signal also works with Windows ProactorEventLoop. Keeping our
+        # handler until stop() finishes prevents Runner's second-Ctrl+C abort.
+        loop.call_soon_threadsafe(stopping.set)
+
     try:
-        try:
-            loop.add_signal_handler(signal.SIGTERM, stopping.set)
-            signal_installed = True
-        except (NotImplementedError, RuntimeError):
-            pass
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                previous = signal.getsignal(signum)
+                signal.signal(signum, request_stop)
+                previous_handlers[signum] = previous
+            except (ValueError, OSError, RuntimeError):
+                # Embedded use outside the main thread cannot install handlers.
+                pass
         await runtime.start()
         address = urlsplit(config.redis_url)
         logging.info(
@@ -66,9 +75,12 @@ async def run_worker(config) -> None:
         )
         await stopping.wait()
     finally:
-        await runtime.stop()
-        if signal_installed:
-            loop.remove_signal_handler(signal.SIGTERM)
+        try:
+            logging.info("正在停止接收任务并上传剩余日志，请等待；重复 Ctrl+C 不会中断上传")
+            await runtime.stop()
+        finally:
+            for signum, previous in previous_handlers.items():
+                signal.signal(signum, previous)
 
 
 def main(argv: list[str] | None = None) -> None:

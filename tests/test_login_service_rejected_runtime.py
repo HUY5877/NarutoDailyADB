@@ -69,10 +69,8 @@ def test_validation_failure_is_visible_without_reserving_an_instance_and_consume
             logs = await client.xrange(f"{prefix}:logs:{rejected}")
             assert session["status"] == run["status"] == "failed"
             assert session["errorCode"] == run["errorCode"] == "invalid_task_payload"
-            assert len(logs) == 1
-            event = json.loads(logs[0][1]["json"])
-            assert event["level"] == "ERROR"
-            assert event["message"] == session["error"]
+            assert logs == []
+            assert run["logSource"] == "disabled"
         finally:
             await queue.close()
 
