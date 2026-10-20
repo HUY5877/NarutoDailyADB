@@ -160,7 +160,7 @@ class DuelTapChannel:
         packet = base64.b64encode(self.down) + b' ' + base64.b64encode(self.up) + b'\n'
         LOGGER.info('[ADB高速战斗点击开始] time=%s serial=%s points=%s',
                     datetime.now().astimezone().isoformat(timespec='microseconds'), self.serial,
-                    self.points, extra={'backend_only': True})
+                    self.points, extra={'backend_only': True, 'file_only': True})
         try:
             self._process.stdin.write(packet)
             self._process.stdin.flush()
@@ -169,7 +169,7 @@ class DuelTapChannel:
         self._response(b'OK')
         LOGGER.info('[ADB高速战斗点击完成] serial=%s points=%s elapsed_ms=%.2f',
                     self.serial, self.points, (self._clock() - started) * 1000,
-                    extra={'backend_only': True})
+                    extra={'backend_only': True, 'file_only': True})
         return True
 
     def __exit__(self, error_type, *_):

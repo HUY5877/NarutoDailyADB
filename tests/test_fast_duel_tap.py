@@ -1,5 +1,7 @@
 """Duel evdev packets and acknowledged persistent transport, without a device."""
 import base64
+import io
+import logging
 from queue import Queue
 import struct
 from types import SimpleNamespace
@@ -9,6 +11,7 @@ import pytest
 from naruto_daily.common.adb_client import AdbError
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common import fast_duel_tap as fast
+from naruto_daily.login_service.log_events import local_log_file
 
 
 POINTS = ((1730, 445), (1680, 260), (1530, 750), (1715, 885), (1300, 965), (1730, 650))
@@ -117,6 +120,61 @@ def test_persistent_connection_reuses_one_process():
         down, up = [base64.b64decode(part) for part in line.split()]
         assert events(down)[-1] == events(up)[-1] == (0, 0, 0)
     assert not process.killed
+
+
+def test_batch_details_are_written_to_file_without_terminal_output(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    terminal = io.StringIO()
+    handler = logging.StreamHandler(terminal)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    process = FakeProcess()
+    channel = fast.DuelTapChannel('adb.exe', 'emulator-5554',
+        fast.TouchDevice('/dev/input/event2', 64, 15), POINTS,
+        popen=lambda *args, **kwargs: process)
+    try:
+        with local_log_file(tmp_path), channel:
+            assert channel.tap()
+        content = (tmp_path / 'logs' / 'worker.log').read_text(encoding='utf-8')
+        for marker in ('[ADB高速战斗点击开始]', '[ADB高速战斗点击完成]'):
+            assert marker in content
+            assert marker not in terminal.getvalue()
+        assert 'serial=emulator-5554' in content and 'elapsed_ms=' in content
+        assert process.lines[-1] == b'STOP\n'
+    finally:
+        root.removeHandler(handler)
+        handler.close()
+
+
+def test_fallback_and_cleanup_failure_remain_visible_in_terminal_and_file(
+        tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    terminal = io.StringIO()
+    handler = logging.StreamHandler(terminal)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    client = SimpleNamespace(serial='device', adb_path='adb.exe',
+        _command=lambda *args: SimpleNamespace(stdout='unsupported'))
+    process = FakeProcess()
+    process.wait = lambda timeout=None: 1
+    channel = fast.DuelTapChannel('adb.exe', 'emulator-5554',
+        fast.TouchDevice('/dev/input/event2', 64, 15), POINTS,
+        popen=lambda *args, **kwargs: process)
+    try:
+        with local_log_file(tmp_path):
+            with fast.fast_duel_taps(client, POINTS) as tap:
+                assert tap is None
+            with pytest.raises(RuntimeError, match='attack halted'):
+                with channel:
+                    assert channel.tap()
+                    raise RuntimeError('attack halted')
+        content = (tmp_path / 'logs' / 'worker.log').read_text(encoding='utf-8')
+        for message in ('沿用 ADB 坐标连点', '高速战斗点击通道清理未确认，已停止发送'):
+            assert message in content and message in terminal.getvalue()
+        assert process.lines[-1] == b'STOP\n'
+    finally:
+        root.removeHandler(handler)
+        handler.close()
 
 
 def test_channel_is_lazy_and_does_not_send_when_readiness_exhausts_stage_budget():

@@ -444,7 +444,7 @@ class LoginRuntime:
 
     async def _relay_child_stderr(self, record: TaskRecord, stream) -> None:
         """Show full diagnostics locally without publishing them to Redis."""
-        from .log_events import model_log_secrets, sanitize_log_message
+        from .log_events import FILE_ONLY_PREFIX, model_log_secrets, sanitize_log_message
 
         known_secrets = (
             *model_log_secrets(), self.config.oss_access_key_id,
@@ -457,6 +457,9 @@ class LoginRuntime:
                 if not raw:
                     return
                 message = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+                file_only = message.startswith(FILE_ONLY_PREFIX)
+                if file_only:
+                    message = message[len(FILE_ONLY_PREFIX):]
                 level = logging.INFO
                 for prefix, candidate in (("INFO ", logging.INFO), ("WARNING ", logging.WARNING), ("ERROR ", logging.ERROR)):
                     if message.startswith(prefix):
@@ -465,7 +468,8 @@ class LoginRuntime:
                 indentation = message[:len(message) - len(message.lstrip(" \t"))].replace("\t", "    ")
                 message = sanitize_log_message(message, secrets=known_secrets, max_length=None)
                 if message:
-                    logger.log(level, "Task %s | %s%s", record.id, indentation, message)
+                    logger.log(level, "Task %s | %s%s", record.id, indentation, message,
+                               extra={'file_only': file_only})
         except (OSError, ValueError):
             # Pipe errors must not hide the worker's actual protocol outcome.
             logger.warning("Task %s: could not read child stderr", record.id)
