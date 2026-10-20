@@ -1,7 +1,9 @@
 """The command-line entrypoint must require Redis and never start a web demo."""
 
 import logging
+import asyncio
 import os
+import signal
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +12,61 @@ import pytest
 
 from naruto_daily.login_service import __main__ as entrypoint
 from naruto_daily.login_service import config as service_config
+
+
+def test_repeated_console_signals_wait_for_runtime_shutdown_and_restore_handlers(monkeypatch):
+    from naruto_daily.login_service import runtime as runtime_module
+
+    async def scenario():
+        ready, closing, uploaded = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        originals = {signal.SIGINT: object(), signal.SIGTERM: object()}
+        handlers = dict(originals)
+        calls = []
+
+        class Runtime:
+            async def start(self):
+                ready.set()
+
+            async def stop(self):
+                calls.append("close")
+                closing.set()
+                await uploaded.wait()
+                calls.append("uploaded")
+
+        def install(signum, handler):
+            previous = handlers[signum]
+            handlers[signum] = handler
+            return previous
+
+        monkeypatch.setattr(entrypoint, "signal", SimpleNamespace(
+            SIGINT=signal.SIGINT, SIGTERM=signal.SIGTERM,
+            getsignal=handlers.__getitem__, signal=install,
+        ))
+        monkeypatch.setattr(runtime_module, "LoginRuntime", lambda _: Runtime())
+        config = SimpleNamespace(redis_url="redis://unused.invalid/0", redis_queue_key="test:signal",
+                                 concurrency=1, emulator_driver="mock")
+        running = asyncio.create_task(entrypoint.run_worker(config))
+        try:
+            await asyncio.wait_for(ready.wait(), 1)
+            assert callable(handlers[signal.SIGINT])
+            handlers[signal.SIGINT](signal.SIGINT, None)
+            await asyncio.wait_for(closing.wait(), 1)
+            for signum in (signal.SIGINT, signal.SIGINT, signal.SIGTERM):
+                handlers[signum](signum, None)
+                await asyncio.sleep(0)
+            assert not running.done()
+            assert calls == ["close"]
+            assert handlers != originals
+            uploaded.set()
+            await asyncio.wait_for(running, 1)
+            assert calls == ["close", "uploaded"]
+            assert handlers == originals
+        finally:
+            uploaded.set()
+            if not running.done():
+                running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+    asyncio.run(scenario())
 
 
 @pytest.fixture(autouse=True)

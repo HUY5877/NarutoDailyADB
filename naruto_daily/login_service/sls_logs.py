@@ -305,25 +305,36 @@ class SlsLogPublisher:
                         self._tasks.pop(task_id, None)
             batch, records = [], []
 
-    async def close(self, *, timeout: float = 2) -> None:
+    async def close(self) -> None:
+        """Stop accepting logs and wait for all buffered batches to succeed.
+
+        Cancellation of the caller is deferred until the upload finishes. There
+        is no shutdown deadline: a temporary SLS outage must not discard logs.
+        """
         if self._closed:
             return
         self.start()
         with self._lock:
             self._closing = True
         self._notify()
-        try:
-            await asyncio.wait_for(asyncio.shield(self._task), timeout)
-        except TimeoutError:
-            LOGGER.warning("SLS 日志上报未在关闭期限内完成，剩余内存日志将丢失")
-        finally:
-            self._task.cancel()
-            await asyncio.gather(self._task, return_exceptions=True)
-            with self._lock:
-                self._closed = True
-                self._pending.clear()
-                self._tasks.clear()
-                self._corrections.clear()
-                self._uploading.clear()
-                self._inherited.clear()
-                self._count = self._bytes = 0
+        LOGGER.info("正在等待 SLS 内存日志上报完成")
+        cancelled = False
+        while not self._task.done():
+            try:
+                await asyncio.shield(self._task)
+            except asyncio.CancelledError:
+                cancelled = True
+        # Surface an unexpected uploader failure; never report a successful
+        # flush or clear its data unless the upload loop finished normally.
+        self._task.result()
+        with self._lock:
+            self._closed = True
+            self._pending.clear()
+            self._tasks.clear()
+            self._corrections.clear()
+            self._uploading.clear()
+            self._inherited.clear()
+            self._count = self._bytes = 0
+        LOGGER.info("SLS 内存日志已全部上报")
+        if cancelled:
+            raise asyncio.CancelledError

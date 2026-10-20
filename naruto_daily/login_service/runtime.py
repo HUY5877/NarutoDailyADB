@@ -106,6 +106,7 @@ class LoginRuntime:
         self._manager = None
         self._sweep_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        self._shutdown_task: asyncio.Task[None] | None = None
         self._stopping = False
         self._initialized = False
         self._next_storage_sweep_at = 0.0
@@ -1044,32 +1045,62 @@ class LoginRuntime:
                 pass
 
     async def stop(self) -> None:
-        if self._stopping:
-            return
-        self._stopping = True
-        self._stop_event.set()
-        self._queue.close()
+        """Stop producers and drain SLS before honoring caller cancellation."""
+        if self._shutdown_task is None:
+            self._stopping = True
+            self._stop_event.set()
+            self._queue.close()
+            self._shutdown_task = asyncio.create_task(self._finish_stop(), name="login-worker-shutdown")
+        cancelled = False
+        while not self._shutdown_task.done():
+            try:
+                await asyncio.shield(self._shutdown_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        self._shutdown_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _finish_stop(self) -> None:
+        errors: list[BaseException] = []
+
+        async def cleanup(operation):
+            try:
+                await operation
+            except BaseException as error:
+                if not errors:
+                    errors.append(error)
+
         for child in list(self._children.values()):
-            self._kill(child)
+            try:
+                self._kill(child)
+            except OSError as error:
+                if not errors:
+                    errors.append(error)
         await asyncio.gather(*self._workers, return_exceptions=True)
-        if self._notification_tasks:
-            # Bound shutdown even when the network or database is unavailable.
-            pending = list(self._notification_tasks)
-            await asyncio.wait(pending, timeout=25)
-            for task in pending:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-        if self._qq_notifier is not None:
-            await self._qq_notifier.close()
-        for record in list(self._pending_session_failures.values()):
-            await self._finish_failed_session(record)
-        if self._run_reporter is not None:
-            await self._run_reporter.close()
-        if self._log_publisher is not None:
-            await self._log_publisher.close(timeout=2)
+        # An in-progress sweep can still expire a task and emit a final event.
         if self._sweep_task is not None:
-            await self._sweep_task
+            await cleanup(self._sweep_task)
+        try:
+            if self._notification_tasks:
+                # Notifications remain bounded; SLS uploads must fully drain.
+                pending = list(self._notification_tasks)
+                await asyncio.wait(pending, timeout=25)
+                for task in pending:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+            if self._qq_notifier is not None:
+                await cleanup(self._qq_notifier.close())
+            for record in list(self._pending_session_failures.values()):
+                await cleanup(self._finish_failed_session(record))
+        finally:
+            try:
+                if self._run_reporter is not None:
+                    await cleanup(self._run_reporter.close())
+            finally:
+                if self._log_publisher is not None:
+                    await cleanup(self._log_publisher.close())
         # Ready OSS images remain available to the client until their own expiry.
         to_delete = self._pending_deletes if self._redis_queue is not None else set(self._tasks) | self._pending_deletes
         await asyncio.gather(
@@ -1077,7 +1108,9 @@ class LoginRuntime:
             return_exceptions=True,
         )
         if self._redis_queue is not None:
-            await self._redis_queue.close()
+            await cleanup(self._redis_queue.close())
         self._tasks.clear()
         self._pending_deletes.clear()
         self._pending_session_failures.clear()
+        if errors:
+            raise errors[0]

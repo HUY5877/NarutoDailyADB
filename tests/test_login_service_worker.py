@@ -341,7 +341,7 @@ def test_cancelling_entrypoint_worker_records_interrupted_run_and_requeues(monke
             await eventually(lambda: task_id in runtime._children)
             child = runtime._children[task_id]
             await wait_for_run_status(producer, runtime, task_id, "starting_emulator")
-            # asyncio.Runner handles the first Ctrl+C by cancelling its main task.
+            # Direct task cancellation also waits for the complete shutdown path.
             running.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(running, 3)

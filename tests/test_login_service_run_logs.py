@@ -701,8 +701,8 @@ def test_runtime_shares_publisher_and_owns_its_lifecycle(monkeypatch):
             def start(self):
                 calls.append("start")
 
-            async def close(self, *, timeout):
-                calls.append(("close", timeout))
+            async def close(self):
+                calls.append("close")
 
         monkeypatch.setattr(sls_logs, "SlsLogPublisher", Publisher, raising=False)
         queue = RedisTaskQueue(cfg, client=client)
@@ -717,7 +717,7 @@ def test_runtime_shares_publisher_and_owns_its_lifecycle(monkeypatch):
         await runtime.start()
         assert calls == ["start"]
         await runtime.stop()
-        assert calls == ["start", ("close", 2)]
+        assert calls == ["start", "close"]
     asyncio.run(scenario())
 
 

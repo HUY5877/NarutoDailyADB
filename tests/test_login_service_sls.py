@@ -122,33 +122,81 @@ def test_public_fields_redaction_and_bounded_message(tmp_path):
     asyncio.run(scenario())
 
 
-def test_slow_upload_does_not_block_emit_or_bounded_shutdown(tmp_path):
+def test_shutdown_waits_for_inflight_and_queued_logs_beyond_two_seconds(tmp_path):
     async def scenario():
         writer, publisher = producer(tmp_path)
-        entered = asyncio.Event()
+        entered, release = asyncio.Event(), asyncio.Event()
+        put = writer.put
         async def slow(records):
             entered.set()
-            await asyncio.Event().wait()
+            await release.wait()
+            await put(records)
         writer.put = slow
         publisher.emit(str(uuid4()), event())
         publisher.start()
         await asyncio.wait_for(entered.wait(), 0.5)
         assert publisher.emit(str(uuid4()), event("执行继续"))
-        await asyncio.wait_for(publisher.close(timeout=0.02), 0.5)
+        closing = asyncio.create_task(publisher.close())
+        try:
+            await asyncio.sleep(2.1)
+            assert not closing.done(), "上报未确认成功时不能超时退出"
+            assert publisher.emit(str(uuid4()), event("关闭后不再接收")) is None
+        finally:
+            release.set()
+            await asyncio.wait_for(closing, 0.5)
+        assert [row["message"] for row in events(writer)] == ["正常任务节点", "执行继续"]
+        await publisher.close()
     asyncio.run(scenario())
 
 
-def test_failed_uploads_back_off_and_never_log_sdk_secrets(tmp_path, caplog):
+def test_shutdown_retries_until_recovery_and_never_logs_sdk_secrets(tmp_path, caplog):
     async def scenario():
         writer, publisher = producer(tmp_path, retry_interval=0.05)
         writer.fail = True
         publisher.emit(str(uuid4()), event())
         publisher.start()
-        await asyncio.sleep(0.12)
-        await publisher.close(timeout=0.01)
-        assert 2 <= len(writer.batches) <= 4
+        closing = asyncio.create_task(publisher.close())
+        try:
+            await asyncio.sleep(0.12)
+            assert not closing.done()
+            assert 2 <= len(writer.batches) <= 4
+        finally:
+            writer.fail = False
+            await asyncio.wait_for(closing, 0.5)
+        assert all(batch == writer.batches[0] for batch in writer.batches)
     asyncio.run(scenario())
     assert "fixture-sls-secret" not in caplog.text
+
+
+def test_repeated_shutdown_cancellation_is_deferred_until_all_batches_are_uploaded(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path, batch_size=1)
+        entered, release = asyncio.Event(), asyncio.Event()
+        put = writer.put
+        async def slow(records):
+            entered.set()
+            await release.wait()
+            await put(records)
+        writer.put = slow
+        task_id = str(uuid4())
+        for message in ("第一条", "第二条", "最后一条"):
+            publisher.emit(task_id, event(message))
+        publisher.finish(task_id)
+        closing = asyncio.create_task(publisher.close())
+        try:
+            await asyncio.wait_for(entered.wait(), 0.5)
+            for _ in range(2):
+                closing.cancel()
+                await asyncio.sleep(0.01)
+                assert not closing.done(), "重复取消退出不能取消上传或丢弃队列"
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+        assert [row["message"] for row in events(writer)] == ["第一条", "第二条", "最后一条"]
+        assert writer.batches[-1][-1]["entryCount"] == "3"
+        await publisher.close()
+    asyncio.run(scenario())
 
 
 def test_ids_stay_ordered_if_clock_moves_backwards_and_are_distinct_between_producers(tmp_path, monkeypatch):
