@@ -94,6 +94,11 @@ class AdbClient:
     def tap(self, x: int, y: int) -> None:
         self._command("shell", "input", "tap", str(x), str(y))
 
+    def duel_taps(self, points):
+        from .fast_duel_tap import fast_duel_taps
+
+        return fast_duel_taps(self, points)
+
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
         self._command("shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms))
 

@@ -2,6 +2,7 @@
 
 from collections import Counter
 from copy import deepcopy
+from contextlib import contextmanager
 from threading import Barrier, Lock
 
 import pytest
@@ -253,3 +254,88 @@ def test_one_failed_parallel_region_stops_after_the_current_batch_without_retry(
     assert client.active == 0
     assert Counter(client.taps) == Counter(EXPECTED_POINTS)
     assert client.frames == [0]
+
+
+@pytest.mark.parametrize('finished_on_entry', [False, True])
+def test_fast_duel_uses_acknowledged_six_point_batches_and_closes_before_return(finished_on_entry):
+    clock = Clock()
+    client = ScreenClient(clock)
+    batches, closed = [], []
+
+    @contextmanager
+    def duel_taps(points):
+        assert tuple(points) == tuple((b['x'], b['y']) for b in EXPECTED_BUTTONS)
+        def tap_batch(can_send):
+            assert can_send()
+            batches.append(clock())
+            clock.advance(10)
+            return True
+        try:
+            yield tap_batch
+        finally:
+            closed.append(True)
+
+    client.duel_taps = duel_taps
+    result = run_duel_battle(
+        client, battle_config(), clock=clock, sleep=clock.advance, check_interval_seconds=10,
+        template_matcher=lambda png, *args: ((50, 50), .99)
+            if finished_on_entry or png == b'4' else (None, .2),
+    )
+    assert batches == ([] if finished_on_entry else [0, 10, 20])
+    assert result == BattleSummary(0 if finished_on_entry else 18, 'result')
+    assert client.taps == []
+    assert client.frames == ([0] if finished_on_entry else [0, 10, 20, 30])
+    assert closed == [True]
+
+
+def test_failed_fast_batch_stops_and_closes_without_falling_back_to_individual_taps():
+    clock = Clock()
+    client = ScreenClient(clock)
+    attempts, closed = [], []
+
+    @contextmanager
+    def duel_taps(points):
+        def tap_batch(can_send):
+            attempts.append(True)
+            raise AdbError('高速输入失败')
+        try:
+            yield tap_batch
+        finally:
+            closed.append(True)
+
+    client.duel_taps = duel_taps
+    with pytest.raises(AdbError, match='高速输入失败'):
+        run_duel_battle(client, battle_config(), clock=clock,
+                        template_matcher=lambda *args: (None, .2))
+    assert attempts == closed == [True]
+    assert client.taps == [] and client.frames == [0]
+
+
+@pytest.mark.parametrize('timeout', [.03, 1])
+def test_fast_pacing_stays_inside_stage_deadline_and_result_check_boundary(timeout):
+    clock = Clock()
+    client = ScreenClient(clock)
+    starts = []
+
+    @contextmanager
+    def duel_taps(points):
+        def tap_batch(can_send):
+            if not can_send():
+                return False
+            starts.append(clock())
+            clock.advance(.01)
+            return True
+        yield tap_batch
+
+    client.duel_taps = duel_taps
+    run = lambda: run_duel_battle(client, dict(battle_config(), timeout_seconds=timeout),
+        clock=clock, sleep=clock.advance, check_interval_seconds=.12,
+        template_matcher=lambda png, *args: ((50, 50), .99) if png == b'2' else (None, .2))
+    if timeout == .03:
+        with pytest.raises(VisualError, match='超时'):
+            run()
+        assert starts == [0] and clock() == pytest.approx(.03)
+    else:
+        assert run() == BattleSummary(18, 'result')
+        assert starts == pytest.approx([0, .05, .10])
+        assert client.frames == pytest.approx([0, .12])

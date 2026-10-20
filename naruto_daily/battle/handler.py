@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ def run_battle(
     check_interval_seconds: float = BATTLE_CHECK_INTERVAL_SECONDS,
     end_detector: Callable[[bytes], str | None] | None = None,
     before_attack: Callable[[bytes], BattleSummary | None] | None = None,
+    _tap_batch: Callable[[Callable[[], bool]], bool] | None = None,
 ) -> BattleSummary:
     if (isinstance(check_interval_seconds, bool) or not isinstance(check_interval_seconds, (int, float))
             or not math.isfinite(check_interval_seconds) or check_interval_seconds <= 0):
@@ -168,9 +170,16 @@ def run_battle(
             if remaining() <= 0:
                 break
             # 等待本批全部输入返回，避免后台点击越过结算处理，也不积压后续批次。
-            pending = [pool.submit(copy_context().run, tap_button, button) for button in buttons]
-            taps += sum(future.result() for future in pending)
-            delay = max(0.0, min(interval, remaining(), next_check - elapsed()))
+            batch_started = elapsed()
+            if _tap_batch is None:
+                pending = [pool.submit(copy_context().run, tap_button, button) for button in buttons]
+                taps += sum(future.result() for future in pending)
+            else:
+                # 高速通道整轮按下、抬起并确认后返回，不留后台触摸越过截图检查。
+                if _tap_batch(lambda: remaining() > 0 and elapsed() < next_check):
+                    taps += len(buttons)
+            batch_delay = interval if _tap_batch is None else interval - (elapsed() - batch_started)
+            delay = max(0.0, min(batch_delay, remaining(), next_check - elapsed()))
             if delay > 0:
                 images.sleep(delay)
     raise VisualError(f'战斗等待结束超时（{timeout:g} 秒），已停止点击')
@@ -207,8 +216,15 @@ def run_duel_battle(
     duel_battle = dict(battle, buttons=[
         dict(name=name, x=x, y=y) for name, x, y in _DUEL_BUTTON_CENTERS
     ])
-    return run_battle(
-        client, duel_battle, template_matcher=template_matcher, asset_root=asset_root,
-        sleep=sleep, clock=clock, model=model, check_interval_seconds=check_interval_seconds,
-        end_detector=end_detector, before_attack=before_attack,
-    )
+    points = tuple((button['x'], button['y']) for button in duel_battle['buttons'])
+    channel = client.duel_taps(points) if callable(getattr(client, 'duel_taps', None)) else nullcontext(None)
+    with channel as tap_batch:
+        if tap_batch is not None:
+            from naruto_daily.common.fast_duel_tap import TAP_PERIOD_SECONDS
+            duel_battle['tap_interval_seconds'] = max(float(battle['tap_interval_seconds']), TAP_PERIOD_SECONDS)
+        options = {'_tap_batch': tap_batch} if tap_batch is not None else {}
+        return run_battle(
+            client, duel_battle, template_matcher=template_matcher, asset_root=asset_root,
+            sleep=sleep, clock=clock, model=model, check_interval_seconds=check_interval_seconds,
+            end_detector=end_detector, before_attack=before_attack, **options,
+        )
