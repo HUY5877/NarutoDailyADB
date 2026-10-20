@@ -22,10 +22,10 @@ from naruto_daily.multimodal.prompt_jev import BATTLE_COMPLETION
 LOGGER = logging.getLogger('naruto_daily')
 # 默认连续点击30秒后检查；秘境调用时缩短为18秒。
 BATTLE_CHECK_INTERVAL_SECONDS = 30.0
-# 1920×1080 战斗画面的按钮中心；字母仅用于对应用户指定的六个区域。
+# 1920×1080 战斗画面的按钮内点击位置；字母仅用于对应用户指定的六个区域。
 _DUEL_BUTTON_CENTERS = (
     ('秘卷', 1730, 445),   # E
-    ('通灵', 1730, 230),   # R：上移以避开主界面小队突袭入口
+    ('通灵', 1680, 260),   # R：靠左避开决斗场大厅的决斗季大奖入口
     ('二技能', 1530, 750),  # I
     ('普攻', 1715, 885),   # K
     ('替身', 1300, 965),   # SPACE
@@ -210,7 +210,7 @@ def run_duel_battle(
     end_detector: Callable[[bytes], str | None] | None = None,
     before_attack: Callable[[bytes], BattleSummary | None] | None = None,
 ) -> BattleSummary:
-    """决斗场专用：循环并发点击六个按钮中心，不包含一技能。"""
+    """决斗场专用：循环并发点击六个按钮内的位置，不包含一技能。"""
     if client.screen_size() != (1920, 1080):
         raise VisualError('决斗场战斗只支持 1920×1080 安卓画面，已停止点击')
     duel_battle = dict(battle, buttons=[

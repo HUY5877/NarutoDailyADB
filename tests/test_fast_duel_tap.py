@@ -11,7 +11,7 @@ from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common import fast_duel_tap as fast
 
 
-POINTS = ((1730, 445), (1730, 230), (1530, 750), (1715, 885), (1300, 965), (1730, 650))
+POINTS = ((1730, 445), (1680, 260), (1530, 750), (1715, 885), (1300, 965), (1730, 650))
 CAPS = '''add device 1: /dev/input/event4
   name: "mouse"
 add device 2: /dev/input/event2
@@ -38,8 +38,8 @@ def test_six_points_use_separate_slots_and_one_complete_press_release(bits):
     assert pressed[0] == (1, 330, 1)
     assert pressed[-1] == released[-1] == (0, 0, 0)
     assert [v for t, c, v in pressed if (t, c) == (3, 47)] == [10, 11, 12, 13, 14, 15]
-    assert [v for t, c, v in pressed if (t, c) == (3, 53)] == [1730, 1730, 1530, 1715, 1300, 1730]
-    assert [v for t, c, v in pressed if (t, c) == (3, 54)] == [445, 230, 750, 885, 965, 650]
+    assert [v for t, c, v in pressed if (t, c) == (3, 53)] == [1730, 1680, 1530, 1715, 1300, 1730]
+    assert [v for t, c, v in pressed if (t, c) == (3, 54)] == [445, 260, 750, 885, 965, 650]
     assert len({v for t, c, v in pressed if (t, c) == (3, 57)}) == 6
     assert [v for t, c, v in released if (t, c) == (3, 47)] == [10, 11, 12, 13, 14, 15]
     assert [v for t, c, v in released if (t, c) == (3, 57)] == [-1] * 6
