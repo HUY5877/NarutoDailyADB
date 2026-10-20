@@ -88,6 +88,10 @@ class LoginRuntime:
         self._queue: MockRedisQueue[str] = MockRedisQueue(config.max_queue_size)
         self._redis_queue = redis_queue or (RedisTaskQueue(config) if config.redis_url else None)
         self._run_reporter = run_reporter
+        self._sls_mirror = None
+        if config.sls_enabled and self._redis_queue is not None:
+            from .sls_logs import SlsLogMirror
+            self._sls_mirror = SlsLogMirror(config, self._redis_queue)
         if self._run_reporter is None and isinstance(self._redis_queue, RedisTaskQueue):
             self._run_reporter = RedisRunReporter(
                 config, self._redis_queue, retention_seconds=config.run_log_retention_seconds,
@@ -130,6 +134,8 @@ class LoginRuntime:
         self._initialized = True
         if self._run_reporter is not None:
             self._run_reporter.start()
+        if self._sls_mirror is not None:
+            self._sls_mirror.start()
         consume = self._consume_redis if self._redis_queue is not None else self._consume
         self._workers = [asyncio.create_task(consume()) for _ in range(self.config.concurrency)]
         self._sweep_task = asyncio.create_task(self._sweep_loop())
@@ -1059,6 +1065,8 @@ class LoginRuntime:
             await self._finish_failed_session(record)
         if self._run_reporter is not None:
             await self._run_reporter.close()
+        if self._sls_mirror is not None:
+            await self._sls_mirror.close()
         if self._sweep_task is not None:
             await self._sweep_task
         # Ready OSS images remain available to the client until their own expiry.

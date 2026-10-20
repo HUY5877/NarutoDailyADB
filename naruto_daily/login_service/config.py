@@ -10,7 +10,7 @@ from typing import Mapping
 from urllib.parse import urlsplit
 
 from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS
-from naruto_daily.common.environment import EnvironmentConfigError, require_environment
+from naruto_daily.common.environment import EnvironmentConfigError, require_environment, resolve_app_env
 from naruto_daily.common.namespace import (
     DEFAULT_OSS_KEY_PREFIX, DEFAULT_REDIS_QUEUE_KEY, validate_oss_prefix, validate_redis_key,
 )
@@ -55,6 +55,14 @@ class ServiceConfig:
     qq_bot_app_secret: str = field(default="", repr=False)
     qq_bot_group_openid: str = ""
     database_url: str | None = field(default=None, repr=False)
+    app_env: str = "prod"
+    sls_enabled: bool = False
+    sls_endpoint: str = ""
+    sls_project: str = ""
+    sls_logstore: str = ""
+    sls_access_key_id: str = field(default="", repr=False)
+    sls_access_key_secret: str = field(default="", repr=False)
+    sls_sts_token: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         # Preserve shorter configured/test limits without letting old 7200s
@@ -77,6 +85,33 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         from naruto_daily.common.environment import initialize_environment
         initialize_environment()
         env = os.environ
+    app_env = resolve_app_env(env)
+    sls_flag = env.get("SLS_ENABLED", "false").strip().lower()
+    if sls_flag not in {"true", "false"}:
+        raise EnvironmentConfigError("SLS_ENABLED 必须为 true 或 false")
+    sls = {"sls_enabled": sls_flag == "true"}
+    if sls["sls_enabled"]:
+        endpoint = require_environment(env, "SLS_ENDPOINT")
+        address = urlsplit(endpoint if "://" in endpoint else "https://" + endpoint)
+        if (address.scheme != "https" or address.username or address.password
+                or not re.fullmatch(r"[a-z0-9-]+\.log\.aliyuncs\.com", address.netloc)
+                or address.path not in {"", "/"} or address.query or address.fragment):
+            raise EnvironmentConfigError("SLS_ENDPOINT 必须为阿里云 SLS HTTPS 地域地址")
+        sls["sls_endpoint"] = "https://" + address.netloc
+        for name in ("SLS_PROJECT", "SLS_LOGSTORE"):
+            value = require_environment(env, name)
+            if not re.fullmatch(r"[a-z][a-z0-9_-]{1,61}[a-z0-9]", value):
+                raise EnvironmentConfigError(f"{name} 格式无效")
+            sls[name.lower()] = value
+        for name in ("SLS_ACCESS_KEY_ID", "SLS_ACCESS_KEY_SECRET"):
+            value = require_environment(env, name)
+            if any(character.isspace() or ord(character) < 32 for character in value):
+                raise EnvironmentConfigError(f"{name} 格式无效")
+            sls[name.lower()] = value
+        token = env.get("SLS_STS_TOKEN", "").strip()
+        if any(character.isspace() or ord(character) < 32 for character in token):
+            raise EnvironmentConfigError("SLS_STS_TOKEN 格式无效")
+        sls["sls_sts_token"] = token or None
     redis_url = env.get("REDIS_URL", "").strip() or None
     if redis_url:
         try:
@@ -89,6 +124,8 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         except ValueError:
             raise ValueError("REDIS_URL must be a valid redis:// or rediss:// URL") from None
     redis_queue_key = validate_redis_key(require_environment(env, "REDIS_QUEUE_KEY"))
+    if sls["sls_enabled"] and not redis_url:
+        raise EnvironmentConfigError("启用 SLS 日志同步需要 REDIS_URL")
     emulator_driver = env.get("EMULATOR_DRIVER", "mock")
     if emulator_driver not in {"mock", "ldplayer"}:
         raise ValueError("EMULATOR_DRIVER must be mock or ldplayer")
@@ -177,6 +214,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         except ValueError:
             raise EnvironmentConfigError("Invalid DATABASE_URL") from None
     return ServiceConfig(
+        app_env=app_env,
         redis_url=redis_url,
         redis_queue_key=redis_queue_key,
         host=host,
@@ -201,5 +239,5 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         ldplayer_command_timeout_seconds=_integer(
             env, "LDPLAYER_COMMAND_TIMEOUT_SECONDS", 20, 1, 300,
         ),
-        **oss, **qq, database_url=database_url,
+        **oss, **qq, **sls, database_url=database_url,
     )

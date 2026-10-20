@@ -184,6 +184,28 @@ TypeScript 后端通过 `LPUSH` 投递，Python 先用 `LINDEX -1` 查看最早�
 
 Redis 用 Lua 同步追加日志、更新快照和设置 TTL；worker 标识与递增序号用于拒绝旧 worker 写入及避免响应丢失后的重复日志。二维码会话过期不会删除已有运行记录。默认最多保留最近 2000 条日志，最终写入后保留 7 天；执行摘要即使配置更短的日志保留期，也至少保留 7 天。旧记录不会自动续期，已经过期的记录无法补回。客户端继续使用相同 `REDIS_URL` 和 `REDIS_QUEUE_KEY`。
 
+### 阿里云 SLS 日志双写
+
+安装或更新 `.[login-service]` 后，可在所选 Cloudflare KV namespace 启用 SLS。`APP_ENV=test` 和 `prod` 各自配置目标 Project/Logstore 和凭据；同名配置项不跨 namespace 回退，子进程不继承 SLS 密钥。本地 `.env` 不接受这些业务配置，修改 KV 后需重启常驻 worker。
+
+| KV 配置 | 要求 |
+| --- | --- |
+| `SLS_ENABLED` | 缺省 `false`；启用填 `true` |
+| `SLS_ENDPOINT` | 地域 HTTPS 地址，例如 `https://cn-shanghai.log.aliyuncs.com` |
+| `SLS_PROJECT` / `SLS_LOGSTORE` | 当前环境独立的目标资源 |
+| `SLS_ACCESS_KEY_ID` / `SLS_ACCESS_KEY_SECRET` | 具有当前 Logstore 写入权限的 RAM 凭据；可复用已有 OSS 用户，但需单独授予 SLS 权限并显式填写这两个配置项 |
+| `SLS_STS_TOKEN` | 使用临时凭据时填写，同时更新对应 AccessKey；过期需更新 KV 并重启 |
+
+SLS Logstore 保留期设置为 **7 天**。此阶段继续保留 Redis 双写、现有 Stream 上限和 TTL，队列、会话、锁、刷新指令与执行摘要均保持原逻辑。SLS 异常不会阻塞游戏或 Redis 上报。后台每轮通过 SCAN 查找当前队列前缀的日志流，每任务最多读取 200 条并通过官方 Python SDK 压缩批量上传，轮询之间等待 5 秒；SDK 网络请求运行在独立后台线程。该方式也覆盖尚未领取的提交日志、被拒绝任务的错误日志和重启前 Redis 中仍保留的记录。不会采集完整 `worker.log`、ADB 点击明细或私有模型诊断。
+
+成功上传后才保存 `${LDPLAYER_STATE_DIR}/sls/checkpoints.sqlite3` 中的游标。文件只含任务标识、计数和位置，不存日志正文或密钥；游标按 `APP_ENV`、Redis 前缀、SLS endpoint/Project/Logstore 联合隔离，切换目标后会重新补齐当前 Redis 可读记录。失败不推进游标，下轮重试；重启可继续补齐。超过 8 天未更新的本机游标定期清理。Redis 已裁剪或过期的原记录无法恢复；停机或 SLS 故障超过 Redis 保留窗口时，不能保证全部补传。关闭进程不会等待长期 SDK 重试，未确认数据在下次启动后重放。
+
+每条事件沿用 Redis Stream ID；字段为 `kind=event`、`taskId`、`environment`、`id`、`streamMs`、`streamSeq`、`time`、`level`、`message`，以及可选 `actionIndex` / `actionTotal`。仅上传经过校验和脱敏的字段，不上传 session、用户名、tokenHash 或完整任务对象。SLS 的事件时间取原 Stream ID 的毫秒时间，重试保持不变。SDK 网络响应丢失可能产生重复记录，查询端须按任务和环境范围内的 `id` 去重。
+
+每批附带一条 `kind=checkpoint`，包含 `firstId`、`throughId`、`entryCount`、`truncated` 及相同身份/排序字段。`entryCount` 是该标记区间内累计上传的有效去重事件数；标记与事件可能不同步进入索引，查询端必须核验 `COUNT(DISTINCT id)`，并与仍在 Redis 的最新位置比较，再采用 SLS 结果。历史数据被裁剪或格式异常时 `truncated=true`。SLS 返回空、不可用、未完整入索引或落后于 Redis 时，网站继续读取 Redis；不能只看到终态标记就停止读取尾日志。
+
+索引需要 `streamMs`、`streamSeq`、`entryCount`、`actionIndex`、`actionTotal` 为 long，其余上述查询字段为 text，并允许 SQL 统计。`kind` 必须参与查询，避免把 checkpoint 当成用户日志。不要把 checkpoint SQLite 文件或云凭据提交到 Git。
+
 按 `Ctrl+C` 优雅停止时，worker 回收子进程并关闭对应实例。出码前未过期的任务仍尝试重新入队；重新入队前将本次执行快照、结束日志和本地状态记为中断，避免网页一直显示准备中。任务 ID、登录凭证及原会话过期时间保留，下一个 worker 领取后更新归属和执行阶段。已发布二维码或已开始日常的任务记录为中断，不自动重排，以免重复执行游戏操作。尚未领取的任务保留在队列中。队列在校验后原子移除并登记归属，仍没有消息确认与崩溃恢复机制：若领取成功但响应丢失、进程被强制终止或机器崩溃，需先检查 Redis 归属、本地运行记录和实例占用，再决定是否释放或重新申请。
 
 ## 保留的 HTTP 接口代码
