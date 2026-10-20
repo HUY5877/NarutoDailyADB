@@ -8,15 +8,11 @@ import subprocess
 import sys
 import time
 
-import cv2
-import numpy as np
 import pytest
 
 from naruto_daily.common.adb_client import AdbError
 from naruto_daily.common.execution import check_execution, current_execution, DailyDeadlineExceeded
 from naruto_daily.config import ConfigError
-from naruto_daily.common.navigation import navigate_to_card, NavigationSummary
-from naruto_daily.common.visual import NonRetryableVisualError
 from naruto_daily.runner import ActionRunner
 from naruto_daily.login_service import daily, ldplayer_worker, runtime as runtime_module
 from naruto_daily.login_service.models import parse_queue_task
@@ -129,52 +125,6 @@ def test_runner_dispatches_arena_steps_with_recognition_dependencies(monkeypatch
     assert calls[0][0] is client and calls[0][1] == action
     assert calls[0][2]['template_matcher'] is matcher
     assert calls[0][2]['asset_root'] == tmp_path
-
-
-def legacy_weekly_card_action():
-    """保留通用奖励卡片导航的回归覆盖，周胜入口已不再依赖该卡片。"""
-    return {
-        'type': 'find_card_and_click', 'name': '决斗场击败1名忍者',
-        'template': 'assets/arena_weekly_label.png',
-        'left': 0, 'top': 300, 'right': 1920, 'bottom': 580, 'threshold': .85,
-        'button_template': 'assets/go_now_button.png', 'button_threshold': .85,
-        'completed_template': 'assets/completed_stamp.png', 'completed_threshold': .9,
-        'button_left_offset': -140, 'button_top_offset': 90,
-        'button_right_offset': 140, 'button_bottom_offset': 280,
-        'pre_click_wait_seconds': 1, 'post_click_wait_seconds': 5,
-    }
-
-
-@pytest.mark.parametrize('left', [480, 900, 1450])
-def test_real_weekly_card_and_its_go_button_match_after_changing_counters(left):
-    root = Path(__file__).resolve().parents[1]
-    card = cv2.imread(str(root / 'tests/fixtures/arena_weekly_card.png'))
-    # 次数和活跃进度随账号改变，不能成为标题模板的一部分。
-    card[395:438, 35:330] = (50, 150, 200)
-    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-    frame[134:134 + card.shape[0], left:left + card.shape[1]] = card
-    png = cv2.imencode('.png', frame)[1].tobytes()
-    class Client:
-        taps = []
-        def screenshot(self):
-            return png
-        def tap(self, *point):
-            self.taps.append(point)
-        def swipe(self, *args):
-            pytest.fail('已确认卡片和前往按钮，不应滑动')
-    action = legacy_weekly_card_action()
-    client = Client()
-    result = navigate_to_card(client, action, asset_root=root, sleep=lambda _: None)
-    assert not result.completed
-    assert client.taps == [(left + 200, 655)]
-
-
-def test_completed_card_does_not_allow_weekly_battle_to_start(monkeypatch):
-    import naruto_daily.runner as runner
-    monkeypatch.setattr(runner, 'navigate_to_card', lambda *args, **kwargs: NavigationSummary(0, True))
-    action = legacy_weekly_card_action()
-    with pytest.raises(NonRetryableVisualError, match='未能点击前往'):
-        ActionRunner(object(), user_options={'mainTask': 'arena_weekly'}).run([action])
 
 
 def test_child_publishes_battle_deadline_and_completes_normally_at_that_deadline(monkeypatch, tmp_path):

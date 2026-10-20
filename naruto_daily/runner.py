@@ -9,7 +9,7 @@ from typing import Callable, Sequence
 from naruto_daily.common.adb_client import AdbClient
 from naruto_daily.common.execution import action_with_execution_budget, check_execution, execution_sleep
 from naruto_daily.common.recognition import ImageRecognition
-from naruto_daily.common.visual import NonRetryableVisualError, VisualError, find_template_in_png
+from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.login import cleanup_popups
 from naruto_daily.return_to_main import return_to_main
 from naruto_daily.login.authorization import finish_login_authorization, authorize_account
@@ -170,8 +170,6 @@ class ActionRunner:
                     sleep=self.sleep,
                 )
                 if navigation.completed:
-                    if self.user_options.get('mainTask') == 'arena_weekly':
-                        raise NonRetryableVisualError('决斗场卡片未能点击前往，停止本次周胜任务')
                     skip_action_type = action.get("completed_skip_type", "handle_organization_prayer")
                     completed_card_name = action["name"]
             elif action_type == "handle_organization_prayer":

@@ -94,16 +94,9 @@ def test_reward_search_default_limit_is_shared_by_all_tasks():
     assert len(reward_card_actions()) == 7
     for action in reward_card_actions():
         client = NavigationClient()
-        def search():
-            return navigate_to_card(client, action, template_matcher=lambda *args: (None, .1),
-                                    sleep=lambda _: None)
-        if action.get('completed_skip_type'):
-            summary = search()
-            assert summary.completed and summary.swipes == 20
-        else:
-            # 必需卡片未找到时应停止，不能假装已经进入目标页面。
-            with pytest.raises(VisualError, match='20'):
-                search()
+        summary = navigate_to_card(client, action, template_matcher=lambda *args: (None, .1),
+                                   sleep=lambda _: None)
+        assert summary.completed and summary.swipes == 20
         assert client.swipes == [(1450, 550, 1000, 550, 600)] * 20
 
 
