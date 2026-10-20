@@ -36,6 +36,134 @@ def test_load_settings_returns_validated_values(tmp_path):
     assert settings.tasks["sign_in"][0] == {"type": "tap", "x": 100, "y": 200}
 
 
+def arena_entry_action():
+    return {
+        'type': 'enter_arena', 'timeout_seconds': 300, 'poll_seconds': 1,
+        'pre_click_wait_seconds': 1, 'post_click_wait_seconds': 3, 'max_swipes': 15,
+        'multimodal': {'timeout_seconds': 30, 'max_calls': 3},
+        'battle_entry': {
+            'name': '忍术对战图标', 'template': 'assets/arena_ninjutsu_battle.png',
+            'left': 180, 'top': 820, 'right': 650, 'bottom': 1080, 'threshold': .85,
+        },
+        'ready_marker': {
+            'name': '好友切磋', 'template': 'assets/arena_friendly_match.png',
+            'left': 1600, 'top': 280, 'right': 1920, 'bottom': 650, 'threshold': .9,
+        },
+    }
+
+
+@pytest.mark.parametrize('max_swipes', [0, 15])
+def test_arena_entry_accepts_scan_limits_and_nested_templates(tmp_path, max_swipes):
+    payload = valid_payload()
+    payload['screen'] = {'width': 1920, 'height': 1080}
+    action = arena_entry_action()
+    action['max_swipes'] = max_swipes
+    payload['tasks']['arena_weekly'] = [action]
+    assert load_settings(write_config(tmp_path, payload)).tasks['arena_weekly'] == [action]
+
+
+@pytest.mark.parametrize('change,error', [
+    (lambda a: a.update(max_swipes=16), 'max_swipes'),
+    (lambda a: a.update(max_swipes=-1), 'max_swipes'),
+    (lambda a: a.update(max_swipes=True), 'max_swipes'),
+    (lambda a: a.update(max_swipes=1.5), 'max_swipes'),
+    (lambda a: a.update(timeout_seconds=601), 'timeout_seconds'),
+    (lambda a: a.update(timeout_seconds=True), 'timeout_seconds'),
+    (lambda a: a.update(poll_seconds=.1), 'poll_seconds'),
+    (lambda a: a.update(poll_seconds=6), 'poll_seconds'),
+    (lambda a: a.update(timeout_seconds=1, poll_seconds=2), 'poll_seconds'),
+    (lambda a: a.update(pre_click_wait_seconds=-1), 'pre_click_wait_seconds'),
+    (lambda a: a['multimodal'].update(timeout_seconds=31), 'multimodal'),
+    (lambda a: a['battle_entry'].update(template='../private.png'), 'battle_entry.*相对路径'),
+    (lambda a: a['battle_entry'].update(right=1930), 'battle_entry.*right'),
+    (lambda a: a['battle_entry'].pop('name'), 'battle_entry.*缺少字段'),
+    (lambda a: a['ready_marker'].update(name=''), 'ready_marker.*name'),
+    (lambda a: a['ready_marker'].update(threshold=0), 'ready_marker.*threshold'),
+    (lambda a: a.update(ready_marker=[]), 'ready_marker.*模板目标对象'),
+])
+def test_arena_entry_rejects_invalid_scan_and_nested_template_settings(tmp_path, change, error):
+    payload = valid_payload()
+    payload['screen'] = {'width': 1920, 'height': 1080}
+    action = arena_entry_action()
+    change(action)
+    payload['tasks']['arena_weekly'] = [action]
+    with pytest.raises(ConfigError, match=error):
+        load_settings(write_config(tmp_path, payload))
+
+
+def test_arena_entry_rejects_unscaled_screen(tmp_path):
+    payload = valid_payload()
+    payload['tasks']['arena_weekly'] = [arena_entry_action()]
+    with pytest.raises(ConfigError, match='1920×1080'):
+        load_settings(write_config(tmp_path, payload))
+
+
+def arena_matchmaking_action():
+    payload = json.loads((Path(__file__).parents[1] / 'config.example.json').read_text(encoding='utf-8'))
+    return payload['tasks']['arena_weekly'][0]
+
+
+@pytest.mark.parametrize('scroll_swipes', [1, 10, 20])
+def test_arena_matchmaking_accepts_local_targets_and_nested_return(tmp_path, scroll_swipes):
+    payload = valid_payload()
+    payload['screen'] = {'width': 1920, 'height': 1080}
+    action = arena_matchmaking_action()
+    action['scroll_swipes'] = scroll_swipes
+    payload['tasks']['arena_weekly'] = [action]
+    assert load_settings(write_config(tmp_path, payload)).tasks['arena_weekly'] == [action]
+
+
+@pytest.mark.parametrize('change,error', [
+    (lambda a: a.update(timeout_seconds=0), 'timeout_seconds'),
+    (lambda a: a.update(timeout_seconds=301), 'timeout_seconds'),
+    (lambda a: a.update(timeout_seconds=True), 'timeout_seconds'),
+    (lambda a: a.update(poll_seconds=.1), 'poll_seconds'),
+    (lambda a: a.update(poll_seconds=6), 'poll_seconds'),
+    (lambda a: a.update(timeout_seconds=1, poll_seconds=2), 'poll_seconds'),
+    (lambda a: a.update(scroll_swipes=0), 'scroll_swipes'),
+    (lambda a: a.update(scroll_swipes=21), 'scroll_swipes'),
+    (lambda a: a.update(scroll_swipes=True), 'scroll_swipes'),
+    (lambda a: a.update(scroll_swipes=1.5), 'scroll_swipes'),
+    (lambda a: a.update(pre_click_wait_seconds=-1), 'pre_click_wait_seconds'),
+    (lambda a: a['settings_button'].update(template='../private.png'), 'settings_button.*相对路径'),
+    (lambda a: a['advanced_tab'].update(right=1921), 'advanced_tab.*right'),
+    (lambda a: a['players_only_label'].pop('name'), 'players_only_label.*缺少字段'),
+    (lambda a: a['players_only_label'].update(threshold=0), 'players_only_label.*threshold'),
+    (lambda a: a.update(checked_template='../private.png'), 'checked_template.*相对路径'),
+    (lambda a: a.update(unchecked_template='C:/private.png'), 'unchecked_template.*相对路径'),
+    (lambda a: a.update(checked_template=''), 'checked_template.*相对路径'),
+    (lambda a: a.update(unchecked_template=[]), 'unchecked_template.*相对路径'),
+    (lambda a: a.update(checkbox_threshold=.79), 'checkbox_threshold'),
+    (lambda a: a.update(checkbox_threshold=1.01), 'checkbox_threshold'),
+    (lambda a: a.update(checkbox_threshold=True), 'checkbox_threshold'),
+    (lambda a: a.update(checkbox_x_offset=1921), 'checkbox_x_offset'),
+    (lambda a: a.update(checkbox_y_offset=-1081), 'checkbox_y_offset'),
+    (lambda a: a.update(checkbox_x_offset=True), 'checkbox_x_offset'),
+    (lambda a: a.update(checkbox_y_offset=.5), 'checkbox_y_offset'),
+    (lambda a: a.update(return_to_main=[]), 'return_to_main.*动作'),
+    (lambda a: a['return_to_main'].update(type='back'), 'return_to_main.*动作'),
+    (lambda a: a['return_to_main']['close_target'].update(left=1400), '右上角'),
+    (lambda a: a['return_to_main']['close_target'].update(threshold=.94), '关闭按钮阈值'),
+    (lambda a: a.update(swipe={}), '未知字段'),
+    (lambda a: a.update(multimodal={}), '未知字段'),
+])
+def test_arena_matchmaking_rejects_unsafe_or_invalid_configuration(tmp_path, change, error):
+    payload = valid_payload()
+    payload['screen'] = {'width': 1920, 'height': 1080}
+    action = arena_matchmaking_action()
+    change(action)
+    payload['tasks']['arena_weekly'] = [action]
+    with pytest.raises(ConfigError, match=error):
+        load_settings(write_config(tmp_path, payload))
+
+
+def test_arena_matchmaking_rejects_unscaled_screen(tmp_path):
+    payload = valid_payload()
+    payload['tasks']['arena_weekly'] = [arena_matchmaking_action()]
+    with pytest.raises(ConfigError, match='1920×1080'):
+        load_settings(write_config(tmp_path, payload))
+
+
 def squad_action():
     targets = ("ready_marker", "match_button", "quadruple_checked", "quadruple_unchecked",
                "continue_button", "limit_marker", "dialog_marker")

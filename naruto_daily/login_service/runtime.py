@@ -25,6 +25,7 @@ from .ldplayer import LDPlayerError, LDPlayerPoolFull
 from .models import HttpError, ISO_PATTERN, TaskRecord, UUID_PATTERN, equal_secret, parse_submission
 from .queue import MockRedisQueue, RedisQueueError, RedisTaskQueue, SAFE_DRIVER_ERRORS, SAFE_TASK_ERROR
 from .run_logs import RedisRunReporter, TERMINAL as RUN_TERMINAL_STATUSES
+from .user_options import ARENA_WEEKLY_SECONDS
 
 if TYPE_CHECKING:
     from .storage import ObjectStorage
@@ -298,6 +299,7 @@ class LoginRuntime:
         png: bytes | None = None
         action_count: int | None = None
         refresh_id: str | None = None
+        arena_started = False
         try:
             child.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
             child.stdin.close()
@@ -377,9 +379,26 @@ class LoginRuntime:
                             timeout.reschedule(asyncio.get_running_loop().time()
                                                + max(0, record.execution_deadline - time.time()))
                         self._set_daily_status(record, "running_daily")
+                    elif daily and event.get('type') == 'arena_started':
+                        if (record.user_options.get('mainTask') != 'arena_weekly'
+                                or record.daily_started_at is None or arena_started):
+                            raise ValueError('Unexpected arena battle start')
+                        deadline = event.get('executionDeadline')
+                        now = time.time()
+                        if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+                                or not now < deadline <= now + ARENA_WEEKLY_SECONDS):
+                            raise ValueError('Invalid arena battle deadline')
+                        arena_started = True
+                        record.execution_deadline = float(deadline)
+                        self._set_daily_status(record, 'running_daily')
+                        timeout.reschedule(asyncio.get_running_loop().time()
+                                           + max(0, deadline - time.time()))
+                        if self._run_reporter is not None:
+                            self._run_reporter.emit(record, message='已开始决斗场周胜战斗，执行 40 分钟后自动结束')
                     elif daily and event.get("type") == "daily_completed":
                         count = event.get("actionCount")
                         if (record.daily_started_at is None or action_count is not None
+                                or record.user_options.get('mainTask') == 'arena_weekly' and not arena_started
                                 or type(count) is not int or count < 0):
                             raise ValueError("Unexpected daily completion")
                         action_count = count
@@ -395,6 +414,14 @@ class LoginRuntime:
                 if daily:
                     self._set_daily_status(record, "completed", action_count=action_count)
                 return png
+        except TimeoutError:
+            if not arena_started or not timeout.expired() or self._stopping:
+                raise
+            # 定时周胜按正常完成结束；finally 立即杀掉执行子进程，不走失败保留现场。
+            logger.info('Task %s: 决斗场周胜战斗时限已到，结束执行子进程', record.id)
+            self._set_daily_status(record, 'completed')
+            assert png is not None
+            return png
         finally:
             self._kill(child)
             try:

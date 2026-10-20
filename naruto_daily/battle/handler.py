@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
@@ -21,6 +22,15 @@ from naruto_daily.multimodal.prompt_jev import BATTLE_COMPLETION
 LOGGER = logging.getLogger('naruto_daily')
 # 默认连续点击30秒后检查；秘境调用时缩短为18秒。
 BATTLE_CHECK_INTERVAL_SECONDS = 30.0
+# 1920×1080 战斗画面的按钮内点击位置；字母仅用于对应用户指定的六个区域。
+_DUEL_BUTTON_CENTERS = (
+    ('秘卷', 1730, 445),   # E
+    ('通灵', 1680, 260),   # R：靠左避开决斗场大厅的决斗季大奖入口
+    ('二技能', 1530, 750),  # I
+    ('普攻', 1715, 885),   # K
+    ('替身', 1300, 965),   # SPACE
+    ('大招', 1730, 650),   # L
+)
 
 
 @dataclass(frozen=True)
@@ -37,6 +47,7 @@ def run_battle(
     check_interval_seconds: float = BATTLE_CHECK_INTERVAL_SECONDS,
     end_detector: Callable[[bytes], str | None] | None = None,
     before_attack: Callable[[bytes], BattleSummary | None] | None = None,
+    _tap_batch: Callable[[Callable[[], bool]], bool] | None = None,
 ) -> BattleSummary:
     if (isinstance(check_interval_seconds, bool) or not isinstance(check_interval_seconds, (int, float))
             or not math.isfinite(check_interval_seconds) or check_interval_seconds <= 0):
@@ -159,9 +170,16 @@ def run_battle(
             if remaining() <= 0:
                 break
             # 等待本批全部输入返回，避免后台点击越过结算处理，也不积压后续批次。
-            pending = [pool.submit(copy_context().run, tap_button, button) for button in buttons]
-            taps += sum(future.result() for future in pending)
-            delay = max(0.0, min(interval, remaining(), next_check - elapsed()))
+            batch_started = elapsed()
+            if _tap_batch is None:
+                pending = [pool.submit(copy_context().run, tap_button, button) for button in buttons]
+                taps += sum(future.result() for future in pending)
+            else:
+                # 高速通道整轮按下、抬起并确认后返回，不留后台触摸越过截图检查。
+                if _tap_batch(lambda: remaining() > 0 and elapsed() < next_check):
+                    taps += len(buttons)
+            batch_delay = interval if _tap_batch is None else interval - (elapsed() - batch_started)
+            delay = max(0.0, min(batch_delay, remaining(), next_check - elapsed()))
             if delay > 0:
                 images.sleep(delay)
     raise VisualError(f'战斗等待结束超时（{timeout:g} 秒），已停止点击')
@@ -181,3 +199,32 @@ def run_battle_without_first_skill(
     return run_battle(client, filtered_battle, template_matcher=template_matcher,
                       asset_root=asset_root, sleep=sleep, clock=clock, model=model,
                       check_interval_seconds=check_interval_seconds)
+
+
+def run_duel_battle(
+    client, battle: dict, *, template_matcher: Callable = find_template_in_png,
+    asset_root: Path = Path('.'), sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    model: MultimodalClient | None = None,
+    check_interval_seconds: float = BATTLE_CHECK_INTERVAL_SECONDS,
+    end_detector: Callable[[bytes], str | None] | None = None,
+    before_attack: Callable[[bytes], BattleSummary | None] | None = None,
+) -> BattleSummary:
+    """决斗场专用：循环并发点击六个按钮内的位置，不包含一技能。"""
+    if client.screen_size() != (1920, 1080):
+        raise VisualError('决斗场战斗只支持 1920×1080 安卓画面，已停止点击')
+    duel_battle = dict(battle, buttons=[
+        dict(name=name, x=x, y=y) for name, x, y in _DUEL_BUTTON_CENTERS
+    ])
+    points = tuple((button['x'], button['y']) for button in duel_battle['buttons'])
+    channel = client.duel_taps(points) if callable(getattr(client, 'duel_taps', None)) else nullcontext(None)
+    with channel as tap_batch:
+        if tap_batch is not None:
+            from naruto_daily.common.fast_duel_tap import TAP_PERIOD_SECONDS
+            duel_battle['tap_interval_seconds'] = max(float(battle['tap_interval_seconds']), TAP_PERIOD_SECONDS)
+        options = {'_tap_batch': tap_batch} if tap_batch is not None else {}
+        return run_battle(
+            client, duel_battle, template_matcher=template_matcher, asset_root=asset_root,
+            sleep=sleep, clock=clock, model=model, check_interval_seconds=check_interval_seconds,
+            end_detector=end_detector, before_attack=before_attack, **options,
+        )
