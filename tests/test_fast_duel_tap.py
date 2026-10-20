@@ -204,5 +204,3 @@ def test_unsupported_device_falls_back_before_opening_any_input_channel(monkeypa
     monkeypatch.setattr(fast, 'DuelTapChannel', lambda *a, **kw: pytest.fail('unsupported device must not open input'))
     with fast.fast_duel_taps(client, POINTS) as tap:
         assert tap is None
-
-
