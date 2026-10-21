@@ -226,7 +226,7 @@ def fast_duel_taps(client, points):
                     extra={'backend_only': True})
         yield None
         return
-    LOGGER.info('战斗启用持续 ADB 多点触摸：每个按钮目标每秒 20 次，整轮抬起后确认',
+    LOGGER.info('战斗启用持续 ADB 多点触摸：整轮抬起后确认',
                 extra={'backend_only': True})
     with channel:
         yield channel.tap

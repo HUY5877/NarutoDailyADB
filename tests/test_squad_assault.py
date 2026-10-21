@@ -320,7 +320,7 @@ def test_real_frames_match_continue_and_finish_at_limit_without_other_clicks():
     summary = handle_squad_assault(client, real_action(), asset_root=root, sleep=lambda _: None)
     assert summary == SquadAssaultSummary(1, 1, False)
     assert len(client.taps) == 3
-    assert client.taps[-1] == (70, 360)
+    assert client.taps[-1] == (45, 330)
     assert 1550 <= client.taps[0][0] < 1920 and 740 <= client.taps[0][1] < 1080
     assert 570 <= client.taps[1][0] < 1030 and 520 <= client.taps[1][1] < 740
 
@@ -329,7 +329,7 @@ def test_missing_auto_text_clicks_fixed_button_once_per_poll_without_extra_scree
     _, _, _, run = setup
     client, waits, summary = run([READY, set(), set(), BATTLE_ON, CAP])
     assert summary == SquadAssaultSummary(matches=1, continues=0, quadruple_disabled=False)
-    assert client.taps == [POINTS['match_button'], (70, 360), (70, 360)]
+    assert client.taps == [POINTS['match_button'], (45, 330), (45, 330)]
     assert client.screenshot_count == 5
     assert waits == [1, 5, 5, 5]
     assert [number for number, key in client.probes if key == 'auto_battle_marker'] == [2, 3, 4]

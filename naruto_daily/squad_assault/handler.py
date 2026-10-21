@@ -21,7 +21,8 @@ from naruto_daily.common.visual import (
 
 LOGGER = logging.getLogger("naruto_daily")
 READY_BRIGHTNESS_RATIO = 0.8
-AUTO_BATTLE_POINT = (70, 360)
+# 自动按钮左上侧，避开准备页的声望奖励卡片。
+AUTO_BATTLE_POINT = (45, 330)
 AUTO_BATTLE_MARKER = dict(
     name="自动战斗中", template="assets/squad_assault_auto_battle.png",
     left=820, top=95, right=1120, bottom=180, threshold=.9,

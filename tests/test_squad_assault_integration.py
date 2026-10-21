@@ -122,4 +122,4 @@ def test_user_battle_frames_enable_auto_once_then_return_to_original_limit_check
     assert device.screenshots == 4
     assert len(taps) == 2
     assert taps[0][0] == 'squad_assault_ready_unchecked'
-    assert taps[1] == ('squad_assault_battle_auto_off', 70, 360)
+    assert taps[1] == ('squad_assault_battle_auto_off', 45, 330)
