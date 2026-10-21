@@ -212,6 +212,8 @@ print(json.dumps({'type':'arena_started','executionDeadline':time.time()+2400}),
 
 def test_weekly_deadline_closes_instance_without_failure_hold_and_keeps_worker_running(tmp_path, monkeypatch):
     from test_login_service_daily_runtime import make_runtime as lifecycle_runtime, record_with_ttl
+    from test_login_service_qq_notify import QQTransport, make_notifier, request_json, token_response
+    from test_login_service_task_notifications import drain_notifications, enable_notifications
     monkeypatch.setattr(runtime_module, 'ARENA_WEEKLY_SECONDS', .2)
     monkeypatch.setattr(runtime_module, 'FAILED_INSTANCE_HOLD_SECONDS', 60)
     program = '''
@@ -226,6 +228,9 @@ time.sleep(60)
         record = record_with_ttl()
         record.user_options = parse_user_options({'mainTask': 'arena_weekly'})
         runtime, storage, queue, pool = lifecycle_runtime(tmp_path, monkeypatch, record, [])
+        enable_notifications(runtime, queue)
+        transport = QQTransport(token_response(), {'id': 'qr-message'}, {'id': 'result-message'})
+        _, runtime._qq_notifier = make_notifier(monkeypatch, transport)
         async def child(current):
             return await runtime._run_child(current, [sys.executable, '-u', '-c', program],
                                              {'events': SUCCESS_PROTOCOL[:3]}, daily=True)
@@ -235,6 +240,9 @@ time.sleep(60)
             assert record.daily_status == 'completed' and record.daily_error_code is None
             assert pool.closed == [record.id] and pool.state == 'released'
             assert not queue.failed_sessions and not runtime._stopping
+            await drain_notifications(runtime)
+            assert len(transport.requests) == 3
+            assert request_json(transport.requests[-1][0])['content'] == '雪花，决斗场周胜任务结束啦！辛苦啦～'
         finally:
             await runtime.stop()
     asyncio.run(scenario())
