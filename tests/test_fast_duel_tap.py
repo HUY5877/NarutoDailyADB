@@ -2,19 +2,21 @@
 import base64
 import io
 import logging
+from pathlib import Path
 from queue import Queue
 import struct
 from types import SimpleNamespace
 
 import pytest
 
-from naruto_daily.common.adb_client import AdbError
+from naruto_daily.common.adb_client import AdbClient, AdbError, CommandResult
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common import fast_duel_tap as fast
 from naruto_daily.login_service.log_events import local_log_file
 
 
 POINTS = ((1730, 445), (1680, 260), (1530, 750), (1715, 885), (1300, 965), (1730, 650))
+PVE_POINTS = ((1500, 960), (1535, 750), (1725, 650), (1715, 885))
 CAPS = '''add device 1: /dev/input/event4
   name: "mouse"
 add device 2: /dev/input/event2
@@ -47,6 +49,28 @@ def test_six_points_use_separate_slots_and_one_complete_press_release(bits):
     assert [v for t, c, v in released if (t, c) == (3, 47)] == [10, 11, 12, 13, 14, 15]
     assert [v for t, c, v in released if (t, c) == (3, 57)] == [-1] * 6
     assert (1, 330, 0) in released
+
+
+@pytest.mark.parametrize('bits', [32, 64])
+@pytest.mark.parametrize('count', [3, 4], ids=['abundance', 'secret-realm'])
+def test_pve_points_are_pressed_and_released_only_in_their_own_slots(bits, count):
+    points = PVE_POINTS[-count:]
+    device = fast.TouchDevice('/dev/input/event2', bits, 15)
+
+    down, up = fast.touch_frames(device, points)
+
+    pressed, released = events(down, bits), events(up, bits)
+    slots = list(range(16 - count, 16))
+    assert pressed[-1] == released[-1] == (0, 0, 0)
+    assert [value for kind, code, value in pressed if (kind, code) == (3, 47)] == slots
+    assert [value for kind, code, value in released if (kind, code) == (3, 47)] == slots
+    assert [value for kind, code, value in pressed if (kind, code) == (3, 53)] == [x for x, _ in points]
+    assert [value for kind, code, value in pressed if (kind, code) == (3, 54)] == [y for _, y in points]
+    assert len({value for kind, code, value in pressed if (kind, code) == (3, 57)}) == count
+    assert [value for kind, code, value in released if (kind, code) == (3, 57)] == [-1] * count
+    assert [value for kind, code, value in released if (kind, code) == (3, 58)] == [0] * count
+    assert (1, 330, 1) in pressed and (1, 325, 1) in pressed
+    assert (1, 330, 0) in released and (1, 325, 0) in released
 
 
 @pytest.mark.parametrize('change', [
@@ -262,3 +286,38 @@ def test_unsupported_device_falls_back_before_opening_any_input_channel(monkeypa
     monkeypatch.setattr(fast, 'DuelTapChannel', lambda *a, **kw: pytest.fail('unsupported device must not open input'))
     with fast.fast_duel_taps(client, POINTS) as tap:
         assert tap is None
+
+
+@pytest.mark.parametrize('entrypoint', ['battle_taps', 'duel_taps'])
+@pytest.mark.parametrize('count', [3, 4], ids=['abundance', 'secret-realm'])
+@pytest.mark.parametrize('problem', ['unsupported', 'permission-denied'])
+def test_real_adb_client_fast_entrypoint_allows_ordinary_taps_after_failed_preflight(entrypoint, count, problem):
+    commands = []
+
+    def run(command):
+        assert command[:3] == ['adb.exe', '-s', 'emulator-5554']
+        arguments = tuple(command[3:])
+        commands.append(arguments)
+        if arguments == ('shell', 'getevent', '-lp'):
+            capabilities = CAPS.replace('max 1919', 'max 1279') if problem == 'unsupported' else CAPS
+            return CommandResult(0, capabilities, '')
+        if arguments == ('shell', 'od', '-An', '-t', 'u1', '-j', '4', '-N', '2', '/system/bin/base64'):
+            return CommandResult(0, '2 1\n', '')
+        if arguments == ('shell', 'test -w /dev/input/event2'):
+            assert problem == 'permission-denied'
+            return CommandResult(1, '', 'Permission denied')
+        if arguments[:3] == ('shell', 'input', 'tap'):
+            return CommandResult(0, '', '')
+        pytest.fail(f'Unexpected command: {arguments}')
+
+    client = AdbClient(Path('adb.exe'), 'emulator-5554', run_command=run)
+    points = PVE_POINTS[-count:]
+
+    with getattr(client, entrypoint)(points) as tap:
+        assert tap is None
+        client.tap(*points[0])
+
+    assert ('shell', 'getevent', '-lp') in commands
+    assert (('shell', 'test -w /dev/input/event2') in commands) is (problem == 'permission-denied')
+    assert commands[-1] == ('shell', 'input', 'tap', str(points[0][0]), str(points[0][1]))
+    assert sum(arguments[:3] == ('shell', 'input', 'tap') for arguments in commands) == 1

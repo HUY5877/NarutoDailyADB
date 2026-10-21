@@ -207,7 +207,8 @@ def handle_secret_realm(client, action, *, template_matcher=find_template_in_png
         # 战斗模块在首轮当前帧确认名称之后才允许连点；已结束直接交给结算。
         battle_summary = run_battle(client, action['battle'], template_matcher=template_matcher,
                                     asset_root=asset_root, sleep=sleep, model=model, check_interval_seconds=18,
-                                    end_detector=_ninja_selection_end, before_attack=check_realm)
+                                    end_detector=_ninja_selection_end, before_attack=check_realm,
+                                    prefer_fast_taps=True)
         # 保留战斗层的结束证据；更换忍者页仍只允许识别并点击该页返回。
         result_confirmed = (preparation is BattlePreparation.FINISHED or
                             preparation is not BattlePreparation.EXITED and battle_summary is not None
