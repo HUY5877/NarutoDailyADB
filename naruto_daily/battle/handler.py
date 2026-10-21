@@ -47,11 +47,18 @@ def run_battle(
     check_interval_seconds: float = BATTLE_CHECK_INTERVAL_SECONDS,
     end_detector: Callable[[bytes], str | None] | None = None,
     before_attack: Callable[[bytes], BattleSummary | None] | None = None,
+    prefer_fast_taps: bool = False,
     _tap_batch: Callable[[Callable[[], bool]], bool] | None = None,
 ) -> BattleSummary:
     if (isinstance(check_interval_seconds, bool) or not isinstance(check_interval_seconds, (int, float))
             or not math.isfinite(check_interval_seconds) or check_interval_seconds <= 0):
         raise ValueError('战斗检查间隔必须是正数')
+    if prefer_fast_taps and _tap_batch is None:
+        return _run_fast_battle(
+            client, battle, template_matcher=template_matcher, asset_root=asset_root,
+            sleep=sleep, clock=clock, model=model, check_interval_seconds=check_interval_seconds,
+            end_detector=end_detector, before_attack=before_attack,
+        )
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     # 调用方已经完成加载等待；一批全部输入完成后再开始下一批。
     tap_seconds = float(check_interval_seconds)
@@ -185,6 +192,23 @@ def run_battle(
     raise VisualError(f'战斗等待结束超时（{timeout:g} 秒），已停止点击')
 
 
+def _run_fast_battle(client, battle: dict, **options) -> BattleSummary:
+    """整场战斗共用通道；暂停观察时保持连接，返回或异常退出时关闭。"""
+    points = tuple((button['x'], button['y']) for button in battle['buttons'])
+    factory = getattr(client, 'battle_taps', None)
+    if not callable(factory):
+        # 兼容只实现了旧决斗场通道接口的客户端。
+        factory = getattr(client, 'duel_taps', None)
+    channel = factory(points) if callable(factory) else nullcontext(None)
+    with channel as tap_batch:
+        prepared = dict(battle)
+        if tap_batch is not None:
+            from naruto_daily.common.fast_duel_tap import TAP_PERIOD_SECONDS
+            prepared['tap_interval_seconds'] = max(float(battle['tap_interval_seconds']), TAP_PERIOD_SECONDS)
+            options['_tap_batch'] = tap_batch
+        return run_battle(client, prepared, **options)
+
+
 def run_battle_without_first_skill(
     client, battle: dict, *, template_matcher: Callable = find_template_in_png,
     asset_root: Path = Path('.'), sleep: Callable[[float], None] = time.sleep,
@@ -198,7 +222,7 @@ def run_battle_without_first_skill(
     ])
     return run_battle(client, filtered_battle, template_matcher=template_matcher,
                       asset_root=asset_root, sleep=sleep, clock=clock, model=model,
-                      check_interval_seconds=check_interval_seconds)
+                      check_interval_seconds=check_interval_seconds, prefer_fast_taps=True)
 
 
 def run_duel_battle(
@@ -216,15 +240,8 @@ def run_duel_battle(
     duel_battle = dict(battle, buttons=[
         dict(name=name, x=x, y=y) for name, x, y in _DUEL_BUTTON_CENTERS
     ])
-    points = tuple((button['x'], button['y']) for button in duel_battle['buttons'])
-    channel = client.duel_taps(points) if callable(getattr(client, 'duel_taps', None)) else nullcontext(None)
-    with channel as tap_batch:
-        if tap_batch is not None:
-            from naruto_daily.common.fast_duel_tap import TAP_PERIOD_SECONDS
-            duel_battle['tap_interval_seconds'] = max(float(battle['tap_interval_seconds']), TAP_PERIOD_SECONDS)
-        options = {'_tap_batch': tap_batch} if tap_batch is not None else {}
-        return run_battle(
-            client, duel_battle, template_matcher=template_matcher, asset_root=asset_root,
-            sleep=sleep, clock=clock, model=model, check_interval_seconds=check_interval_seconds,
-            end_detector=end_detector, before_attack=before_attack, **options,
-        )
+    return _run_fast_battle(
+        client, duel_battle, template_matcher=template_matcher, asset_root=asset_root,
+        sleep=sleep, clock=clock, model=model, check_interval_seconds=check_interval_seconds,
+        end_detector=end_detector, before_attack=before_attack,
+    )

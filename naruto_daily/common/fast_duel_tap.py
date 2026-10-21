@@ -1,4 +1,4 @@
-"""Acknowledged, duel-only multitouch over one persistent ADB shell.
+"""Acknowledged battle multitouch over one persistent ADB shell.
 
 Type B slots follow the Linux input multi-touch protocol. Each request presses
 all buttons together and releases them before its acknowledgement is returned.
@@ -222,11 +222,11 @@ def fast_duel_taps(client, points):
     except AdbError:
         pass
     if channel is None:
-        LOGGER.info('当前设备不支持决斗场高速多点触摸，沿用 ADB 坐标连点',
+        LOGGER.info('当前设备不支持高速战斗多点触摸，沿用 ADB 坐标连点',
                     extra={'backend_only': True})
         yield None
         return
-    LOGGER.info('决斗场启用持续 ADB 多点触摸：每个按钮目标每秒 20 次，整轮抬起后确认',
+    LOGGER.info('战斗启用持续 ADB 多点触摸：每个按钮目标每秒 20 次，整轮抬起后确认',
                 extra={'backend_only': True})
     with channel:
         yield channel.tap
