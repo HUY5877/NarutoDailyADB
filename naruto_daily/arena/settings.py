@@ -17,7 +17,24 @@ from naruto_daily.return_to_main import return_to_main
 LOGGER = logging.getLogger('naruto_daily')
 # 从两列设置项之间的空隙拖动，避开文字、复选框和主场景预览按钮。
 SETTINGS_SWIPE = (1090, 900, 1090, 300, 650)
+SETTINGS_SWIPE_RETRIES = ((1090, 700, 1090, 300, 650), (1090, 500, 1090, 300, 650))
+# 仅比较滚动列表内部，排除主界面动画、左侧标签和设置窗口边框。
+SETTINGS_CONTENT_ROI = (505, 250, 1660, 935)
+ADVANCED_SELECTED = {
+    'name': '高级设置选中边框', 'template': 'assets/settings_advanced_selected.png',
+    'left': 215, 'top': 390, 'right': 285, 'bottom': 610, 'threshold': .95,
+}
 CHECKBOX_RADIUS = 40
+
+
+def _settings_change_ratio(before, after):
+    left, top, right, bottom = SETTINGS_CONTENT_ROI
+    def content(png):
+        frame = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_GRAYSCALE)
+        return cv2.GaussianBlur(frame[top:bottom, left:right], (5, 5), 0)
+
+    # 忽略轻微渲染噪声；至少 1% 的列表像素明显变化才视为滚动生效。
+    return float(np.mean(cv2.absdiff(content(before), content(after)) > 20))
 
 
 class _SettingsFlow:
@@ -79,20 +96,42 @@ class _SettingsFlow:
             LOGGER.info('尚未确认%s，相似度 %.3f，重新截图后再判断', target['name'], score)
             self.pause(self.action['poll_seconds'])
 
-    def scroll(self):
-        # 只有设置页标签仍可见时才拖动，页面意外切换时停止输入并等待。
+    def _scroll_frame(self):
+        # 其他设置页也显示高级设置文字，必须同时确认它的选中边框。
         while True:
-            center, score = self.match(self.screenshot(), self.action['advanced_tab'])
+            png = self.screenshot()
+            center, score = self.match(png, self.action['advanced_tab'])
             if center is not None:
-                break
+                selected, _ = self.match(png, ADVANCED_SELECTED)
+                if selected is None:
+                    raise VisualError('未确认高级设置已选中，已停止操作')
+                return png
             LOGGER.info('滚动前未确认高级设置，相似度 %.3f，暂停滑动', score)
             self.pause(self.action['poll_seconds'])
-        self.remaining()
-        self.client.swipe(*SETTINGS_SWIPE)
-        self.pause(self.action['post_click_wait_seconds'])
+
+    def scroll(self):
+        for attempt, swipe in enumerate((SETTINGS_SWIPE, *SETTINGS_SWIPE_RETRIES)):
+            before = self._scroll_frame()
+            if attempt:
+                LOGGER.info('更换高级设置滑动起点为 (%d, %d) 重试', *swipe[:2])
+            self.remaining()
+            self.client.swipe(*swipe)
+            self.pause(self.action['post_click_wait_seconds'])
+            after = self._scroll_frame()
+            change_ratio = _settings_change_ratio(before, after)
+            self.remaining()
+            if change_ratio >= .01:
+                LOGGER.info('高级设置滑动已生效，列表内容变化 %.1f%%', change_ratio * 100)
+                return
+            label, _ = self.match(after, self.action['players_only_label'])
+            if label is not None:
+                LOGGER.info('高级设置列表未移动，但已找到决斗场只匹配玩家，继续检查状态')
+                return
+            LOGGER.info('高级设置列表未移动，滑动起点 (%d, %d)', *swipe[:2])
+        raise VisualError('高级设置滑动未生效，更换起点重试后仍未找到决斗场只匹配玩家')
 
     def checkbox(self):
-        png = self.screenshot()
+        png = self._scroll_frame()
         label, score = self.match(png, self.action['players_only_label'])
         if label is None:
             LOGGER.info('未确认决斗场只匹配玩家文字，相似度 %.3f，暂不点击', score)
