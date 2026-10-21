@@ -21,7 +21,7 @@ def action_config(**overrides):
         'tasks']['arena_weekly'][0])
     assert action['type'] == 'prepare_arena_matchmaking'
     return action | {
-        'timeout_seconds': 1, 'poll_seconds': .2,
+        'timeout_seconds': 5, 'poll_seconds': .2,
         'pre_click_wait_seconds': .01, 'post_click_wait_seconds': .01,
         'scroll_swipes': 3,
     } | overrides
@@ -30,12 +30,13 @@ def action_config(**overrides):
 class Replay:
     """画面随实际输入变化；同一帧的标签与两种勾选状态一起识别。"""
 
-    def __init__(self, monkeypatch, states=('checked', 'checked', 'unchecked'), *,
+    def __init__(self, monkeypatch, states=('checked', 'checked', 'checked', 'unchecked'), *,
                  labels=(), action=None, real_templates=False, size=(1920, 1080),
                  late_screenshot=None, advanced_disappears_after=None, button_centers=None):
         self.action = action or action_config()
         self.clock = 0.
         self.events, self.taps, self.swipes, self.returns = [], [], [], []
+        self.scroll_position = 0
         self.frames = {}
         self.phase = 'main'
         self.states = deque(states)
@@ -60,7 +61,7 @@ class Replay:
         self.screen_count += 1
         if self.phase in self.button_centers and self.button_centers[self.phase]:
             self.button_center[self.phase] = self.button_centers[self.phase].popleft()
-        if self.phase == 'advanced' and len(self.swipes) >= self.action['scroll_swipes']:
+        if self.phase == 'advanced' and self.scroll_position >= self.action['scroll_swipes']:
             if self.states:
                 self.state = self.states.popleft()
             if self.labels:
@@ -71,10 +72,16 @@ class Replay:
         data = dict(phase=self.phase, state=self.state, label=self.label,
                     advanced_visible=advanced_visible,
                     button=self.button_center.get(self.phase),
-                    bottom=len(self.swipes) >= self.action['scroll_swipes'])
+                    bottom=self.scroll_position >= self.action['scroll_swipes'])
         width, height = self.size
         frame = np.zeros((height, width, 3), dtype=np.uint8)
         frame[0, 0] = (self.screen_count, 50, 150)
+        if self.phase == 'advanced':
+            # 列表画面随位置移动，不能用截图计数或背景变化冒充滚动成功。
+            offset = (self.scroll_position * 25) % 200
+            for y in (400, 600, 800):
+                cv2.rectangle(frame, (600, y - offset), (950, y - offset + 40),
+                              (180, 180, 180), -1)
         if self.real_templates:
             self.render(frame, data)
         png = cv2.imencode('.png', frame)[1].tobytes()
@@ -140,6 +147,7 @@ class Replay:
     def swipe(self, *points):
         self.swipes.append(points)
         self.events.append(('swipe', self.screen_count, points))
+        self.scroll_position = min(self.scroll_position + 1, self.action['scroll_swipes'])
 
     def sleep(self, seconds):
         self.events.append(('sleep', seconds))
@@ -182,7 +190,8 @@ def test_unchecked_or_manually_cancelled_during_recheck_is_not_toggled(monkeypat
 
 
 def test_recheck_refreshes_label_and_checkbox_position(monkeypatch):
-    replay = Replay(monkeypatch, labels=[(1200, 650), (1250, 710), (1250, 710)])
+    # 滑动后的验证帧、状态初查、点击前复查、点击后确认。
+    replay = Replay(monkeypatch, labels=[(1200, 650), (1200, 650), (1250, 710), (1250, 710)])
     replay.run()
     assert replay.taps[-1] == (1587, 713)
     assert (1537, 653) not in replay.taps
@@ -222,7 +231,7 @@ def test_uncertain_state_never_clicks_checkbox_or_returns(monkeypatch, state):
 
 @pytest.mark.parametrize('state', ['unknown', 'ambiguous', 'missing-label'])
 def test_uncertainty_on_preclick_frame_discards_earlier_checked_state(monkeypatch, state):
-    replay = Replay(monkeypatch, ('checked', state))
+    replay = Replay(monkeypatch, ('checked', 'checked', state))
     with pytest.raises((VisualError, TimeoutError)):
         replay.run()
     assert replay.taps == [(86, 225), (350, 520)]
@@ -259,7 +268,7 @@ def test_shared_deadline_stops_after_late_checkbox_recheck(monkeypatch):
             if not device.states:  # 第二次目标框截图已获得坐标，但总期限刚好到达。
                 device.clock = 20.
 
-    replay = Replay(monkeypatch, ('checked', 'checked'), late_screenshot=expire_on_recheck)
+    replay = Replay(monkeypatch, ('checked', 'checked', 'checked'), late_screenshot=expire_on_recheck)
     with pytest.raises(DailyDeadlineExceeded):
         with execution_scope(10., clock=lambda: replay.clock, sleep=replay.sleep):
             replay.run()
@@ -269,7 +278,7 @@ def test_shared_deadline_stops_after_late_checkbox_recheck(monkeypatch):
 
 @pytest.mark.parametrize('states, checkbox_taps', [
     (('unchecked',), []),
-    (('checked', 'checked', 'unchecked'), [(1537, 653)]),
+    (('checked', 'checked', 'checked', 'unchecked'), [(1537, 653)]),
 ])
 def test_real_templates_ignore_checked_box_on_another_row(monkeypatch, states, checkbox_taps):
     replay = Replay(monkeypatch, states, real_templates=True)
