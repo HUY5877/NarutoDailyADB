@@ -104,6 +104,8 @@ class Replay:
         if data['advanced_visible']:
             paste(self.action['advanced_tab']['template'],
                   data['button'] if data['phase'] == 'settings' else (350, 520))
+            if data['phase'] == 'advanced':
+                paste(settings.ADVANCED_SELECTED['template'], (249, 498))
         if data['phase'] == 'advanced' and data['bottom']:
             paste(self.action['players_only_label']['template'], data['label'])
             paste(self.action['unchecked_template' if data['state'] == 'unchecked' else 'checked_template'],
@@ -118,6 +120,8 @@ class Replay:
             center = data['button']
         elif template == Path(self.action['advanced_tab']['template']).name and data['advanced_visible']:
             center = data['button'] if data['phase'] == 'settings' else (350, 520)
+        elif template == Path(settings.ADVANCED_SELECTED['template']).name and data['advanced_visible']:
+            center = (249, 498) if data['phase'] == 'advanced' else None
         elif data['phase'] == 'advanced' and data['bottom']:
             if template == Path(self.action['players_only_label']['template']).name and data['state'] != 'missing-label':
                 center = data['label']

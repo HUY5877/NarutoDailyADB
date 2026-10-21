@@ -20,6 +20,10 @@ SETTINGS_SWIPE = (1090, 900, 1090, 300, 650)
 SETTINGS_SWIPE_RETRIES = ((1090, 700, 1090, 300, 650), (1090, 500, 1090, 300, 650))
 # 仅比较滚动列表内部，排除主界面动画、左侧标签和设置窗口边框。
 SETTINGS_CONTENT_ROI = (505, 250, 1660, 935)
+ADVANCED_SELECTED = {
+    'name': '高级设置选中边框', 'template': 'assets/settings_advanced_selected.png',
+    'left': 215, 'top': 390, 'right': 285, 'bottom': 610, 'threshold': .95,
+}
 CHECKBOX_RADIUS = 40
 
 
@@ -93,11 +97,14 @@ class _SettingsFlow:
             self.pause(self.action['poll_seconds'])
 
     def _scroll_frame(self):
-        # 只有设置页标签仍可见时才拖动，页面意外切换时停止输入并等待。
+        # 其他设置页也显示高级设置文字，必须同时确认它的选中边框。
         while True:
             png = self.screenshot()
             center, score = self.match(png, self.action['advanced_tab'])
             if center is not None:
+                selected, _ = self.match(png, ADVANCED_SELECTED)
+                if selected is None:
+                    raise VisualError('未确认高级设置已选中，已停止操作')
                 return png
             LOGGER.info('滚动前未确认高级设置，相似度 %.3f，暂停滑动', score)
             self.pause(self.action['poll_seconds'])
@@ -124,7 +131,7 @@ class _SettingsFlow:
         raise VisualError('高级设置滑动未生效，更换起点重试后仍未找到决斗场只匹配玩家')
 
     def checkbox(self):
-        png = self.screenshot()
+        png = self._scroll_frame()
         label, score = self.match(png, self.action['players_only_label'])
         if label is None:
             LOGGER.info('未确认决斗场只匹配玩家文字，相似度 %.3f，暂不点击', score)

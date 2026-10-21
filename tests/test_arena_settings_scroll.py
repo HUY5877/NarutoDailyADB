@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import pytest
 
-from naruto_daily.arena.settings import _SettingsFlow
+from naruto_daily.arena.settings import ADVANCED_SELECTED, _SettingsFlow
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common.visual import VisualError, find_template_in_png
 
@@ -65,6 +65,7 @@ class SettingsDevice:
 
         if not (self.tab_disappears and self.swipes):
             self.paste_template(frame, self.action['advanced_tab']['template'], (350, 520))
+            self.paste_template(frame, ADVANCED_SELECTED['template'], (249, 498))
         if self.target_visible:
             self.paste_template(frame, self.action['players_only_label']['template'], (1238, 462))
 
