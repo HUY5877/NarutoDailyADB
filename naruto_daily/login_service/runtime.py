@@ -608,6 +608,7 @@ class LoginRuntime:
             await self._qq_notifier.notify_task_finished(
                 record.id, record.username, status=status, error_code=error_code,
                 secret_realm_completed=record.secret_realm_completed_at is not None,
+                main_task=record.user_options.get('mainTask', 'daily'),
             )
             logger.info('QQ task notification sent for task %s (%s)', record.id, status,
                         extra={'backend_only': True})
