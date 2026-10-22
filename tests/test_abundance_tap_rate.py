@@ -1,11 +1,10 @@
-"""丰饶独立限速，检查暂停、已有慢速配置及其他战斗速度保持不变。"""
+"""丰饶恢复普通点击及配置节奏，其他战斗继续使用高速通道。"""
 from contextlib import contextmanager
 from copy import deepcopy
 
 import pytest
 
 from naruto_daily.battle import run_battle, run_battle_without_first_skill, run_duel_battle
-from naruto_daily.common.visual import VisualError
 from test_battle import Clock, Client, battle_config
 
 
@@ -16,12 +15,12 @@ class TickClock(Clock):
 
 
 @pytest.mark.parametrize('runner,configured_interval,expected_starts', [
-    (run_battle_without_first_skill, 0, [0, .2, .4, .6, .8]),
-    (run_battle_without_first_skill, .5, [0, .5]),
     (run_battle, 0, [i / 20 for i in range(20)]),
+    (run_battle, .5, [0, .5]),
     (run_duel_battle, 0, [i / 20 for i in range(20)]),
+    (run_duel_battle, .5, [0, .5]),
 ])
-def test_abundance_limits_each_button_to_five_batches_per_second(
+def test_other_battles_keep_fast_channel_and_configured_interval(
         runner, configured_interval, expected_starts):
     clock = TickClock()
     client = Client(clock)
@@ -58,56 +57,37 @@ def test_abundance_limits_each_button_to_five_batches_per_second(
     assert len(connections) == len(closed) == 1
     assert client.taps == [] and summary.taps == len(starts) * len(connections[0])
     assert config == original
-    if runner is run_battle_without_first_skill:
-        assert connections == [((2, 2), (3, 3), (4, 4))]
 
 
-def test_abundance_fallback_is_slowed_without_delaying_the_next_check():
+@pytest.mark.parametrize('supports_fast_channel', [False, True])
+@pytest.mark.parametrize('configured_interval,expected_taps,expected_waits,expected_check', [
+    (0, 102, [], 1.02),
+    (.5, 6, [.5, .44], 1),
+])
+def test_abundance_uses_ordinary_taps_without_extra_rate_limit(
+        supports_fast_channel, configured_interval, expected_taps, expected_waits, expected_check):
     clock = TickClock()
     client = Client(clock, tap_seconds=.01)
     waits = []
 
-    @contextmanager
-    def unsupported(points):
-        yield None
+    def forbidden_channel(points):
+        pytest.fail('丰饶不应尝试打开高速点击通道')
+
+    if supports_fast_channel:
+        client.battle_taps = client.duel_taps = forbidden_channel
 
     def sleep(seconds):
         waits.append(seconds)
         clock.advance(seconds)
 
-    client.battle_taps = unsupported
+    config = dict(battle_config(), tap_interval_seconds=configured_interval)
+    original = deepcopy(config)
     summary = run_battle_without_first_skill(
-        client, battle_config(), clock=clock, sleep=sleep, check_interval_seconds=1,
+        client, config, clock=clock, sleep=sleep, check_interval_seconds=1,
         template_matcher=lambda png, *a: ((50, 50), .99) if png == b'2' else (None, .2),
     )
-    assert summary.taps == 15
-    assert client.frames == pytest.approx([0, 1])
-    assert waits == pytest.approx([.2, .2, .2, .2, .05])
+    assert summary.taps == len(client.taps) == expected_taps
+    assert client.frames == pytest.approx([0, expected_check])
+    assert waits == pytest.approx(expected_waits)
     assert set(client.taps) == {(2, 2), (3, 3), (4, 4)}
-
-
-def test_abundance_rate_wait_stops_at_timeout_and_closes_connection():
-    clock = TickClock()
-    client = Client(clock)
-    starts, closed = [], []
-
-    @contextmanager
-    def battle_taps(points):
-        def tap(can_send):
-            assert can_send()
-            starts.append(clock())
-            clock.advance(.01)
-            return True
-        try:
-            yield tap
-        finally:
-            closed.append(True)
-
-    client.battle_taps = battle_taps
-    with pytest.raises(VisualError, match='超时'):
-        run_battle_without_first_skill(
-            client, dict(battle_config(), timeout_seconds=.13),
-            clock=clock, sleep=clock.advance, template_matcher=lambda *a: (None, .2),
-        )
-    assert starts == [0] and closed == [True]
-    assert clock() == pytest.approx(.13)
+    assert config == original

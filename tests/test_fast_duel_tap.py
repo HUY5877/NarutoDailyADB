@@ -52,7 +52,7 @@ def test_six_points_use_separate_slots_and_one_complete_press_release(bits):
 
 
 @pytest.mark.parametrize('bits', [32, 64])
-@pytest.mark.parametrize('count', [3, 4], ids=['abundance', 'secret-realm'])
+@pytest.mark.parametrize('count', [3, 4], ids=['three-buttons', 'four-buttons'])
 def test_pve_points_are_pressed_and_released_only_in_their_own_slots(bits, count):
     points = PVE_POINTS[-count:]
     device = fast.TouchDevice('/dev/input/event2', bits, 15)
@@ -289,7 +289,7 @@ def test_unsupported_device_falls_back_before_opening_any_input_channel(monkeypa
 
 
 @pytest.mark.parametrize('entrypoint', ['battle_taps', 'duel_taps'])
-@pytest.mark.parametrize('count', [3, 4], ids=['abundance', 'secret-realm'])
+@pytest.mark.parametrize('count', [3, 4], ids=['three-buttons', 'four-buttons'])
 @pytest.mark.parametrize('problem', ['unsupported', 'permission-denied'])
 def test_real_adb_client_fast_entrypoint_allows_ordinary_taps_after_failed_preflight(entrypoint, count, problem):
     commands = []
