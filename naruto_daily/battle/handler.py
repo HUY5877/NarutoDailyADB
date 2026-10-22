@@ -152,7 +152,8 @@ def run_battle(
                 round_number += 1
                 LOGGER.info('[战斗检查 第%d轮] %s；检查结算，%s %g 秒',
                             round_number, '首轮检查，尚未开始连点' if initial_check else '已停止全部连点',
-                            '任务总时限剩余' if execution is not None else '本阶段上限', remaining())
+                            '任务总时限剩余' if execution is not None else '本阶段上限', remaining(),
+                            extra={'execution_checkpoint': True})
                 summary, result = retry_observation(observe_completion, name='战斗完成检查')
                 if remaining() <= 0:
                     break

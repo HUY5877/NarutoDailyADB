@@ -229,6 +229,8 @@ class ProtocolLogHandler(logging.Handler):
                 ),
                 "message": message,
             }
+            if getattr(record, 'execution_checkpoint', None) is True:
+                event['executionCheckpoint'] = True
             index = getattr(record, "action_index", None)
             total = getattr(record, "action_total", None)
             if type(index) is int and type(total) is int and 0 <= index <= total:

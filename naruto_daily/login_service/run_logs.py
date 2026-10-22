@@ -226,6 +226,21 @@ class RedisRunReporter:
         pending.append(_Update(state))
         self._wake.set()
 
+    def refresh(self, record: TaskRecord) -> None:
+        """Refresh an active execution checkpoint without adding a public log."""
+        previous = self._states.get(record.id)
+        if (self._closed or record._admin_interrupted or record.id in self._finished
+                or previous is None or previous.get("attemptId") != record.attempt_id
+                or previous["status"] in TERMINAL):
+            return
+        self._sequence += 1
+        state = dict(previous, updatedAt=iso_time(), sequence=self._sequence)
+        self._states[record.id] = state
+        pending = self._pending.setdefault(record.id, deque())
+        pending.clear()
+        pending.append(_Update(state))
+        self._wake.set()
+
     def finish(self, task_id: str) -> None:
         """Release local buffers once all accepted updates have been delivered."""
         if self.log_publisher is not None:
