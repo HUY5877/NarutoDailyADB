@@ -7,6 +7,7 @@ from hashlib import sha256
 from io import BytesIO
 import json
 import os
+import re
 from uuid import uuid4
 
 import pytest
@@ -133,8 +134,12 @@ async def assert_interrupted_run(client, runtime, task_id):
     assert journal["errorCode"] == "worker_stopped"
 
 
-async def assert_requeued_session(client, runtime, key, payload, original, before_ttl):
-    assert json.loads(await client.get(key)) == original
+async def assert_requeued_session(client, runtime, key, payload, original, before_ttl, expected_attempt_id):
+    session = json.loads(await client.get(key))
+    attempt_id = session.pop("attemptId")
+    assert isinstance(attempt_id, str) and re.fullmatch(r"[0-9a-f]{32}", attempt_id)
+    assert attempt_id == expected_attempt_id
+    assert session == original
     assert 0 < await client.pttl(key) <= before_ttl
     assert await client.lrange(runtime.config.redis_queue_key, 0, -1) == [payload]
 
@@ -292,10 +297,11 @@ def test_shutdown_records_interrupted_run_and_next_worker_preserves_ready_image(
             await wait_for_run_status(producer, first, body["id"], "starting_emulator")
             log_key = f"{first.config.redis_queue_key}:logs:{body['id']}"
             original_logs = await producer.xrange(log_key)
+            attempt_id = first._tasks[body["id"]].attempt_id
             await asyncio.wait_for(first.stop(), 3)
             assert child.poll() is not None
             assert storage.put_ids == []
-            await assert_requeued_session(producer, first, key, payload, original, before_ttl)
+            await assert_requeued_session(producer, first, key, payload, original, before_ttl, attempt_id)
             assert await producer.get(active_key) == body["id"]
             await assert_interrupted_run(producer, first, body["id"])
             assert (await producer.xrange(log_key))[:len(original_logs)] == original_logs
@@ -342,6 +348,7 @@ def test_cancelling_entrypoint_worker_records_interrupted_run_and_requeues(monke
             child = runtime._children[task_id]
             await wait_for_run_status(producer, runtime, task_id, "starting_emulator")
             # Direct task cancellation also waits for the complete shutdown path.
+            attempt_id = runtime._tasks[task_id].attempt_id
             running.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(running, 3)
@@ -349,7 +356,7 @@ def test_cancelling_entrypoint_worker_records_interrupted_run_and_requeues(monke
             assert runtime._children == {}
             assert all(consumer.done() for consumer in runtime._workers)
             assert storage.put_ids == []
-            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl)
+            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl, attempt_id)
             await assert_interrupted_run(producer, runtime, task_id)
         finally:
             if not running.done():
@@ -376,6 +383,7 @@ def test_cancelling_consumer_terminates_child_and_records_interrupted_run(tmp_pa
             child = runtime._children[body["id"]]
             await wait_for_run_status(producer, runtime, body["id"], "starting_emulator")
             consumer = runtime._workers[0]
+            attempt_id = runtime._tasks[body["id"]].attempt_id
             consumer.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(consumer, 3)
@@ -383,7 +391,7 @@ def test_cancelling_consumer_terminates_child_and_records_interrupted_run(tmp_pa
             assert child.poll() is not None
             assert runtime._children == {}
             assert storage.put_ids == []
-            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl)
+            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl, attempt_id)
             await assert_interrupted_run(producer, runtime, body["id"])
         finally:
             await runtime.stop()
@@ -472,6 +480,7 @@ def test_shutdown_before_initial_run_write_still_records_interrupted_run(tmp_pat
             await eventually(lambda: body["id"] in runtime._children)
             child = runtime._children[body["id"]]
             assert await producer.get(run_key) is None
+            attempt_id = runtime._tasks[body["id"]].attempt_id
             stopping = asyncio.create_task(runtime.stop())
             # Hold the initial write until the real runtime has queued its stop
             # outcome, then let the real publisher drain both updates to Redis.
@@ -484,7 +493,7 @@ def test_shutdown_before_initial_run_write_still_records_interrupted_run(tmp_pat
             await asyncio.wait_for(stopping, 3)
             assert child.poll() is not None
             assert storage.put_ids == []
-            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl)
+            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl, attempt_id)
             await assert_interrupted_run(producer, runtime, body["id"])
         finally:
             allow_publish.set()
@@ -549,7 +558,7 @@ def test_shutdown_during_initial_status_write_does_not_spawn_and_requeues(monkey
                 return getattr(worker_client, name)
 
             async def eval(self, *args):
-                if args[-2] == "starting_emulator" and not status_started.is_set():
+                if args[-3] == "starting_emulator" and not status_started.is_set():
                     status_started.set()
                     await finish_status.wait()
                 return await worker_client.eval(*args)
@@ -568,6 +577,7 @@ def test_shutdown_during_initial_status_write_does_not_spawn_and_requeues(monkey
         await runtime.start()
         try:
             await asyncio.wait_for(status_started.wait(), 3)
+            attempt_id = runtime._tasks[original["id"]].attempt_id
             stopping = asyncio.create_task(runtime.stop())
             await eventually(lambda: runtime._stopping)
             assert not stopping.done()
@@ -575,7 +585,7 @@ def test_shutdown_during_initial_status_write_does_not_spawn_and_requeues(monkey
             await asyncio.wait_for(stopping, 3)
             assert spawned == []
             assert storage.put_ids == []
-            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl)
+            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl, attempt_id)
             await assert_interrupted_run(producer, runtime, original["id"])
         finally:
             finish_status.set()

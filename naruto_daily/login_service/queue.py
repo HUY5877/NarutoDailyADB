@@ -39,6 +39,7 @@ SAFE_DRIVER_ERRORS = {
     "daily_timeout": "已达到日常总时限（最多50分钟），任务已停止。",
     "daily_failed": "Could not complete the daily tasks.",
     "worker_stopped": "执行服务器已停止，任务执行中断，请重新申请。",
+    "admin_interrupted": "管理员已中断任务，请重新申请。",
 }
 SAFE_REJECTION_ERRORS = {
     "worker_clock_skew": "执行服务器时间与任务服务器不同步，请同步执行服务器系统时间后重新申请。",
@@ -90,6 +91,7 @@ if session.status ~= 'queued' then return 0 end
 if session.workerId ~= nil and session.workerId ~= cjson.null then return 0 end
 session.status = 'starting_emulator'
 session.workerId = ARGV[5]
+session.attemptId = ARGV[13]
 session.error = nil
 if ARGV[9] ~= '' then
     local leaseExpiry = tonumber(ARGV[10])
@@ -134,6 +136,8 @@ return 1
 
 _OWNER_GUARD = """
 if session.workerId ~= ARGV[5] then return 0 end
+-- Owner IDs span claims; the final argument fences each concrete execution.
+if session.attemptId and session.attemptId ~= ARGV[#ARGV] then return 0 end
 """
 
 _ACTIVE_GUARD = """
@@ -437,6 +441,7 @@ class RedisTaskQueue:
             return None
         lease_start_ms = int(models.time.time() * 1000)
         lease_expiry_ms = lease_start_ms + 600_000
+        attempt_id = secrets.token_hex(16)
         iso = lambda ms: datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
         claimed = await self._call('eval', _CLAIM_SCRIPT, 3, self._session_key(record), self.config.redis_queue_key,
                                    f'{self.config.redis_queue_key}:runs:{record.id}',
@@ -444,7 +449,7 @@ class RedisTaskQueue:
                                    str(lease_start_ms),
                                    iso(lease_expiry_ms) if record.login_timeout_seconds else '',
                                    str(lease_expiry_ms), iso(lease_start_ms),
-                                   '1' if self.log_publisher is not None else '0')
+                                   '1' if self.log_publisher is not None else '0', attempt_id)
         if isinstance(claimed, (list, tuple)):
             claimed, cursor = claimed
             if claimed == 1 and cursor and self.log_publisher is not None:
@@ -458,6 +463,7 @@ class RedisTaskQueue:
             record.expires_at = iso(lease_expiry_ms)
             record.expires_at_ms = lease_expiry_ms
         record.status = "starting_emulator"
+        record.attempt_id = attempt_id
         record._queue_payload = payload
         return record
 
@@ -467,7 +473,8 @@ class RedisTaskQueue:
 if type(session.userId) ~= 'string' then return '' end
 return session.userId
 """
-        value = await self._call('eval', script, 1, self._session_key(record), *self._session_args(record))
+        value = await self._call('eval', script, 1, self._session_key(record),
+                                 *self._session_args(record), record.attempt_id or '')
         return value if isinstance(value, str) and UUID_PATTERN.fullmatch(value) else ''
 
     async def pending_refresh(self, record: TaskRecord, request_id: str) -> bool:
@@ -481,11 +488,12 @@ return session.userId
     async def complete_refresh(self, record: TaskRecord, request_id: str) -> bool:
         return bool(await self._call('eval', _ACK_REFRESH_SCRIPT, 2, self._session_key(record),
                                     f'{self.config.redis_queue_key}:refresh:{record.id}',
-                                    *self._session_args(record), request_id))
+                                    *self._session_args(record), request_id, record.attempt_id or ''))
 
     async def mark_authorized(self, record: TaskRecord) -> bool:
         return bool(await self._call('eval', _AUTHORIZE_SCRIPT, 2, self._session_key(record),
-                                    f'{self.config.redis_queue_key}:refresh:{record.id}', *self._session_args(record)))
+                                    f'{self.config.redis_queue_key}:refresh:{record.id}',
+                                    *self._session_args(record), record.attempt_id or ''))
 
     async def finish_failed(self, record: TaskRecord) -> bool:
         """End an owned failed login after instance cleanup, retaining its TTL and history."""
@@ -493,7 +501,7 @@ return session.userId
         changed = await self._call(
             'eval', _FINISH_FAILED_SCRIPT, 3, self._session_key(record),
             f'{self.config.redis_queue_key}:refresh:{record.id}', self.config.redis_queue_key,
-            *self._session_args(record), code, SAFE_DRIVER_ERRORS[code],
+            *self._session_args(record), code, SAFE_DRIVER_ERRORS[code], record.attempt_id or '',
         )
         if changed:
             record.status = 'failed'
@@ -510,7 +518,7 @@ return session.userId
             safe_error = error if error in allowed_errors else SAFE_TASK_ERROR
         changed = await self._call(
             "eval", _STATUS_SCRIPT, 1, self._session_key(record),
-            *self._session_args(record), status, safe_error,
+            *self._session_args(record), status, safe_error, record.attempt_id or '',
         )
         if changed:
             record.status = status
@@ -524,7 +532,7 @@ return session.userId
             return False
         changed = await self._call(
             "eval", _REQUEUE_SCRIPT, 2, self._session_key(record), self.config.redis_queue_key,
-            *self._session_args(record), record._queue_payload,
+            *self._session_args(record), record._queue_payload, record.attempt_id or '',
         )
         if changed:
             record.status = "queued"
