@@ -89,6 +89,7 @@ ACTION_KEYS = {
     "return_to_main": {
         "type", "max_rounds", "idle_rounds", "poll_seconds",
         "pre_click_wait_seconds", "post_click_wait_seconds", "main_page_marker", "close_target",
+        "dismiss_popup",
     },
     "required_template_tap": {
         "type", "name", "template", "left", "top", "right", "bottom", "threshold",
@@ -357,6 +358,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
         optional_keys = set()
     if action_type == "handle_abundance":
         optional_keys = optional_keys | {"multimodal"}
+    if action_type == "return_to_main":
+        optional_keys = optional_keys | {"dismiss_popup"}
     if action_type == "handle_survival_challenge":
         optional_keys = optional_keys | {"sweep_prompt"}
     if action_type == "handle_free_recruit":
@@ -478,6 +481,16 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             raise ConfigError(f"{context} 的关闭按钮搜索区域必须限制在右上角")
         if close_target["threshold"] < 0.95:
             raise ConfigError(f"{context} 的关闭按钮阈值不能低于 0.95")
+        if "dismiss_popup" in action:
+            popup = action["dismiss_popup"]
+            popup_context = f"{context}.dismiss_popup"
+            if not isinstance(popup, dict):
+                raise ConfigError(f"{popup_context} 必须是弹窗处理对象")
+            _require_exact_keys(popup, {"marker", "x", "y"}, popup_context)
+            _validate_template_target(popup["marker"], width, height,
+                                      f"{popup_context}.marker", require_name=True)
+            _coordinate(popup["x"], width, f"{popup_context}.x")
+            _coordinate(popup["y"], height, f"{popup_context}.y")
         return
     elif action_type in {"required_template_tap", "main_menu_tap"}:
         if action_type == 'main_menu_tap':

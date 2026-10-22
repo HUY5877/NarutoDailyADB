@@ -16,6 +16,27 @@ from naruto_daily.common.execution import check_execution, current_execution
 LOGGER = logging.getLogger("naruto_daily")
 
 
+def _dismiss_popup(images: ImageRecognition, popup: dict, pre_click_wait: float,
+                   post_click_wait: float) -> bool:
+    """识别无关闭按钮的弹窗，复查后点击配置的空白位置。"""
+    target = popup["marker"]
+    center, score = images.find(target)
+    if center is None:
+        LOGGER.info("未发现%s，相似度 %.3f，继续原回主界面流程", target["name"], score)
+        return False
+    LOGGER.info("发现%s，相似度 %.3f，点击前等待 %.2f 秒", target["name"], score, pre_click_wait)
+    images.sleep(pre_click_wait)
+    confirmed_center, confirmed_score = images.find(target)
+    if confirmed_center is None:
+        LOGGER.info("等待后%s已消失，相似度 %.3f，取消点击空白位置", target["name"], confirmed_score)
+        return False
+    LOGGER.info("再次确认%s，相似度 %.3f，点击空白位置 (%d, %d)",
+                target["name"], confirmed_score, popup["x"], popup["y"])
+    images.client.tap(popup["x"], popup["y"])
+    images.sleep(post_click_wait)
+    return True
+
+
 def return_to_main(
     client: AdbClient,
     action: dict,
@@ -66,6 +87,12 @@ def return_to_main(
 
         center, score = matches[1]
         if center is None:
+            if "dismiss_popup" in action and _dismiss_popup(
+                images, action["dismiss_popup"], pre_click_wait, post_click_wait,
+            ):
+                click_count += 1
+                idle_count = 0
+                continue
             idle_count += 1
             LOGGER.info(
                 "回主界面第 %d 轮：未发现关闭按钮，相似度 %.3f，连续空闲 %d/%d 轮",
