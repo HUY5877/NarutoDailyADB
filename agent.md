@@ -1,298 +1,102 @@
-# NarutoDailyADB：AI 安装与配置指南
+# AI 安装指南
 
-本文件供用户 clone 项目后，让 AI 执行首次安装、配置和环境验收。可以直接对 AI 说：**“请读取根目录 agent.md，按当前电脑的实际情况安装依赖、配置雷电模拟器并完成预检。”** 文件名按本项目约定使用 `agent.md`；若 AI 工具只自动加载 `AGENTS.md`，需要显式要求它读取本文件。
+给 AI 的任务：在 Windows 上安装本项目及运行依赖，配好一个雷电实例，完成本机预检。保留已有配置、虚拟环境和其他实例；不要在安装验收时启动真实任务。
 
-按统一扫码服务入口更新于 2026-10-14。执行前复核 `README.md`、`.env.example`、`config.example.json`、`pyproject.toml` 和相关代码；发生差异时以当前实现为准。
+仓库已实现雷电实例管理、ADB 点击和截图、扫码登录、日常任务及日志。直接安装并使用现有代码，**无需另外开发“雷电操作系统”、模拟器控制器或 ADB 驱动**。
 
-本指南面向公开安装场景，只记录下文列出的配置项。参考仓库文件时，不补充公司内部服务的名称、地址或专用变量。
+## 1. 需要下载什么
 
-## 1. 执行范围与配置入口
-
-安装目标是 Windows、Python 3.11+、**雷电模拟器 9**。先检查已有安装和配置，能复用就复用。本文中的安装路径、实例索引和设备号均为示例，不能直接当成用户电脑的实际值。
-
-- 只配置用户指定的模拟器实例。保留已有 `.env`、`config.example.json`、虚拟环境、游戏数据和其他实例；不要用示例文件覆盖已有配置。直接使用根目录共享任务配置，不另建本地任务配置副本。
-- 只安装、配置和验收环境。实际运行游戏任务或启动扫码 worker，应由用户明确要求；worker 启动后会消费真实 Redis 任务。
-- 密钥写入本地 `.env` 或用户指定的 Cloudflare KV，不写入 JSON、本文、日志或 Git。缺少用户凭据时完成其余步骤，并报告具体缺项，不编造凭据或宣称配置成功。
-- 需要 BIOS/UEFI 操作、管理员交互或登录授权时，说明具体步骤交由用户完成。不要为安装模拟器擅自关闭 Hyper-V、WSL、系统安全功能或自动重启电脑。
-
-| 配置位置 | 当前用途 |
+| 内容 | 要求 |
 | --- | --- |
-| 根目录 `config.example.json` | 服务共用的屏幕尺寸、完整任务配置和资源引用；执行时由 worker 覆盖 ADB 路径和 serial |
-| 根目录 `.env` | `APP_ENV`、Cloudflare Token/account 与各环境 namespace ID、本地鱼玩 `YUWAN_API_KEY` / `YUWAN_MODEL`、雷电和 worker 的机器参数 |
-| Cloudflare KV | `hyrz`（prod）与 `hyrz-test`（test）各自保存 JEV/DeepSeek、Redis、OSS 等普通变量名配置；启动只读取选定 namespace |
-| 雷电每个实例的设置 | 安卓分辨率、DPI、ADB 调试；实例池中的每个实例都必须一致 |
+| 项目源码 | 下载完整仓库，保留 `assets/`、`config.example.json` 和 `启动扫码服务.cmd` |
+| Python | **3.11 或以上**；先检查实际版本，再创建虚拟环境 |
+| 雷电模拟器 | **雷电 9（9.x）**，从[官方历史版本页](https://www.ldmnq.com/other/version-history-and-release-notes.html)选择“9.0版本历史”，不要默认下载首页推广的其他大版本 |
+| 游戏 | 在雷电内安装官方《火影忍者》手游，完成资源下载、更新和首次引导 |
 
-本项目无需为了 Python worker 安装 Node.js，也无需安装 Android Studio。使用雷电安装目录自带的 `adb.exe`，通过完整路径调用即可，无需修改系统 `PATH`。
+维护机安装的 `dnplayer.exe` 文件版本为 **9.5.37.0**，可作参考；仓库没有锁定小版本，不能省略后面的显示和 ADB 预检。无需单独安装 Node.js、Android Studio 或另一套 ADB，使用雷电自带的 `adb.exe`。
 
-## 2. 检查和安装基础环境
-
-在 clone 后的项目根目录打开 PowerShell，先检查：
+尚未下载项目时执行；已有源码则直接进入现有项目目录：
 
 ```powershell
-Get-Location
-git status --short
+git clone https://github.com/HUY5877/NarutoDailyADB.git
+cd NarutoDailyADB
+```
+
+## 2. 安装 Python 依赖
+
+在项目根目录打开 PowerShell。启动入口优先使用 `.venv-login-service`，其次 `.venv`，安装依赖时必须选中同一个环境：
+
+```powershell
 python --version
-Get-Command python, py, git -ErrorAction SilentlyContinue
-Test-Path .\.venv\Scripts\python.exe
-Test-Path .\.venv-login-service\Scripts\python.exe
-Test-Path .\.env
-Test-Path .\config.example.json
-```
-
-确认实际 Python 版本至少为 3.11。未安装时从 Python 官方安装 Windows 版本，再用明确的 Python 可执行文件创建虚拟环境；不要仅凭存在 `python` 命令就认定版本正确。
-
-新环境使用项目根目录 `.venv`，无需激活环境，也无需调整 PowerShell 执行策略：
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[test,login-service]"
-if (-not (Test-Path .\.env)) {
-    Copy-Item .\.env.example .\.env
+$Python = @('.\.venv-login-service\Scripts\python.exe', '.\.venv\Scripts\python.exe') |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $Python) {
+    python -m venv .venv-login-service
+    $Python = '.\.venv-login-service\Scripts\python.exe'
 }
+& $Python --version
+& $Python -m pip install -e ".[login-service]"
+& $Python -m pip check
 ```
 
-已有 `.venv` 时跳过创建，检查其 Python 版本后安装依赖。`启动扫码服务.cmd` 优先使用 `.venv-login-service`，其次 `.venv`；两者同时存在时，应检查实际被选中的环境是否安装了当前依赖。下文预检示例使用 `.venv`，若服务选择已有 `.venv-login-service`，应替换成该环境的 Python 路径。
+两次版本检查均需满足 Python 3.11+。未安装 Python 时从[官网](https://www.python.org/downloads/windows/)安装，再执行。无需激活虚拟环境或修改 PowerShell 执行策略，也不要逐个手装二维码、OSS、模型或日志 SDK；项目依赖会一并安装。
 
-## 3. 安装雷电模拟器 9
+## 3. 配好雷电和游戏
 
-先通过已有快捷方式的“打开文件所在位置”或已安装程序信息确定雷电 9 的安装目录。没有安装时，从[雷电官方历史版本页面](https://www.ldmnq.com/other/version-history-and-release-notes.html)选择 **9.0 版本**下载安装。官网首页当前主推版本可能不同，不能因此把项目运行环境替换成雷电 14。
+只选一个专用实例开始。**以下配置必须对每个将来加入实例池的实例生效：**
 
-使用官方安装程序，记录实际安装目录；不要猜测安装器支持哪些静默参数。安装完成后确认同一目录内存在 `adb.exe`，以及 `ldconsole.exe` 或 `dnconsole.exe`。控制台命令参考[雷电官方命令行说明](https://help.ldmnq.com/docs/LDPlayer-ming-ling-hang-kai-fa-zhe-shi-yong-shuo-ming)。
+| 设置 | 必须采用的值 |
+| --- | --- |
+| 模拟器版本 | **雷电 9** |
+| 安卓分辨率 | **宽 1920 × 高 1080，横屏** |
+| DPI | **240** |
+| ADB 调试 | **开启本地连接** |
+| CPU 虚拟化 | 开启 Intel VT-x / AMD-V（SVM）；未开启时由用户在 BIOS/UEFI 中设置 |
 
-检查任务管理器“性能 → CPU → 虚拟化”。未启用时按[官方 VT 指南](https://help.ldmnq.com/docs/jg8S1J)由用户进入 BIOS/UEFI 开启 Intel VT-x 或 AMD-V/SVM；具体菜单依主板而定。
+在雷电实例的设置界面修改分辨率、DPI 和 ADB 开关，保存后重启该实例。改变桌面窗口大小、Windows 缩放或只改任务 JSON，都不能替代这些设置。CPU 核数、内存和 FPS 按机器资源调整，项目没有固定值要求；ROOT 无需开启。
 
-以下 PowerShell 变量仅对当前终端有效。将路径改为实际安装目录，再执行：
+找到实际雷电安装目录，确认同目录有 `adb.exe` 和 `ldconsole.exe`（或 `dnconsole.exe`）。将下面路径改成本机值：
 
 ```powershell
-$LDHome = 'C:\LDPlayer\LDPlayer9'
-$Adb = Join-Path $LDHome 'adb.exe'
+$LDHome = 'C:\LDPlayer\LDPlayer9'  # 示例，必须替换
 $Console = Join-Path $LDHome 'ldconsole.exe'
-if (-not (Test-Path -LiteralPath $Console)) {
-    $Console = Join-Path $LDHome 'dnconsole.exe'
-}
-if (-not (Test-Path -LiteralPath $Adb)) { throw '未找到雷电自带 adb.exe' }
-if (-not (Test-Path -LiteralPath $Console)) { throw '未找到雷电控制台程序' }
+if (-not (Test-Path $Console)) { $Console = Join-Path $LDHome 'dnconsole.exe' }
+$Adb = Join-Path $LDHome 'adb.exe'
 & $Console list2
 ```
 
-`list2` 每行首列是实例索引，次列是实例名称。记录目标实例的实际索引；它与 ADB serial 是不同字段。后续所有命令都应指向这个已核对的实例。
+`list2` 每行首列是实例索引，次列是名称。记录专用实例的实际索引，不能把它当作 ADB 设备号。安装游戏并完成更新、协议和首次引导后，退出已有账号，停在游戏登录页；模拟器内无需另装 QQ，手机扫码确认由用户完成。
 
-## 4. 雷电实例必须这样配置
+## 4. 本机预检
 
-**每个用于本项目的实例都必须采用 1920×1080 横屏、DPI 240。** 坐标和模板基于这一布局，不能通过只修改 JSON 的 `screen` 字段来适配其他分辨率。
-
-| 设置 | 要求 | 原因或验收方式 |
-| --- | --- | --- |
-| 安卓分辨率 | 宽 **1920**、高 **1080** | 横屏，不能填成 1080×1920；检查 `wm size` 和原始 ADB 截图 |
-| DPI | **240** | 影响按钮、文字和授权页布局；单独检查 `wm density` |
-| ADB 调试 | **开启本地连接** | Python 在同一电脑操作模拟器，无需开放远程连接 |
-| 屏幕方向 | 保持横屏 | 安卓实际画面及游戏截图必须为 1920×1080 |
-| ROOT 权限 | 本项目不要求开启 | 当前操作使用普通 ADB 截图、控件查询和输入命令 |
-| CPU / 内存 | 单实例可从 4 核、4096 MB 起步，按主机资源调整 | 属于性能建议，仓库没有强制要求；多开需考虑总资源 |
-| 帧率 | 可先保留默认值 | 仓库没有固定 FPS 要求；不要将性能建议误写成坐标匹配条件 |
-
-### 在设置界面配置
-
-1. 打开目标实例的齿轮“设置”。在性能/分辨率设置中选择自定义，填写宽 `1920`、高 `1080`、DPI `240`。不同雷电 9 小版本的菜单名称可能略有差异，以实际字段为准。
-2. 在“其他设置”中将“ADB 调试”设为“开启本地连接”，保存设置并重启**目标实例**。该入口也见[雷电官方设置说明](https://www.ldplayer.net/support/how-to-solve-locked-screen.html)；其中解决锁屏所用的 ROOT 操作不属于本项目安装要求。
-3. 启动后逐项验收。调整桌面窗口大小、最大化或 Windows 显示缩放，不能替代安卓分辨率设置。项目坐标不包含标题栏和右侧工具栏。
-
-### 通过控制台配置分辨率和 DPI
-
-目标实例应先停止，运行中的任务应先结束。先核对索引再执行；不要用 `quitall` 关闭其他实例。
+保持目标实例启动。以下命令只查询设备，不执行游戏任务：
 
 ```powershell
-$InstanceIndex = 0  # 示例：替换为 list2 中核对过的目标实例索引
-& $Console quit --index $InstanceIndex
-# 等待 list2 确认该实例已停止，再修改
-& $Console list2
-& $Console modify --index $InstanceIndex --resolution '1920,1080,240'
-& $Console launch --index $InstanceIndex
-```
-
-`--resolution` 参数依次是宽、高、DPI。这个命令不替代设置界面的 ADB 调试开关，也不应附加修改 IMEI、MAC 或其他设备身份的参数。
-
-### 启动后验收 ADB、尺寸和 DPI
-
-等模拟器完成安卓启动，按[雷电 9 官方 ADB 教程](https://help.ldmnq.com/docs/LD9adbserver)查询设备：
-
-```powershell
+$InstanceIndex = 0  # 示例，替换为 list2 核对的索引
 & $Console adb --index $InstanceIndex --command 'get-serialno'
 & $Adb devices
-$DeviceSerial = 'emulator-5554'  # 示例：填写上面核对过且状态为 device 的实际 serial
+$DeviceSerial = 'emulator-5554'  # 示例，替换为上面查到的实际设备号
 & $Adb -s $DeviceSerial shell getprop sys.boot_completed
 & $Adb -s $DeviceSerial shell wm size
 & $Adb -s $DeviceSerial shell wm density
-```
-
-验收要求：
-
-- 指定设备在 `adb devices` 中的状态为 `device`，`sys.boot_completed` 输出 `1`。
-- `wm size` 的 `Physical size` 为 `1920x1080`。若还有 `Override size`，其值也必须一致；原始截图也必须是 1920×1080。
-- `wm density` 的实际生效密度为 `240`。若存在 `Override density`，需一起核对，不能只看 `Physical density`。
-
-当前 `naruto_daily/common/adb_client.py` 的尺寸读取优先使用 `Physical size`；扫码实例管理检查 `wm size` 输出中的最后一个尺寸。**两条路径均不自动检查 DPI**，因此尺寸检查成功仍不能证明 DPI 正确。不要只通过 `adb shell wm size` 临时覆盖尺寸来绕过配置，应在雷电设置中配置并重启；已有尺寸或密度覆盖时，应在核对目标设备后处理覆盖，再重新验收。
-
-若没有设备，先核对本地 ADB 开关、保存/重启是否完成和安装路径。必要时按官方端口规则连接目标实例，连接后重新读取实际 serial：
-
-```powershell
-$AdbPort = 5555 + 2 * $InstanceIndex
-& $Adb connect "127.0.0.1:$AdbPort"
-& $Adb devices
-```
-
-不要把端口公式当成 serial，也不要假定所有机器都是 `emulator-5554`。多设备或同一实例出现多种连接标识时，要明确选择目标。重启 ADB server 会影响本机其他 ADB 会话，只在确认可以中断时执行。
-
-## 5. 安装游戏并准备登录页面
-
-在目标实例安装官方《火影忍者》手游，并完成首次资源下载、更新、协议及必要的手动引导。游戏不包含在 Git 仓库中。
-
-- 扫码 worker 支持模拟器安装 QQ 或不安装 QQ；无 QQ 时使用游戏内 QQ 网页扫码授权。手机扫码确认由用户完成，服务无需保存账号昵称。
-- 检查实际游戏包名，尤其不要凭游戏名称假定包名为 `com.tencent.naruto`。扫码实现当前默认值是 **`com.tencent.KiHan`**，以实际安装结果为准。
-
-```powershell
 & $Adb -s $DeviceSerial shell pm list packages KiHan
-# 未找到或使用其他发行版本时，再查看第三方应用并核对具体游戏
-& $Adb -s $DeviceSerial shell pm list packages -3
 ```
 
-扫码 worker 可用 `LDPLAYER_PACKAGE` 覆盖实际包名。不同发行版本的登录 UI 也需要另行验证。
+验收结果必须满足：
 
-worker 会重开游戏并导航到扫码登录页面。长期未登录账号的回归活动、额外引导等情况目前未完整兼容，应先由用户处理，不能用完整任务当作首次安装验收。
+- 设备状态为 `device`，安卓启动完成值为 `1`。
+- 实际分辨率为 **1920x1080**，实际 DPI 为 **240**；若输出含 `Override`，同时核对覆盖值。代码不会自动检查 DPI。
+- 找到游戏包。默认包名是 **`com.tencent.KiHan`**；找不到时用 `pm list packages -3` 核对实际安装结果，不要猜成 `com.tencent.naruto`。
+- Python 环境的 `pip check` 通过。保留完整共享任务配置和资源，不另建任务 JSON；服务会自动使用雷电自带 ADB 和分配实例的设备号。
 
-## 6. 核对共享日常配置
+设备未连接时，先检查 ADB 本地连接开关、保存后是否重启及安装路径。只操作目标实例，不为排障擅自关闭 Hyper-V、WSL 或其他模拟器。
 
-服务统一使用根目录 `config.example.json`，保留完整 `tasks` 和 `assets/` 引用，不复制本地任务配置。机器参数通过 `.env` 配置；worker 使用雷电控制台同目录下的 `adb.exe` 和分配实例的真实 serial，覆盖日常配置中的对应字段，无需把示例 ADB 路径替换成新机器路径。
+## 5. 安装完成后
 
-```powershell
-$ConfigPath = Join-Path (Get-Location).Path 'config.example.json'
-$TaskConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath $ConfigPath | ConvertFrom-Json
-$TaskConfig.screen
-```
+向用户报告 Python 路径、雷电版本和安装路径、实例索引、设备号、分辨率及 DPI 实测值。未通过的项目明确标为未验证；本机预检不代表云服务已经联通。
 
-`screen` 的宽、高必须为 1920、1080，实际模拟器尺寸和 DPI 仍需单独验收。调整任务时直接修改共享文件，采用 UTF-8 无 BOM，保留完整 `tasks`。资源路径相对 JSON 所在目录解析，保持根目录 JSON 与 `assets/` 的相对关系。
+配置由管理员统一提供，只需核对 `LDPLAYER_CONSOLE_PATH`、`LDPLAYER_POOL_INDICES` 与本机一致。真实运行使用 `EMULATOR_DRIVER=ldplayer`，并发从 `WORKER_CONCURRENCY=1` 开始。不要求用户自行搭建 Redis、OSS、Cloudflare 或模型服务，也不在安装过程中生成或索要一整套密钥。
 
-## 7. 配置 `.env` 和 Cloudflare KV
+拿到配置后，仅在用户要求实际运行时双击根目录 `启动扫码服务.cmd`；它会领取真实任务，扫码后自动执行。需要查服务细节时再读[扫码服务说明](naruto_daily/login_service/README.md)。
 
-### 本地 `.env`
-
-编辑根目录现有 `.env`，按 `.env.example` 填写：
-
-```dotenv
-APP_ENV=test
-CLOUDFLARE_API_TOKEN=用户提供的只读Token
-CLOUDFLARE_ACCOUNT_ID=用户的32位十六进制账户ID
-CLOUDFLARE_KV_NAMESPACE_ID_PROD=正式hyrz的32位十六进制namespaceID
-CLOUDFLARE_KV_NAMESPACE_ID_TEST=测试hyrz-test的32位十六进制namespaceID
-YUWAN_API_KEY=本机鱼玩密钥
-YUWAN_MODEL=鱼玩模型名
-```
-
-Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限。`APP_ENV` 只接受 `prod` / `test`，省略时为 `prod`。prod 优先使用 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，兼容旧 `CLOUDFLARE_KV_NAMESPACE_ID`；test 必须显式配置 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`，不能回退正式 ID。鱼玩 key/model 按原约定在本机成对填写，修改后重启，任务子进程继承父进程解析结果。这里的中文均为待填写说明，不是可运行凭据；扫码服务不要求 `LOGIN_ACCOUNT_NAME`。
-
-### Cloudflare KV
-
-以下每个普通变量名对应所选 namespace 中的一个 key，值保存为**纯文本**，不要把整段 dotenv 或 JSON 放进一个 key。正式 `hyrz` 与测试 `hyrz-test` 的 key 名相同、值分别管理，完整字段与当前隔离值见[测试环境协议](docs/test-jev-client-protocol.md#cloudflare-配置)：
-
-| KV key | 用途 |
-| --- | --- |
-| `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` | 本指南使用 DeepSeek，key 和 model 必填 |
-| `JEV_API_KEY`、`JEV_MODEL` | JEV 选择判断场景使用；模型名例如 `typesafe/jev-1.14` |
-| `REDIS_URL` | 扫码服务的任务队列与模型路由需要；地址须为 `redis://` 或 `rediss://` |
-| `REDIS_QUEUE_KEY` | 扫码队列名，必填；客户端与 worker 相同，两个环境分别配置 |
-| `MULTIMODAL_ROUTING_COUNTER_KEY` | 生成模型路由计数器，必填，两个环境分别配置 |
-| `LDPLAYER_STATE_DIR` | 本地绑定、日志和运行状态目录，必填，测试目录须独立 |
-| `OSS_REGION`、`OSS_BUCKET`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET` | 扫码 worker 必填 |
-| `OSS_STS_TOKEN` | 使用临时 OSS 凭据时填写 |
-| `OSS_KEY_PREFIX` | OSS 对象前缀，必填；客户端与 worker 相同，两个环境分别配置 |
-
-按本指南配置 DeepSeek，key 和 model 必须成对且非空。模型与图片请求兼容性按当前网关验证，不要自行添加 API 地址变量。
-
-**配置加载规则必须遵守：**
-
-1. `naruto_daily/common/environment.py` 在服务启动时读取 Cloudflare KV；读取失败则停止，不提供离线回退。实例池管理命令也会读取 KV。
-2. DeepSeek、Redis、OSS 不从本地 `.env` 回退，写入这些本地变量不能替代 KV；旧的同名进程变量也不会被保留作为兜底。
-3. 普通机器参数优先使用已有进程环境，再读本地 `.env`；KV 若包含同名机器参数，加载后会覆盖它们。建议不同机器的雷电路径和实例索引保留在各自 `.env`。
-4. 当前代码只枚举选定 namespace 的全部普通 key。必填配置缺失时停止，不读取另一 namespace。key 名需符合大写环境变量格式，值需可读取为文本；不要将 `APP_ENV`、Cloudflare 连接凭据或内部 `_NARUTO_CLOUD_CONFIG_LOADED` 标记存入 namespace。
-5. 修改配置后重启对应进程。不要在验收输出中打印 `.env` 全文、KV 值、Redis 含密码的地址或 OSS 密钥。
-
-## 8. 配置扫码服务实例池
-
-推荐先配置一个专用实例，再扩展池；先前章节中的显示和 ADB 设置必须对池内每个实例逐一完成。
-
-在根目录 `.env` 添加或更新以下机器参数，路径和索引必须采用实际结果：
-
-```dotenv
-EMULATOR_DRIVER=ldplayer
-LDPLAYER_CONSOLE_PATH='C:\LDPlayer\LDPlayer9\ldconsole.exe'
-LDPLAYER_POOL_INDICES=0
-WORKER_CONCURRENCY=1
-LDPLAYER_PACKAGE=com.tencent.KiHan
-DAILY_CONFIG_PATH=config.example.json
-```
-
-- `.env.example` 中默认没有启用真实驱动，实际默认是 `mock`；mock 二维码不能登录游戏。
-- `LDPLAYER_POOL_INDICES` 是 `list2` 的现有实例索引，用逗号分隔、不能重复；固定池支持索引 `0`，不要照搬旧复制模式的限制。示例 `0,2` 只有在这两个实例真实存在且均已配置好时才能使用。
-- 配置固定池后不需要 `LDPLAYER_TEMPLATE`，也不会复制实例。并发数建议不超过已准备实例数，实际占用不能超过池容量。
-- 每个实例预装游戏并完成资源更新，交给 worker 前退出已有账号到登录页并停止实例；不要让实例池接管正在手动游玩的实例。worker 会启动、操作并在结束后关闭它们，不删除池实例；同一个实例不能同时交给多个任务或人工操作。
-- worker 使用控制台同目录下的 `adb.exe`，并以分配实例的 serial 和 ADB 路径覆盖日常 JSON 的对应字段。
-- `DAILY_CONFIG_PATH` 使用默认值 `config.example.json`，任务改动直接维护该文件。任务 JSON 和完整 `assets/` 必须同时保留。
-- 状态目录由所选 namespace 的 `LDPLAYER_STATE_DIR` 提供，相对项目根目录解析，不自动追加后缀。通过 `启动扫码服务.cmd` 启动时，先完整加载 Cloudflare，再使用解析后的状态目录、本机实例索引和雷电控制台路径，查询 `ldconsole list2` 并覆盖该目录的绑定为全空闲槽位：`state: idle`、`taskId: null`、`serial: null`。云配置读取失败时不重置登记。测试必须使用专用模拟器实例池，目录隔离不能防止实例索引被两个 worker 共用；serial 在任务启动实例时查询。
-- 固定池的 `bindings.json` 按实例编号保存当前状态，不随历史任务数量增长。任务子 worker、领取任务和下面的 `list` 命令不执行启动重置；单独使用实例池管理器读取旧版状态时仍会自动迁移并保留正在占用任务的归属。升级前先正常停止旧服务。
-- 仓库根目录的全空闲 `bindings.json` 模板仅供可选手动初始化，正常使用启动入口无需复制；手动替换须先停止 worker、确认实例没有任务并核对实际状态目录。新电脑直接按本机配置初始化，不复制其他电脑的状态目录。
-
-```powershell
-.\.venv\Scripts\python.exe -m naruto_daily.login_service.pool_admin list
-```
-
-该命令也会加载 KV，并要求 worker 配置完整，包括 OSS。同一环境内的网站客户端与 worker 要使用相同 Redis 数据库、队列、OSS Bucket、地域和对象前缀；当前测试 Bucket 为 `huy1-hyrz-test`，正式 Bucket 保持原配置。worker 不开放 HTTP 服务，无需为了它开放本机 4320 端口。
-
-兼容的旧复制模式仅在用户明确需要时使用：留空 `LDPLAYER_POOL_INDICES`，配置 `LDPLAYER_TEMPLATE`，准备一个已安装游戏、显示配置正确、退出账号且停止的干净模板；模板索引不能是 `0`。具体生命周期见 `naruto_daily/login_service/README.md`。
-
-## 9. 环境验收和交付
-
-先验收 ADB、尺寸、DPI，再验证 Python 依赖：
-
-```powershell
-.\.venv\Scripts\python.exe -m pip check
-```
-
-按服务实际使用的规则检查共享日常 JSON，跳过保存账号登录前缀：
-
-```powershell
-.\.venv\Scripts\python.exe -c "from pathlib import Path; from naruto_daily.config import load_settings; load_settings(Path('config.example.json'), skip_account_login=True); print('任务配置检查通过')"
-```
-
-JSON 检查会读取 Cloudflare KV，不执行游戏点击或模型请求，也不连接 Redis 或 OSS，不能证明 Redis、OSS 或模型接口已联通或 DPI 正确；明确记录验收范围。
-
-可在游戏登录页保存原始截图，核对尺寸和横屏布局。使用 `pull` 传输 PNG，避免旧 PowerShell 的二进制重定向损坏图片：
-
-```powershell
-New-Item -ItemType Directory -Force .\artifacts | Out-Null
-& $Adb -s $DeviceSerial shell screencap -p /sdcard/naruto-setup.png
-& $Adb -s $DeviceSerial pull /sdcard/naruto-setup.png .\artifacts\setup-screen.png
-.\.venv\Scripts\python.exe -c "from PIL import Image; print(Image.open('artifacts/setup-screen.png').size)"
-```
-
-尺寸应为 `(1920, 1080)`。截图可能包含账号或二维码，只保留本地，不提交到 Git。
-
-仅在用户要求实际启动时，使用唯一入口 `启动扫码服务.cmd`。它运行常驻 Redis worker，生成二维码并上传 OSS，扫码后执行日常；按 `Ctrl+C` 停止。
-
-最终向用户报告实际 Python/虚拟环境路径、雷电版本与安装路径、目标实例索引、ADB serial、尺寸和 DPI 实测值、已通过的预检和仍缺少的凭据或手动步骤。没有通过的项目应标为未验证，不能用“文件已写入”替代“环境可运行”。
-
-## 10. 常见失败的排查顺序
-
-| 现象 | 先检查 |
-| --- | --- |
-| 找不到 `adb.exe` / 控制台 | `.env` 中的实际控制台路径及同目录 `adb.exe`；不要沿用示例路径 |
-| 无设备、`offline`、`unauthorized` | 实例启动状态、ADB 本地连接、保存后重启、目标 serial 和授权提示 |
-| 多个在线设备 | 核对实例池索引、任务绑定和对应 serial；worker 必须操作分配到的实例 |
-| 分辨率错误或点击偏移 | 每个实例的 1920×1080、DPI 240、方向、尺寸/密度覆盖及原始截图 |
-| 缺少 Cloudflare 凭据或 KV 读取失败 | `APP_ENV`、共用 Token/account、所选 namespace ID、Token 权限、网络及该 namespace 的 key 格式与必填配置 |
-| 没有有效模型渠道或缺少 Redis | 本地 `.env` 的 `YUWAN_API_KEY` / `YUWAN_MODEL`、KV 中的 `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` 和 `REDIS_URL` |
-| 扫码显示模拟二维码 | `EMULATOR_DRIVER` 是否实际设为 `ldplayer`；是否被进程环境或 KV 覆盖 |
-| worker 找不到游戏或池实例 | 实际包名、`list2` 索引、每个实例的安装状态和显示配置 |
-| worker 启动后没有任务 | 客户端与 worker 是否使用相同 Redis 数据库和队列；不要盲目重建实例或删除状态 |
-| 首次登录或回归弹窗导致中断 | 游戏资源更新、额外引导和登录起始页；先由用户处理未兼容页面 |
-
-维护依据：`naruto_daily/config.py`、`common/adb_client.py`、`common/environment.py`、`common/cloudflare_kv.py`、`multimodal/gateway.py`、`login_service/config.py`、`login_service/ldplayer.py`、`login_service/daily.py` 和根目录 `启动扫码服务.cmd`。
+**最后提示用户：请联系管理员获取本项目的 `.env` 配置文件，放到项目根目录。已有 `.env` 时保留原文件，密钥不输出、不提交 Git。**

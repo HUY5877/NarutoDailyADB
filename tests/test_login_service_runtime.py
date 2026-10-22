@@ -61,6 +61,110 @@ async def eventually(predicate, timeout=5):
             await asyncio.sleep(0.01)
 
 
+def test_shutdown_waits_for_all_log_producers_and_upload_despite_repeated_cancellation():
+    from types import SimpleNamespace
+
+    async def scenario():
+        runtime = LoginRuntime(ServiceConfig(), MemoryStorage())
+        sweep_waiting, allow_sweep = asyncio.Event(), asyncio.Event()
+        uploading, uploaded = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def worker():
+            await runtime._stop_event.wait()
+            calls.append("worker tail")
+
+        async def sweep():
+            await runtime._stop_event.wait()
+            sweep_waiting.set()
+            await allow_sweep.wait()
+            calls.append("sweep tail")
+
+        async def close_reporter():
+            calls.append("reporter closed")
+
+        async def close_publisher(**kwargs):
+            calls.append(("publisher close", kwargs))
+            uploading.set()
+            await uploaded.wait()
+            calls.append("uploaded")
+
+        async def close_redis():
+            calls.append("redis closed")
+
+        runtime._workers = [asyncio.create_task(worker())]
+        runtime._sweep_task = asyncio.create_task(sweep())
+        runtime._run_reporter = SimpleNamespace(close=close_reporter)
+        runtime._log_publisher = SimpleNamespace(close=close_publisher)
+        runtime._redis_queue = SimpleNamespace(close=close_redis)
+        stopping = asyncio.create_task(runtime.stop())
+        second = None
+        try:
+            await asyncio.wait_for(sweep_waiting.wait(), 1)
+            await asyncio.sleep(0)
+            assert runtime._stopping
+            assert not uploading.is_set()  # Sweep can still emit its final logs.
+            allow_sweep.set()
+            await asyncio.wait_for(uploading.wait(), 1)
+            assert calls == ["worker tail", "sweep tail", "reporter closed", ("publisher close", {})]
+            second = asyncio.create_task(runtime.stop())
+            for _ in range(2):
+                stopping.cancel()
+                await asyncio.sleep(0)
+            assert not stopping.done() and not second.done()
+            assert "redis closed" not in calls
+            uploaded.set()
+            with pytest.raises(asyncio.CancelledError):
+                await stopping
+            await second
+            assert calls[-2:] == ["uploaded", "redis closed"]
+            assert sum(isinstance(call, tuple) for call in calls) == 1
+        finally:
+            allow_sweep.set()
+            uploaded.set()
+            await asyncio.gather(stopping, *([second] if second is not None else []), return_exceptions=True)
+            await asyncio.gather(*runtime._workers, runtime._sweep_task, return_exceptions=True)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["notifier", "session", "reporter"])
+def test_shutdown_still_flushes_sls_after_auxiliary_cleanup_failure(failure):
+    from types import SimpleNamespace
+
+    async def scenario():
+        runtime = LoginRuntime(ServiceConfig(), MemoryStorage())
+        calls = []
+        error = RuntimeError("test cleanup failure")
+
+        async def close_notifier():
+            if failure == "notifier":
+                raise error
+
+        async def finish_session(record):
+            if failure == "session":
+                raise error
+
+        async def close_reporter():
+            calls.append("reporter")
+            if failure == "reporter":
+                raise error
+
+        async def close_publisher(**kwargs):
+            calls.append("uploaded")
+            assert kwargs == {}
+
+        runtime._qq_notifier = SimpleNamespace(close=close_notifier)
+        runtime._finish_failed_session = finish_session
+        runtime._pending_session_failures["test"] = object()
+        runtime._run_reporter = SimpleNamespace(close=close_reporter)
+        runtime._log_publisher = SimpleNamespace(close=close_publisher)
+        with pytest.raises(RuntimeError) as caught:
+            await runtime.stop()
+        assert caught.value is error
+        assert calls == ["reporter", "uploaded"]
+    asyncio.run(scenario())
+
+
 def test_config_defaults_and_project_relative_state(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     config = load_config(OSS_ENV)

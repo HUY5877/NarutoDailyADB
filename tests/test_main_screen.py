@@ -266,7 +266,7 @@ def test_default_configuration_migrates_every_main_entry_and_keeps_fixed_targets
             for child in value: walk(child)
     walk(settings.tasks)
     assert sorted(targets) == ['activities', 'equipment', 'equipment_submenu'] + ['rewards'] * 7
-    assert len(markers) == 16 and all(m['main_menu'] == 'home' and 'template' not in m for m in markers)
+    assert len(markers) == 17 and all(m['main_menu'] == 'home' and 'template' not in m for m in markers)
     assert settings.tasks['abundance'][2]['template'] == 'assets/abundance_label.png'
     assert any(action.get('type') == 'required_template_tap'
                and action.get('template') == 'assets/ichiraku_tab.png'

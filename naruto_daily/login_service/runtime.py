@@ -25,6 +25,7 @@ from .ldplayer import LDPlayerError, LDPlayerPoolFull
 from .models import HttpError, ISO_PATTERN, TaskRecord, UUID_PATTERN, equal_secret, parse_submission
 from .queue import MockRedisQueue, RedisQueueError, RedisTaskQueue, SAFE_DRIVER_ERRORS, SAFE_TASK_ERROR
 from .run_logs import RedisRunReporter, TERMINAL as RUN_TERMINAL_STATUSES
+from .user_options import ARENA_WEEKLY_SECONDS
 
 if TYPE_CHECKING:
     from .storage import ObjectStorage
@@ -87,10 +88,15 @@ class LoginRuntime:
         self._queue: MockRedisQueue[str] = MockRedisQueue(config.max_queue_size)
         self._redis_queue = redis_queue or (RedisTaskQueue(config) if config.redis_url else None)
         self._run_reporter = run_reporter
+        self._log_publisher = None
+        if config.sls_enabled and self._redis_queue is not None:
+            from .sls_logs import SlsLogPublisher
+            self._log_publisher = SlsLogPublisher(config)
+            self._redis_queue.log_publisher = self._log_publisher
         if self._run_reporter is None and isinstance(self._redis_queue, RedisTaskQueue):
             self._run_reporter = RedisRunReporter(
                 config, self._redis_queue, retention_seconds=config.run_log_retention_seconds,
-                stream_limit=config.run_log_max_entries,
+                log_publisher=self._log_publisher,
             )
         self._children: dict[str, subprocess.Popen[bytes]] = {}
         self._pending_deletes: set[str] = set()
@@ -100,6 +106,7 @@ class LoginRuntime:
         self._manager = None
         self._sweep_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        self._shutdown_task: asyncio.Task[None] | None = None
         self._stopping = False
         self._initialized = False
         self._next_storage_sweep_at = 0.0
@@ -129,6 +136,8 @@ class LoginRuntime:
         self._initialized = True
         if self._run_reporter is not None:
             self._run_reporter.start()
+        if self._log_publisher is not None:
+            self._log_publisher.start()
         consume = self._consume_redis if self._redis_queue is not None else self._consume
         self._workers = [asyncio.create_task(consume()) for _ in range(self.config.concurrency)]
         self._sweep_task = asyncio.create_task(self._sweep_loop())
@@ -298,6 +307,7 @@ class LoginRuntime:
         png: bytes | None = None
         action_count: int | None = None
         refresh_id: str | None = None
+        arena_started = False
         try:
             child.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
             child.stdin.close()
@@ -377,9 +387,26 @@ class LoginRuntime:
                             timeout.reschedule(asyncio.get_running_loop().time()
                                                + max(0, record.execution_deadline - time.time()))
                         self._set_daily_status(record, "running_daily")
+                    elif daily and event.get('type') == 'arena_started':
+                        if (record.user_options.get('mainTask') != 'arena_weekly'
+                                or record.daily_started_at is None or arena_started):
+                            raise ValueError('Unexpected arena battle start')
+                        deadline = event.get('executionDeadline')
+                        now = time.time()
+                        if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+                                or not now < deadline <= now + ARENA_WEEKLY_SECONDS):
+                            raise ValueError('Invalid arena battle deadline')
+                        arena_started = True
+                        record.execution_deadline = float(deadline)
+                        self._set_daily_status(record, 'running_daily')
+                        timeout.reschedule(asyncio.get_running_loop().time()
+                                           + max(0, deadline - time.time()))
+                        if self._run_reporter is not None:
+                            self._run_reporter.emit(record, message='已开始决斗场周胜战斗，执行 40 分钟后自动结束')
                     elif daily and event.get("type") == "daily_completed":
                         count = event.get("actionCount")
                         if (record.daily_started_at is None or action_count is not None
+                                or record.user_options.get('mainTask') == 'arena_weekly' and not arena_started
                                 or type(count) is not int or count < 0):
                             raise ValueError("Unexpected daily completion")
                         action_count = count
@@ -395,6 +422,14 @@ class LoginRuntime:
                 if daily:
                     self._set_daily_status(record, "completed", action_count=action_count)
                 return png
+        except TimeoutError:
+            if not arena_started or not timeout.expired() or self._stopping:
+                raise
+            # 定时周胜按正常完成结束；finally 立即杀掉执行子进程，不走失败保留现场。
+            logger.info('Task %s: 决斗场周胜战斗时限已到，结束执行子进程', record.id)
+            self._set_daily_status(record, 'completed')
+            assert png is not None
+            return png
         finally:
             self._kill(child)
             try:
@@ -417,7 +452,7 @@ class LoginRuntime:
 
     async def _relay_child_stderr(self, record: TaskRecord, stream) -> None:
         """Show full diagnostics locally without publishing them to Redis."""
-        from .log_events import model_log_secrets, sanitize_log_message
+        from .log_events import FILE_ONLY_PREFIX, model_log_secrets, sanitize_log_message
 
         known_secrets = (
             *model_log_secrets(), self.config.oss_access_key_id,
@@ -430,6 +465,9 @@ class LoginRuntime:
                 if not raw:
                     return
                 message = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+                file_only = message.startswith(FILE_ONLY_PREFIX)
+                if file_only:
+                    message = message[len(FILE_ONLY_PREFIX):]
                 level = logging.INFO
                 for prefix, candidate in (("INFO ", logging.INFO), ("WARNING ", logging.WARNING), ("ERROR ", logging.ERROR)):
                     if message.startswith(prefix):
@@ -438,7 +476,8 @@ class LoginRuntime:
                 indentation = message[:len(message) - len(message.lstrip(" \t"))].replace("\t", "    ")
                 message = sanitize_log_message(message, secrets=known_secrets, max_length=None)
                 if message:
-                    logger.log(level, "Task %s | %s%s", record.id, indentation, message)
+                    logger.log(level, "Task %s | %s%s", record.id, indentation, message,
+                               extra={'file_only': file_only})
         except (OSError, ValueError):
             # Pipe errors must not hide the worker's actual protocol outcome.
             logger.warning("Task %s: could not read child stderr", record.id)
@@ -569,6 +608,7 @@ class LoginRuntime:
             await self._qq_notifier.notify_task_finished(
                 record.id, record.username, status=status, error_code=error_code,
                 secret_realm_completed=record.secret_realm_completed_at is not None,
+                main_task=record.user_options.get('mainTask', 'daily'),
             )
             logger.info('QQ task notification sent for task %s (%s)', record.id, status,
                         extra={'backend_only': True})
@@ -1006,30 +1046,62 @@ class LoginRuntime:
                 pass
 
     async def stop(self) -> None:
-        if self._stopping:
-            return
-        self._stopping = True
-        self._stop_event.set()
-        self._queue.close()
+        """Stop producers and drain SLS before honoring caller cancellation."""
+        if self._shutdown_task is None:
+            self._stopping = True
+            self._stop_event.set()
+            self._queue.close()
+            self._shutdown_task = asyncio.create_task(self._finish_stop(), name="login-worker-shutdown")
+        cancelled = False
+        while not self._shutdown_task.done():
+            try:
+                await asyncio.shield(self._shutdown_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        self._shutdown_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _finish_stop(self) -> None:
+        errors: list[BaseException] = []
+
+        async def cleanup(operation):
+            try:
+                await operation
+            except BaseException as error:
+                if not errors:
+                    errors.append(error)
+
         for child in list(self._children.values()):
-            self._kill(child)
+            try:
+                self._kill(child)
+            except OSError as error:
+                if not errors:
+                    errors.append(error)
         await asyncio.gather(*self._workers, return_exceptions=True)
-        if self._notification_tasks:
-            # Bound shutdown even when the network or database is unavailable.
-            pending = list(self._notification_tasks)
-            await asyncio.wait(pending, timeout=25)
-            for task in pending:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-        if self._qq_notifier is not None:
-            await self._qq_notifier.close()
-        for record in list(self._pending_session_failures.values()):
-            await self._finish_failed_session(record)
-        if self._run_reporter is not None:
-            await self._run_reporter.close()
+        # An in-progress sweep can still expire a task and emit a final event.
         if self._sweep_task is not None:
-            await self._sweep_task
+            await cleanup(self._sweep_task)
+        try:
+            if self._notification_tasks:
+                # Notifications remain bounded; SLS uploads must fully drain.
+                pending = list(self._notification_tasks)
+                await asyncio.wait(pending, timeout=25)
+                for task in pending:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+            if self._qq_notifier is not None:
+                await cleanup(self._qq_notifier.close())
+            for record in list(self._pending_session_failures.values()):
+                await cleanup(self._finish_failed_session(record))
+        finally:
+            try:
+                if self._run_reporter is not None:
+                    await cleanup(self._run_reporter.close())
+            finally:
+                if self._log_publisher is not None:
+                    await cleanup(self._log_publisher.close())
         # Ready OSS images remain available to the client until their own expiry.
         to_delete = self._pending_deletes if self._redis_queue is not None else set(self._tasks) | self._pending_deletes
         await asyncio.gather(
@@ -1037,7 +1109,9 @@ class LoginRuntime:
             return_exceptions=True,
         )
         if self._redis_queue is not None:
-            await self._redis_queue.close()
+            await cleanup(self._redis_queue.close())
         self._tasks.clear()
         self._pending_deletes.clear()
         self._pending_session_failures.clear()
+        if errors:
+            raise errors[0]

@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 
 from .run_logs import SAFE_RUN_ERRORS
+from .user_options import MainTask
 
 
 _TOKEN_URL = "https://api.bot.qq.com/app/getAppAccessToken"
@@ -160,13 +161,15 @@ class QQGroupNotifier:
     async def notify_task_finished(
         self, task_id: str, user_name: str, *, status: str,
         error_code: str | None = None, secret_realm_completed: bool = False,
+        main_task: MainTask = 'daily',
     ) -> None:
         if status not in {"completed", "failed", "expired"}:
             return
 
         name = _notification_name(user_name)
         if status == "completed":
-            result = "日常任务全部搞定啦！辛苦啦～"
+            result = ("决斗场周胜任务结束啦！辛苦啦～" if main_task == 'arena_weekly'
+                      else "日常任务全部搞定啦！辛苦啦～")
         elif status == "expired":
             result = "这次任务超时啦，重新申请后再试一次吧～"
         elif error_code == "daily_timeout" and secret_realm_completed:

@@ -269,8 +269,15 @@ def main(
 
             phase = "daily"
             with redirect_stdout(sys.stderr):
-                action_count = daily_session.run_daily(deadline)
-            if clock() >= deadline:
+                if user_options.get('mainTask') == 'arena_weekly':
+                    def arena_started(battle_deadline):
+                        nonlocal deadline
+                        deadline = battle_deadline
+                        _send(output_stream, {'type': 'arena_started', 'executionDeadline': deadline})
+                    action_count = daily_session.run_daily(deadline, on_arena_started=arena_started)
+                else:
+                    action_count = daily_session.run_daily(deadline)
+            if clock() >= deadline and user_options.get('mainTask') != 'arena_weekly':
                 raise DailyDeadlineExceeded("日常任务已超过截止时间")
             if type(action_count) is not int or action_count < 0:
                 raise ValueError

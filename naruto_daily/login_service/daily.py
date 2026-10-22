@@ -18,10 +18,11 @@ from naruto_daily.common.adb_client import AdbClient, CommandResult
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import find_template_in_png
+from naruto_daily.battle import run_duel_battle
 from naruto_daily.config import ConfigError, load_settings
 from naruto_daily.runner import ActionRunner
 from naruto_daily.tasks import build_all, build_task
-from .user_options import UserOptions, parse_user_options
+from .user_options import ARENA_WEEKLY_SECONDS, UserOptions, parse_user_options
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -62,17 +63,23 @@ class DailySession:
         self._login_actions = deepcopy(self.settings.tasks["login"])
         selected_settings = self.settings
         skipped_tasks = {}
-        if not self.user_options["equipmentStamina"]:
+        weekly = self.user_options.get('mainTask') == 'arena_weekly'
+        if not weekly and not self.user_options["equipmentStamina"]:
             skipped_tasks['equipment_upgrade'] = []
             LOGGER.info("已按用户设置跳过装备栏体力刷取（扫荡、合成、装备和进阶）")
         skip_secret = self.user_options['secretRealmMode'] == 'skip'
-        if skip_secret:
+        if not weekly and skip_secret:
             # Remove the entire route, including entry, room handling and its return navigation.
             skipped_tasks.update(secret_realm=[], secret_realm_farm=[])
             LOGGER.info('已按用户设置跳过整个秘境探险线路，继续其余日常')
         if skipped_tasks:
             selected_settings = replace(self.settings, tasks={**self.settings.tasks, **skipped_tasks})
-        if task_name == "all":
+        if weekly:
+            entry = self.settings.tasks.get('arena_weekly')
+            if not entry:
+                raise ConfigError('缺少决斗场周胜 tasks.arena_weekly 入口动作，请更新配置文件')
+            actions = [*self._login_actions, *deepcopy(entry)]
+        elif task_name == "all":
             actions = build_all(selected_settings)
         elif task_name == "secret_realm_farm":
             actions = list(self._login_actions) if skip_secret else build_task(selected_settings, task_name)
@@ -213,7 +220,7 @@ class DailySession:
         self.wait_for_authorization(deadline)
         self.finish_login(deadline)
 
-    def run_daily(self, deadline: float) -> int:
+    def run_daily(self, deadline: float, *, on_arena_started=None) -> int:
         """执行所选线路的登录后动作，默认完整日常，始终使用同一设备。"""
         with execution_scope(deadline, clock=self._clock, sleep=self._sleep_impl):
             if not self._logged_in:
@@ -221,4 +228,22 @@ class DailySession:
             self._set_deadline(deadline)
             summary = self._runner().run(self._daily_actions)
             self._remaining()
+        if self.user_options.get('mainTask') != 'arena_weekly':
             return summary.action_count
+        # 登录和决斗场入口不占用周胜的 40 分钟；离开旧预算后再开始战斗预算。
+        battle_deadline = self._clock() + ARENA_WEEKLY_SECONDS
+        self._set_deadline(battle_deadline)
+        if on_arena_started is not None:
+            on_arena_started(battle_deadline)
+        LOGGER.info('开始决斗场周胜战斗，从本次模块调用起计时 40 分钟，到时结束执行进程')
+        battle = dict(timeout_seconds=ARENA_WEEKLY_SECONDS, tap_interval_seconds=0, end_targets=[])
+        try:
+            with execution_scope(battle_deadline, clock=self._clock, sleep=self._sleep_impl):
+                while True:
+                    run_duel_battle(self.client, battle, template_matcher=self._match,
+                                    asset_root=self.asset_root, sleep=self._sleep, clock=self._clock)
+        except (TimeoutError, subprocess.TimeoutExpired):
+            if self._clock() < battle_deadline:
+                raise
+        LOGGER.info('决斗场周胜已执行满 40 分钟，结束本次任务')
+        return summary.action_count

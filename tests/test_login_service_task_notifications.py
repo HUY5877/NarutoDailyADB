@@ -51,7 +51,7 @@ class Notifications:
         self.qr_messages.append((task_id, user_name, refreshed))
 
     async def notify_task_finished(self, task_id, user_name, *, status, error_code=None,
-                                   secret_realm_completed=False):
+                                   secret_realm_completed=False, main_task='daily'):
         message = (task_id, user_name, status, error_code)
         self.attempts.append(message)
         if self.wait is not None:
@@ -79,6 +79,38 @@ def enable_notifications(runtime, queue, *, names_fail=False, notify_fail=False,
 async def drain_notifications(runtime):
     if runtime._notification_tasks:
         await asyncio.wait_for(asyncio.gather(*list(runtime._notification_tasks)), 3)
+
+
+@pytest.mark.parametrize('main_task,expected', [
+    (None, '日常任务全部搞定啦！辛苦啦～'),
+    ('daily', '日常任务全部搞定啦！辛苦啦～'),
+    ('arena_weekly', '决斗场周胜任务结束啦！辛苦啦～'),
+])
+def test_completion_group_message_names_the_selected_task(monkeypatch, tmp_path, main_task, expected):
+    # Catches dropping mainTask between the finished task and the QQ payload.
+    async def scenario():
+        record = record_with_ttl()
+        if main_task is not None:
+            record.user_options['mainTask'] = main_task
+        plan = [emit(QR), emit(LOGGED_IN)]
+        if main_task == 'arena_weekly':
+            plan.append(emit({'type': 'arena_started', 'executionDeadline': time.time() + 120}))
+        plan.append(emit(COMPLETED))
+        runtime, _, queue, pool = make_runtime(tmp_path, monkeypatch, record, plan)
+        enable_notifications(runtime, queue)
+        transport = QQTransport(token_response(), {'id': 'qr-message'}, {'id': 'result-message'})
+        _, runtime._qq_notifier = make_notifier(monkeypatch, transport)
+        try:
+            await asyncio.wait_for(runtime._process_record(record), 3)
+            await drain_notifications(runtime)
+            assert record.daily_status == 'completed'
+            assert pool.closed == [record.id]
+            messages = [request_json(request)['content'] for request, _ in transport.requests[1:]]
+            assert len(messages) == 2, 'Send exactly one QR reminder and one final result'
+            assert messages[-1] == f'雪花，{expected}'
+        finally:
+            await runtime.stop()
+    asyncio.run(scenario())
 
 
 def test_completion_waits_for_successful_exit_and_instance_cleanup(monkeypatch, tmp_path):

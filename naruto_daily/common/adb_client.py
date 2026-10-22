@@ -94,6 +94,16 @@ class AdbClient:
     def tap(self, x: int, y: int) -> None:
         self._command("shell", "input", "tap", str(x), str(y))
 
+    def battle_taps(self, points):
+        """按调用方的战斗坐标创建高速通道，不支持时返回普通点击回退标记。"""
+        from .fast_duel_tap import fast_duel_taps
+
+        return fast_duel_taps(self, points)
+
+    def duel_taps(self, points):
+        """保留原决斗场调用入口。"""
+        return self.battle_taps(points)
+
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
         self._command("shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms))
 
