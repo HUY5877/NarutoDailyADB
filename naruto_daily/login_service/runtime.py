@@ -551,6 +551,8 @@ class LoginRuntime:
         # Public logs describe stages and action boundaries. Repeated screenshot,
         # similarity, polling and ADB coordinate INFO messages remain internal.
         if level == "INFO" and index is None and milestone is None:
+            if event.get("executionCheckpoint") is True and isinstance(self._run_reporter, RedisRunReporter):
+                self._run_reporter.refresh(record)
             return
         if self._run_reporter is not None:
             self._run_reporter.emit(record, message=message, level=level, timestamp=timestamp,

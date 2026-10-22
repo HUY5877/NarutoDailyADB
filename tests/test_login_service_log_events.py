@@ -98,6 +98,55 @@ def test_log_event_keeps_only_safe_fields_and_normalizes_level_and_time():
     }]
 
 
+def test_execution_checkpoint_marks_original_log_without_changing_event_count_or_diagnostics():
+    events, terminal = [], StringIO()
+    with forward_task_logs(events.append, diagnostic_stream=terminal):
+        logging.getLogger("naruto_daily").info(
+            "战斗检查，尚未结束", extra={"execution_checkpoint": True},
+        )
+
+    assert len(events) == 1
+    assert events[0]["type"] == "log"
+    assert events[0]["level"] == "INFO"
+    assert events[0]["message"] == "战斗检查，尚未结束"
+    assert events[0]["executionCheckpoint"] is True
+    assert "execution_checkpoint" not in events[0]
+    assert "actionIndex" not in events[0]
+    assert terminal.getvalue() == "INFO 战斗检查，尚未结束\n"
+
+
+@pytest.mark.parametrize("marker", [None, False, 1, "true", [], {}])
+def test_execution_checkpoint_requires_an_explicit_true_marker(marker):
+    events = []
+    record = logging.LogRecord("naruto_daily", logging.INFO, __file__, 1, "战斗检查", (), None)
+    record.execution_checkpoint = marker
+
+    ProtocolLogHandler(events.append).handle(record)
+
+    assert len(events) == 1 and events[0]["type"] == "log"
+    assert "executionCheckpoint" not in events[0]
+
+
+def test_unmarked_battle_diagnostics_do_not_create_execution_checkpoints():
+    events = []
+    with forward_task_logs(events.append):
+        logging.getLogger("naruto_daily").info("[战斗检查 第1轮] 已停止全部连点")
+
+    assert len(events) == 1 and events[0]["type"] == "log"
+    assert "executionCheckpoint" not in events[0]
+
+
+def test_backend_only_record_keeps_its_original_protocol_exclusion_with_checkpoint_marker():
+    events = []
+    record = logging.LogRecord("naruto_daily", logging.INFO, __file__, 1, "内部诊断", (), None)
+    record.backend_only = True
+    record.execution_checkpoint = True
+
+    ProtocolLogHandler(events.append).handle(record)
+
+    assert events == []
+
+
 @pytest.mark.parametrize('marker, level, expected', [
     (True, logging.INFO, True), (False, logging.INFO, False),
     (1, logging.INFO, False), ('true', logging.INFO, False),
