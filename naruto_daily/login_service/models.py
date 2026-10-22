@@ -10,7 +10,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from asyncio import Task
+    from asyncio import Event, Task
 
 from .user_options import UserOptions, parse_user_options
 from .login_types import DEFAULT_LOGIN_TYPE, parse_login_type
@@ -70,6 +70,11 @@ class TaskRecord:
     username: str | None = field(default=None, repr=False, compare=False)
     _username_lookup_task: Task[str] | None = field(default=None, repr=False, compare=False)
     _terminal_notification_scheduled: bool = field(default=False, repr=False, compare=False)
+    attempt_id: str | None = field(default=None, repr=False, compare=False)
+    _admin_interrupted: bool = field(default=False, repr=False, compare=False)
+    _interrupt_event: Event | None = field(default=None, repr=False, compare=False)
+    _processing: bool = field(default=False, repr=False, compare=False)
+    _instance_released: bool = field(default=False, repr=False, compare=False)
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {

@@ -242,7 +242,8 @@ def test_duplicate_tasks_have_one_owner_and_preserve_auth_and_ttl():
             owner = first if results[0] is claimed else second
             other = second if owner is first else first
             stored = json.loads(await client.get(key))
-            assert stored == session | {"status": "starting_emulator", "workerId": owner.owner}
+            assert stored == session | {"status": "starting_emulator", "workerId": owner.owner,
+                                        "attemptId": claimed.attempt_id}
             assert claimed._queue_payload == payload
             assert 0 < await client.pttl(key) <= before
             assert not await other.set_status(claimed, "failed")
@@ -430,7 +431,7 @@ def test_requeue_preserves_original_payload_ttl_and_session_credentials():
             before = await client.pttl(key)
             assert await queue.requeue(record)
             assert await client.lrange(config().redis_queue_key, 0, -1) == [payload]
-            assert json.loads(await client.get(key)) == session_body(body)
+            assert json.loads(await client.get(key)) == session_body(body) | {"attemptId": record.attempt_id}
             assert 0 < await client.pttl(key) <= before
             assert not await queue.requeue(record)
             reclaimed = await other.pop()

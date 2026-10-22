@@ -52,6 +52,10 @@ class _WorkerStopping(Exception):
     pass
 
 
+class _TaskInterrupted(Exception):
+    pass
+
+
 class _WorkerError(Exception):
     """A worker failure already reduced to an approved public message."""
 
@@ -84,6 +88,7 @@ class LoginRuntime:
             from .user_names import UserNameResolver
             self._user_name_resolver = UserNameResolver(config.database_url)
         self._notification_tasks: set[asyncio.Task[None]] = set()
+        self._interruption_tasks: set[asyncio.Task[None]] = set()
         self._tasks: dict[str, TaskRecord] = {}
         self._queue: MockRedisQueue[str] = MockRedisQueue(config.max_queue_size)
         self._redis_queue = redis_queue or (RedisTaskQueue(config) if config.redis_url else None)
@@ -99,6 +104,8 @@ class LoginRuntime:
                 log_publisher=self._log_publisher,
             )
         self._children: dict[str, subprocess.Popen[bytes]] = {}
+        if isinstance(self._run_reporter, RedisRunReporter):
+            self._run_reporter.on_interrupted = self._on_run_interrupted
         self._pending_deletes: set[str] = set()
         self._pending_session_failures: dict[str, TaskRecord] = {}
         self._workers: list[asyncio.Task[None]] = []
@@ -172,14 +179,45 @@ class LoginRuntime:
         except TimeoutError:
             pass
 
+    def _on_run_interrupted(self, task_id: str, attempt_id: str | None) -> None:
+        record = self._tasks.get(task_id)
+        if record is None or record.attempt_id != attempt_id:
+            return
+        first_interruption = not record._admin_interrupted
+        record._admin_interrupted = True
+        if record._interrupt_event is not None:
+            record._interrupt_event.set()
+        self._set_daily_status(record, "interrupted", error_code="admin_interrupted")
+        logger.info("Task %s: 管理员已中断任务，停止对应执行进程", task_id)
+        if first_interruption and self._run_reporter is not None:
+            self._run_reporter.emit(record, status="interrupted", error_code="admin_interrupted",
+                                    level="WARNING", message="管理员已中断任务，停止对应执行进程")
+        child = self._children.get(task_id)
+        if child is not None:
+            self._kill(child)
+        if first_interruption and record._instance_released and not record._processing:
+            # A slow final write may discover cancellation after normal cleanup.
+            # Never await this from the reporter's own publication loop.
+            cleanup = asyncio.create_task(self._finish_failed_session(record))
+            self._interruption_tasks.add(cleanup)
+            cleanup.add_done_callback(self._interruption_tasks.discard)
+
+    @staticmethod
+    def _check_interrupted(record: TaskRecord) -> None:
+        if record._admin_interrupted:
+            raise _TaskInterrupted
+
     async def _set_status(self, record: TaskRecord, status: str) -> None:
+        self._check_interrupted(record)
         warned = False
         while self._redis_queue is not None:
+            self._check_interrupted(record)
             if record.expires_at_ms <= time.time() * 1000:
                 raise _TaskExpired
             try:
                 if not await self._redis_queue.set_status(record, status, record.error):
                     raise _TaskExpired
+                self._check_interrupted(record)
                 break
             except RedisQueueError:
                 if self._stopping:
@@ -275,6 +313,7 @@ class LoginRuntime:
         self, record: TaskRecord, command: list[str], message: dict[str, object],
         *, daily: bool = False,
     ) -> bytes:
+        self._check_interrupted(record)
         # Popen plus threaded pipe reads works with both Windows event-loop policies.
         # Public job configuration enters the child; Redis is also needed for model routing.
         if daily:
@@ -314,6 +353,7 @@ class LoginRuntime:
             async with asyncio.timeout(max(0.001, record.expires_at_ms / 1000 - time.time())) as timeout:
                 while True:
                     line = await asyncio.to_thread(child.stdout.readline, 1_000_001)
+                    self._check_interrupted(record)
                     if not line:
                         break
                     if len(line) > 1_000_000:
@@ -415,6 +455,7 @@ class LoginRuntime:
                     elif daily:
                         raise ValueError("Invalid daily worker event")
                 exit_code = await asyncio.to_thread(child.wait)
+                self._check_interrupted(record)
                 if self._stopping:
                     raise _WorkerStopping
                 if exit_code != 0 or png is None or daily and action_count is None:
@@ -423,6 +464,7 @@ class LoginRuntime:
                     self._set_daily_status(record, "completed", action_count=action_count)
                 return png
         except TimeoutError:
+            self._check_interrupted(record)
             if not arena_started or not timeout.expired() or self._stopping:
                 raise
             # 定时周胜按正常完成结束；finally 立即杀掉执行子进程，不走失败保留现场。
@@ -756,10 +798,19 @@ class LoginRuntime:
             "Task %s: 执行失败，保留模拟器 %g 秒供排查，期间实例保持占用；到时自动关闭",
             record.id, hold_seconds,
         )
+        if record._interrupt_event is None:
+            record._interrupt_event = asyncio.Event()
+        waiters = [asyncio.create_task(self._stop_event.wait()),
+                   asyncio.create_task(record._interrupt_event.wait())]
         try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=hold_seconds)
-        except TimeoutError:
-            logger.info("Task %s: 失败现场保留时间已到，开始关闭模拟器", record.id)
+            done, _ = await asyncio.wait(waiters, timeout=hold_seconds,
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                logger.info("Task %s: 失败现场保留时间已到，开始关闭模拟器", record.id)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
 
     async def _release_and_requeue(self, record: TaskRecord) -> bool:
         if (record.qr_published or record.authorized_at is not None
@@ -862,6 +913,8 @@ class LoginRuntime:
 
     async def _process_record(self, record: TaskRecord) -> None:
         task_id = record.id
+        record._processing = True
+        record._interrupt_event = asyncio.Event()
         uploaded = False
         keep_ldplayer = False
         requeue_on_exit = False
@@ -869,7 +922,9 @@ class LoginRuntime:
         if self._run_reporter is not None:
             self._run_reporter.emit(record, status="starting_emulator")
         try:
+            self._check_interrupted(record)
             await self._prepare_notification_username(record)
+            self._check_interrupted(record)
             await self._set_status(record, "starting_emulator")
             if self._stopping:
                 raise _WorkerStopping
@@ -878,6 +933,7 @@ class LoginRuntime:
                 if self.config.emulator_driver == "mock"
                 else await self._run_ldplayer(record)
             )
+            self._check_interrupted(record)
             if record.qr_published:
                 # The QR was published while the child was alive. The same
                 # child has now finished its daily run; finally releases it.
@@ -901,6 +957,9 @@ class LoginRuntime:
                     await asyncio.to_thread(self._mark_ldplayer_ready, task_id)
                 except Exception:
                     logger.warning("Could not mark the LDPlayer pool slot ready for task %s", task_id)
+        except _TaskInterrupted:
+            self._set_daily_status(record, "interrupted", error_code="admin_interrupted")
+            self._pending_deletes.add(task_id)
         except asyncio.CancelledError:
             cancelled = True
             self._set_daily_status(record, "interrupted", error_code="worker_stopped")
@@ -979,22 +1038,25 @@ class LoginRuntime:
             interruption_reported = False
             requeue_on_exit = requeue_on_exit and not (
                 record.qr_published or record.authorized_at is not None
-                or record.daily_started_at is not None
+                or record.daily_started_at is not None or record._admin_interrupted
             )
+            keep_ldplayer = keep_ldplayer and not record._admin_interrupted
             if requeue_on_exit:
                 interruption_reported = await self._release_and_requeue(record)
             elif self.config.emulator_driver == "ldplayer" and not keep_ldplayer:
                 try:
-                    if (not self._stopping
+                    if (not self._stopping and not record._admin_interrupted
                             and (record.daily_status == "failed" or record.status == "failed")):
                         await self._hold_failed_ldplayer(record)
                 finally:
                     # The pool binding stays reserved throughout the hold. Also
                     # release it if the consumer is cancelled during inspection.
                     released = await self._cleanup_ldplayer(task_id)
+                    record._instance_released = released
                     if not released and (record.qr_published or record.daily_status == "interrupted"):
-                        self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
-                    elif record.qr_published and record.daily_status in {'failed', 'interrupted'}:
+                        self._set_daily_status(record, "interrupted" if record._admin_interrupted else "failed",
+                                               error_code="instance_cleanup_failed")
+                    elif (record.qr_published or record._admin_interrupted) and record.daily_status in {'failed', 'interrupted'}:
                         await self._finish_failed_session(record)
             final_status = record.daily_status
             if final_status not in RUN_TERMINAL_STATUSES:
@@ -1009,8 +1071,18 @@ class LoginRuntime:
                     level="ERROR" if final_status == "failed" else "WARNING" if final_status in {"interrupted", "expired"} else "INFO",
                     message="模拟二维码已生成" if self.config.emulator_driver == "mock" and final_status == "completed" else None,
                 )
+                delivered = True
+                if isinstance(self._run_reporter, RedisRunReporter):
+                    delivered = await self._run_reporter.flush(task_id)
+                if record._admin_interrupted:
+                    final_status = record.daily_status
+                    if record._instance_released and record.status != "failed":
+                        await self._finish_failed_session(record)
                 self._run_reporter.finish(task_id)
-            if not cancelled and not requeue_on_exit and not keep_ldplayer:
+            else:
+                delivered = True
+            record._processing = False
+            if delivered and not cancelled and not requeue_on_exit and not keep_ldplayer:
                 self._notify_task_finished(record, final_status)
 
     async def _sweep_loop(self) -> None:
@@ -1093,12 +1165,16 @@ class LoginRuntime:
                 await asyncio.gather(*pending, return_exceptions=True)
             if self._qq_notifier is not None:
                 await cleanup(self._qq_notifier.close())
-            for record in list(self._pending_session_failures.values()):
-                await cleanup(self._finish_failed_session(record))
         finally:
             try:
                 if self._run_reporter is not None:
                     await cleanup(self._run_reporter.close())
+                # Draining the reporter can discover the final interruption.
+                # Finish its newly produced cleanup before closing Redis.
+                if self._interruption_tasks:
+                    await cleanup(asyncio.gather(*list(self._interruption_tasks), return_exceptions=True))
+                for record in list(self._pending_session_failures.values()):
+                    await cleanup(self._finish_failed_session(record))
             finally:
                 if self._log_publisher is not None:
                     await cleanup(self._log_publisher.close())

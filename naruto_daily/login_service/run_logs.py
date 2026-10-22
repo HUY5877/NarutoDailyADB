@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import json
 import logging
 import time
+from typing import Callable
 
 from .models import TaskRecord
 from .queue import SAFE_DRIVER_ERRORS, SAFE_REJECTION_ERRORS
@@ -45,6 +46,7 @@ SAFE_RUN_ERRORS = {
     "protocol_error": "执行进程返回的数据异常，任务已停止，请联系管理员。",
     "instance_cleanup_failed": "任务结束后未能关闭模拟器，请联系管理员检查执行服务器。",
     "worker_stopped": "执行服务器已停止，任务执行中断。",
+    "admin_interrupted": "管理员已中断任务，请重新申请。",
 }
 
 # Retry is safe even when Redis accepted the write but its response was lost.
@@ -74,15 +76,29 @@ local requeuedStop = session and session.status == 'queued'
     and (session.workerId == nil or session.workerId == cjson.null)
     and old and old.workerId == ARGV[1] and update.status == 'interrupted'
 if session and not ownsSession and not requeuedStop then return 0 end
+-- Each successful claim authorizes exactly one execution attempt, even when
+-- the same worker reclaims the same UUID. Late writes cannot cancel its retry.
+if ownsSession and session.attemptId and session.attemptId ~= update.attemptId then return 0 end
 if (not old or old.workerId ~= ARGV[1])
     and not ownsSession then return 0 end
-if old and old.workerId == ARGV[1] and tonumber(old.sequence or 0) >= tonumber(ARGV[2]) then return 1 end
+local newAttempt = ownsSession and session.attemptId
+    and session.attemptId == update.attemptId
+    and old and old.attemptId ~= update.attemptId
+if old and old.attemptId and old.attemptId ~= update.attemptId and not newAttempt then return 0 end
+-- This check and SET run atomically. A manual interruption wins over progress
+-- and final outcomes, including retries whose sequence was already observed.
+if old and old.status == 'interrupted' and not newAttempt then
+    if update.status == 'interrupted' then return 1 end
+    return -1
+end
+if old and old.workerId == ARGV[1] and not newAttempt
+    and tonumber(old.sequence or 0) >= tonumber(ARGV[2]) then return 1 end
 -- A deleted/expired/requeued session cannot authorize late progress to reopen
 -- a stopped run. A fresh owned claim can legitimately begin another attempt.
 local activeClaim = ownsSession and (session.status == 'starting_emulator'
     or session.status == 'opening_game' or session.status == 'preparing_qr'
     or session.status == 'qr_ready')
-if old and old.workerId == ARGV[1] and not activeClaim
+if old and old.workerId == ARGV[1] and not activeClaim and not newAttempt
     and (old.status == 'completed' or old.status == 'failed'
         or old.status == 'interrupted' or old.status == 'expired')
     and update.status ~= 'completed' and update.status ~= 'failed'
@@ -114,11 +130,14 @@ class RedisRunReporter:
     """
 
     def __init__(self, config, queue, *, retention_seconds: int = 604_800,
-                 stream_limit: int = 2_000, buffer_limit: int = 256, log_publisher=None) -> None:
+                 stream_limit: int = 2_000, buffer_limit: int = 256, log_publisher=None,
+                 on_interrupted: Callable[[str, str | None], None] | None = None) -> None:
         self.config = config
         self.queue = queue
         self.log_publisher = log_publisher
         self.retention_seconds = retention_seconds
+        self.on_interrupted = on_interrupted
+        self._interrupted_attempts: dict[str, str | None] = {}
         # Legacy keyword arguments remain accepted for existing callers.
         self._states: dict[str, dict] = {}
         self._pending: dict[str, deque[_Update]] = {}
@@ -141,6 +160,8 @@ class RedisRunReporter:
         from .log_events import sanitize_log_message
 
         previous = self._states.get(record.id)
+        if previous and previous.get("attemptId") != record.attempt_id:
+            previous = None
         if previous is None and len(self._states) >= self.config.max_tasks:
             return
         now = iso_time()
@@ -175,6 +196,8 @@ class RedisRunReporter:
             state.update(actionIndex=action_index, actionTotal=action_total)
         self._sequence += 1
         state.update(updatedAt=now, workerId=self.queue.owner, sequence=self._sequence)
+        if record.attempt_id is not None:
+            state["attemptId"] = record.attempt_id
         if level not in {"INFO", "WARNING", "ERROR"}:
             level = "INFO"
         default_message = (
@@ -210,7 +233,7 @@ class RedisRunReporter:
         self._finished.add(task_id)
         self._discard_finished(task_id)
 
-    async def flush(self, task_id: str, *, timeout: float = 2) -> None:
+    async def flush(self, task_id: str, *, timeout: float = 2) -> bool:
         """Publish an attempt's final update before relinquishing its owner."""
         async def drain() -> None:
             while self._pending.get(task_id):
@@ -219,25 +242,39 @@ class RedisRunReporter:
 
         try:
             await asyncio.wait_for(drain(), timeout)
+            return True
         except TimeoutError:
             logger.warning("Task %s progress could not be sent before ownership handoff", task_id)
+            return False
 
     def _discard_finished(self, task_id: str) -> None:
         if task_id in self._finished and not self._pending.get(task_id):
             self._finished.discard(task_id)
             self._states.pop(task_id, None)
             self._pending.pop(task_id, None)
+            self._interrupted_attempts.pop(task_id, None)
 
     async def _write(self, task_id: str, update: _Update) -> None:
         prefix = self.config.redis_queue_key
         run_ttl = max(self.retention_seconds, 604_800)
         if update.snapshot["status"] not in TERMINAL:
             run_ttl += self.config.daily_timeout_seconds
-        await self.queue._call(
+        result = await self.queue._call(
             "eval", _PUBLISH, 2, f"{prefix}:runs:{task_id}",
             f"{prefix}:sessions:{task_id}", self.queue.owner, str(update.snapshot["sequence"]),
             json.dumps(update.snapshot, ensure_ascii=False), str(run_ttl),
         )
+        if result == -1:
+            attempt_id = update.snapshot.get("attemptId")
+            if (task_id not in self._interrupted_attempts
+                    or self._interrupted_attempts[task_id] != attempt_id):
+                if self.on_interrupted is not None:
+                    self.on_interrupted(task_id, attempt_id)
+                self._interrupted_attempts[task_id] = attempt_id
+            # Drop only this execution's buffered progress, never a newer claim.
+            pending = self._pending.get(task_id)
+            if pending and pending[-1].snapshot.get("attemptId") == attempt_id:
+                pending.clear()
 
     async def _publish_loop(self) -> None:
         while not self._closed:
@@ -281,4 +318,5 @@ class RedisRunReporter:
             await asyncio.gather(self._task, return_exceptions=True)
         self._states.clear()
         self._pending.clear()
+        self._interrupted_attempts.clear()
         self._finished.clear()
