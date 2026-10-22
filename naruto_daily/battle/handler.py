@@ -22,7 +22,6 @@ from naruto_daily.multimodal.prompt_jev import BATTLE_COMPLETION
 LOGGER = logging.getLogger('naruto_daily')
 # 默认连续点击30秒后检查；秘境调用时缩短为18秒。
 BATTLE_CHECK_INTERVAL_SECONDS = 30.0
-ABUNDANCE_TAP_PERIOD_SECONDS = .2
 # 1920×1080 战斗画面的按钮内点击位置；字母仅用于对应用户指定的六个区域。
 _DUEL_BUTTON_CENTERS = (
     ('秘卷', 1730, 445),   # E
@@ -220,13 +219,12 @@ def run_battle_without_first_skill(
     check_interval_seconds: float = BATTLE_CHECK_INTERVAL_SECONDS,
 ) -> BattleSummary:
     """丰饶之间使用：跳过一技能，避免退出战斗后误点超影免费扫荡。"""
-    filtered_battle = dict(battle, tap_interval_seconds=max(
-        float(battle['tap_interval_seconds']), ABUNDANCE_TAP_PERIOD_SECONDS), buttons=[
+    filtered_battle = dict(battle, buttons=[
         button for button in battle['buttons'] if button['name'] != '一技能'
     ])
     return run_battle(client, filtered_battle, template_matcher=template_matcher,
                       asset_root=asset_root, sleep=sleep, clock=clock, model=model,
-                      check_interval_seconds=check_interval_seconds, prefer_fast_taps=True)
+                      check_interval_seconds=check_interval_seconds)
 
 
 def run_duel_battle(

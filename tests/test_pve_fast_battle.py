@@ -1,8 +1,9 @@
-"""真实丰饶/秘境流程复用持续触摸通道；不连接 ADB 或模型服务。"""
+"""真实丰饶流程使用普通并发点击，秘境复用高速通道；不连接外部服务。"""
 import base64
 from copy import deepcopy
 import json
 from pathlib import Path
+from threading import Barrier, Lock, current_thread
 
 import pytest
 
@@ -32,6 +33,9 @@ class Device(AdbClient):
         self.settle_after_name = settle_after_name
         self.failure = failure
         self.frames, self.taps, self.batches, self.processes = {}, [], [], []
+        self.ordinary_batches, self.ordinary_threads, self.waits = [], [], []
+        self.active_taps, self.input_lock = set(), Lock()
+        self.ordinary_barrier = Barrier(3, action=self._finish_ordinary_batch, timeout=3)
         self.model_checks, self.realm_checks, self.paused_batches = [], [], None
         payload = json.loads((ROOT / 'config.example.json').read_text(encoding='utf-8'))
         task = 'abundance' if kind == 'abundance' else 'secret_realm'
@@ -40,6 +44,14 @@ class Device(AdbClient):
         self.action.update(load_wait_seconds=0, pre_click_wait_seconds=0,
                            post_click_wait_seconds=0, poll_seconds=.1)
         self.action['multimodal'] = {'timeout_seconds': 30, 'max_calls': 6}
+
+    def _finish_ordinary_batch(self):
+        self.ordinary_batches.append((self.clock(), tuple(self.taps[-3:])))
+        self.clock.advance(.125)  # 短于0.2秒，能发现残留的丰饶强制限速。
+
+    def sleep(self, seconds):
+        self.waits.append((self.clock(), seconds))
+        self.clock.advance(seconds)
 
     def _command(self, *arguments, **kwargs):
         if arguments[:3] == ('shell', 'getevent', '-lp'):
@@ -52,12 +64,31 @@ class Device(AdbClient):
         return CommandResult(0, '', '')
 
     def screenshot(self):
+        assert not self.active_taps, '截图前必须等待本批全部普通点击结束'
         png = f'{self.state}:{len(self.frames)}'.encode()
         self.frames[png] = self.state
         return png
 
     def tap(self, x, y):
         point = (x, y)
+        if self.kind == 'abundance' and point in {
+            (button['x'], button['y']) for button in self.action['battle']['buttons']
+        }:
+            assert self.state == 'battle' and self.model_checks
+            assert point != (1500, 960), '丰饶不能点击一技能'
+            thread = current_thread().name
+            with self.input_lock:
+                self.taps.append(point)
+                self.ordinary_threads.append(thread)
+                self.active_taps.add(thread)
+            try:
+                if self.failure == 'tap':
+                    raise AdbError('普通战斗点击失败')
+                self.ordinary_barrier.wait()
+            finally:
+                with self.input_lock:
+                    self.active_taps.remove(thread)
+            return
         self.taps.append(point)
         transitions = {
             CHALLENGE: ('challenge', 'battle'), DEPLOY: ('room', self.after_deploy),
@@ -95,16 +126,19 @@ class Device(AdbClient):
             return {'page': 'battle', 'realm_name': self.realm}
         assert prompt == BATTLE_COMPLETION
         self.model_checks.append(self.clock())
-        if len(self.model_checks) > 1:
+        inputs = self.ordinary_batches if self.kind == 'abundance' else self.batches
+        if self.kind == 'abundance':
+            assert not self.processes and not self.batches
+        elif len(self.model_checks) > 1:
             assert len(self.processes) == 1 and self.processes[0].poll() is None
             assert b'STOP\n' not in self.processes[0].lines, '暂停检查时应保留同一个连接'
         if len(self.model_checks) == 2:
             if self.failure == 'observation':
                 raise RuntimeError('结算观察失败')
-            self.paused_batches = len(self.batches)
+            self.paused_batches = len(inputs)
             return {'finished': False, 'page': 'unknown', 'reason': '暂未确认，暂停输入'}
         if len(self.model_checks) == 3:
-            assert len(self.batches) == self.paused_batches, '观察期间不能继续发送触摸'
+            assert len(inputs) == self.paused_batches, '观察期间不能继续发送战斗输入'
         finished = len(self.model_checks) == 4
         if finished:
             self.state = 'completed' if self.kind == 'abundance' else 'room'
@@ -134,6 +168,11 @@ def execute(monkeypatch, device):
         return real_channel(*args, **kwargs, popen=launch, clock=device.clock)
 
     monkeypatch.setattr(fast, 'DuelTapChannel', channel)
+    if device.kind == 'abundance':
+        def forbid_fast_taps(*args, **kwargs):
+            pytest.fail('丰饶必须保持普通三线程点击，不能打开高速通道')
+        monkeypatch.setattr(device, 'battle_taps', forbid_fast_taps)
+        monkeypatch.setattr(device, 'duel_taps', forbid_fast_taps)
     module = abundance if device.kind == 'abundance' else secret
     monkeypatch.setattr(module, 'MultimodalClient', lambda *a, **kw: device)
     battle_name = 'run_battle_without_first_skill' if device.kind == 'abundance' else 'run_battle'
@@ -144,35 +183,56 @@ def execute(monkeypatch, device):
 
     monkeypatch.setattr(module, battle_name, enter_battle)
     run = module.handle_abundance if device.kind == 'abundance' else module.handle_secret_realm
-    with execution_scope(200, clock=device.clock, sleep=device.clock.advance):
+    with execution_scope(200, clock=device.clock, sleep=device.sleep):
         return run(device, device.action, template_matcher=device.matcher,
-                   asset_root=ROOT, sleep=device.clock.advance)
+                   asset_root=ROOT, sleep=device.sleep)
 
 
-@pytest.mark.parametrize('kind,period,count', [('abundance', 30, 3), ('secret', 18, 4)])
-def test_real_pve_handlers_keep_one_touch_connection_across_result_check_pauses(monkeypatch, kind, period, count):
-    device = Device(kind)
+def test_real_abundance_uses_three_ordinary_threads_without_rate_floor_or_fast_connection(monkeypatch):
+    device = Device('abundance')
     original = deepcopy(device.action)
 
     summary = execute(monkeypatch, device)
 
-    assert device.model_checks == pytest.approx([0, period, period + 1, 2 * period + 1])
+    expected = {(button['x'], button['y']) for button in device.action['battle']['buttons']
+                if button['name'] != '一技能'}
+    assert len(expected) == 3
+    assert device.model_checks == pytest.approx([0, 30, 31, 61])
+    assert len(device.ordinary_batches) == 480
+    assert all(set(points) == expected for _, points in device.ordinary_batches)
+    assert len(set(device.ordinary_threads)) == 3
+    assert all(name.startswith('battle-tap') for name in device.ordinary_threads)
+    assert [at for at, _ in device.ordinary_batches] == pytest.approx(
+        [index * .125 for index in range(240)]
+        + [31 + index * .125 for index in range(240)])
+    assert [(at, seconds) for at, seconds in device.waits if seconds > 0] == [(30, 1)]
+    assert device.taps[0] == CHALLENGE
+    assert set(device.taps[1:]) == expected
+    assert summary.taps == len(device.taps) - 1 == 1440
+    assert device.processes == device.batches == []
+    assert not device.active_taps
+    assert device.action == original
+
+
+def test_real_secret_handler_keeps_one_touch_connection_across_result_check_pauses(monkeypatch):
+    device = Device('secret')
+    original = deepcopy(device.action)
+
+    summary = execute(monkeypatch, device)
+
+    assert device.model_checks == pytest.approx([0, 18, 19, 37])
     assert len(device.processes) == 1
     assert device.processes[0].lines[-1] == b'STOP\n'
     assert device.processes[0].poll() == 0 and not device.processes[0].killed
-    expected = [(button['x'], button['y']) for button in device.action['battle']['buttons']
-                if kind == 'secret' or button['name'] != '一技能']
-    assert len(expected) == count and len(device.batches) == 2 * period
+    expected = [(button['x'], button['y']) for button in device.action['battle']['buttons']]
+    assert len(expected) == 4 and len(device.batches) == 36
     for _, packet in device.batches:
         down, up = [events(base64.b64decode(part)) for part in packet.split()]
         assert list(zip([v for t, c, v in down if (t, c) == (3, 53)],
                         [v for t, c, v in down if (t, c) == (3, 54)])) == expected
-        assert [v for t, c, v in up if (t, c) == (3, 57)] == [-1] * count
-    assert device.taps == [CHALLENGE if kind == 'abundance' else DEPLOY]
-    if kind == 'abundance':
-        assert summary.taps == len(device.batches) * count
-    else:
-        assert summary == 1
+        assert [v for t, c, v in up if (t, c) == (3, 57)] == [-1] * 4
+    assert device.taps == [DEPLOY]
+    assert summary == 1
     assert device.action == original
 
 
@@ -190,10 +250,9 @@ def test_real_secret_entry_or_local_result_never_opens_touch_transport(monkeypat
                            else [DEPLOY, RESULT_RETURN])
 
 
-@pytest.mark.parametrize('kind', ['abundance', 'secret'])
 @pytest.mark.parametrize('failure', ['packet', 'observation'])
-def test_pve_input_or_observation_failure_closes_channel_without_individual_tap_fallback(monkeypatch, kind, failure):
-    device = Device(kind, failure=failure)
+def test_secret_input_or_observation_failure_closes_channel_without_individual_tap_fallback(monkeypatch, failure):
+    device = Device('secret', failure=failure)
 
     with pytest.raises(AdbError if failure == 'packet' else RuntimeError,
                        match='高速战斗点击通道异常' if failure == 'packet' else '结算观察失败'):
@@ -201,5 +260,29 @@ def test_pve_input_or_observation_failure_closes_channel_without_individual_tap_
 
     assert len(device.processes) == 1 and device.processes[0].lines[-1] == b'STOP\n'
     assert device.processes[0].poll() == 0
-    assert len(device.batches) == (1 if failure == 'packet' else 30 if kind == 'abundance' else 18)
-    assert device.taps == [CHALLENGE if kind == 'abundance' else DEPLOY]
+    assert len(device.batches) == (1 if failure == 'packet' else 18)
+    assert device.taps == [DEPLOY]
+
+
+@pytest.mark.parametrize('failure', ['tap', 'observation'])
+def test_abundance_ordinary_input_or_observation_failure_stops_without_fast_fallback(monkeypatch, failure):
+    device = Device('abundance', failure=failure)
+
+    with pytest.raises(AdbError if failure == 'tap' else RuntimeError,
+                       match='普通战斗点击失败' if failure == 'tap' else '结算观察失败'):
+        execute(monkeypatch, device)
+
+    expected = {(button['x'], button['y']) for button in device.action['battle']['buttons']
+                if button['name'] != '一技能'}
+    assert device.taps[0] == CHALLENGE
+    assert set(device.taps[1:]) <= expected
+    if failure == 'tap':
+        assert 1 <= len(device.taps[1:]) <= 3
+        assert device.ordinary_batches == []
+        assert device.model_checks == [0]
+    else:
+        assert len(device.ordinary_batches) == 240
+        assert len(device.taps[1:]) == 720
+        assert device.model_checks == [0, 30]
+    assert device.processes == device.batches == []
+    assert not device.active_taps
