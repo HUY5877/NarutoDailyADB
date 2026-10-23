@@ -286,7 +286,7 @@ def _confirm_reward_page(images, deadline):
 
 def required_template_tap(client, action, *, template_matcher=find_template_in_png,
                           asset_root=Path("."), sleep=time.sleep):
-    """等待、复查并点击必需按钮；主界面目标通过 ImageRecognition 使用模型。"""
+    """等待、复查并点击必需按钮；奖励入口可复用本次任务已确认的坐标。"""
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     is_main = 'main_menu' in action
     if is_main and current_execution() is None:
@@ -306,7 +306,7 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
         center, score = images.find(action, deadline=deadline)
         if center is not None:
             if is_main:
-                LOGGER.info('模型已确认%s，点击前等待 %.2f 秒', action['name'], pre_click_wait_seconds)
+                LOGGER.info('已确认%s，点击前等待 %.2f 秒', action['name'], pre_click_wait_seconds)
             else:
                 LOGGER.info("发现%s，相似度 %.3f，点击前等待 %.2f 秒",
                             action["name"], score, pre_click_wait_seconds)
@@ -318,7 +318,7 @@ def required_template_tap(client, action, *, template_matcher=find_template_in_p
                 LOGGER.info('等待后未确认%s，本轮不点击旧坐标', action['name'])
             else:
                 if is_main:
-                    LOGGER.info('模型复查确认%s，点击坐标 %s', action['name'], confirmed_center)
+                    LOGGER.info('点击前已确认%s，点击坐标 %s', action['name'], confirmed_center)
                 else:
                     LOGGER.info("再次确认%s，相似度 %.3f，点击坐标 (%d, %d)",
                                 action["name"], confirmed_score, confirmed_center[0], confirmed_center[1])

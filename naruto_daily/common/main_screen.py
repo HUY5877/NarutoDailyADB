@@ -19,6 +19,7 @@ from naruto_daily.multimodal.prompt_jev import main_screen_prompt
 from naruto_daily.multimodal.diagnostics import is_model_api_failure, model_request_context
 
 LOGGER = logging.getLogger('naruto_daily')
+REWARD_CONFIRMATION_THRESHOLD = .5
 
 
 def button_regions(target):
@@ -150,13 +151,14 @@ class MainScreenRecognition:
                     score = -1.0
                     for template in ('main_reward_label.png', 'main_reward_label_red_dot.png'):
                         _, template_score = find_template_in_png(
-                            png, self.asset_root / 'assets' / template, roi, .9)
+                            png, self.asset_root / 'assets' / template, roi, REWARD_CONFIRMATION_THRESHOLD)
                         score = max(score, template_score)
-                        if score >= .9:
+                        if score > REWARD_CONFIRMATION_THRESHOLD:
                             break
-                    LOGGER.info('奖励候选 %d 同帧文字复核：相似度 %.3f，阈值 0.900，%s',
-                                candidate, score, '通过' if score >= .9 else '未通过，未点击')
-                    if score < .9:
+                    LOGGER.info('奖励候选 %d 同帧文字复核：相似度 %.3f，要求大于 %.3f，%s',
+                                candidate, score, REWARD_CONFIRMATION_THRESHOLD,
+                                '通过' if score > REWARD_CONFIRMATION_THRESHOLD else '未通过，未点击')
+                    if score <= REWARD_CONFIRMATION_THRESHOLD:
                         center = None
                 if center is None:
                     save_rejected_reward(self.asset_root, png, preview, prompt, result, roi, score, width, height)

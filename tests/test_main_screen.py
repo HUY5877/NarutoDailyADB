@@ -164,7 +164,9 @@ def test_last_search_call_can_still_confirm_and_click(monkeypatch, menu, page, m
     client = SimpleNamespace(screenshot=screenshot, tap=lambda *xy: taps.append(xy))
     required_template_tap(client, config, sleep=lambda _: None)
     expected = (282, 835) if menu == 'equipment_submenu' else (1845, 537)
-    assert taps == [expected] and len(calls) == max_calls + confirm_misses + 1
+    # 奖励首次确认后复用坐标，装备菜单仍须模型复查最新位置。
+    expected_calls = max_calls if menu == 'rewards' else max_calls + confirm_misses + 1
+    assert taps == [expected] and len(calls) == expected_calls
 
 
 def test_confirmation_budget_survives_repeated_search_rounds(monkeypatch):

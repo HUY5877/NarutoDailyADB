@@ -42,7 +42,7 @@ def test_other_candidate_is_rejected_even_when_reward_exists_in_same_frame(monke
     recognizer = main_screen.MainScreenRecognition(MODEL, ROOT)
     with caplog.at_level('INFO', logger='naruto_daily'):
         center, score = recognizer.match(fixture_png(), TARGET)
-    assert center is None and score < .9
+    assert center is None and score <= .5
     assert f'候选 {candidate}' in caplog.text and '相似度' in caplog.text
 
 
@@ -50,7 +50,30 @@ def test_other_candidate_is_rejected_even_when_reward_exists_in_same_frame(monke
 def test_reward_variants_keep_model_selected_center(monkeypatch, fixture):
     fake_model(monkeypatch, lambda *args, **kwargs: answer(7))
     center, score = main_screen.MainScreenRecognition(MODEL, str(ROOT)).match(fixture_png(fixture), TARGET)
-    assert center == (1845, 537) and score >= .9
+    assert center == (1845, 537) and score > .5
+
+
+def test_city_reward_below_old_threshold_keeps_model_selected_center(monkeypatch):
+    fake_model(monkeypatch, lambda *args, **kwargs: answer(7))
+    center, score = main_screen.MainScreenRecognition(MODEL, ROOT).match(
+        fixture_png('main_rewards_city_hud.png'), TARGET)
+    assert center == (1845, 537)
+    assert .5 < score < .9
+
+
+@pytest.mark.parametrize('scores,expected_center', [
+    ((.49, .5), None),
+    ((.5, .49), None),
+    ((.5001, .49), (1845, 537)),
+    ((.5, .5001), (1845, 537)),
+])
+def test_reward_confirmation_requires_score_strictly_above_half(monkeypatch, scores, expected_center):
+    fake_model(monkeypatch, lambda *args, **kwargs: answer(7))
+    values = iter(scores)
+    monkeypatch.setattr(main_screen, 'find_template_in_png',
+                        lambda *args: (None, next(values)))
+    center, _ = main_screen.MainScreenRecognition(MODEL, ROOT).match(fixture_png(), TARGET)
+    assert center == expected_center
 
 
 @pytest.mark.parametrize('size', [(960, 540), (1920, 700)])
@@ -61,13 +84,12 @@ def test_reward_guard_rejects_unsupported_frame_size(monkeypatch, size):
     assert main_screen.MainScreenRecognition(MODEL, ROOT).match(resized, TARGET)[0] is None
 
 
-@pytest.mark.parametrize('first_candidate', [6, 7])
-def test_mall_selected_repeatedly_or_on_confirmation_never_taps(monkeypatch, first_candidate):
+def test_mall_selected_repeatedly_never_taps(monkeypatch):
     calls, taps = [], []
 
     def complete(*args, **kwargs):
         calls.append(1)
-        return answer(first_candidate if len(calls) == 1 else 6)
+        return answer(6)
 
     fake_model(monkeypatch, complete)
     client = SimpleNamespace(screenshot=fixture_png, tap=lambda *xy: taps.append(xy))

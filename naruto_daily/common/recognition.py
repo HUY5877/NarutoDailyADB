@@ -6,8 +6,9 @@ import time
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from naruto_daily.common.visual import VisualError, find_template_in_png
-from naruto_daily.common.execution import current_execution, retry_observation, stage_timeout
+from naruto_daily.common.visual import VisualError, _decode_png, find_template_in_png
+from naruto_daily.common.execution import check_execution, current_execution, retry_observation, stage_timeout
+from naruto_daily.common.reward_button_cache import RewardButtonCache, current_reward_button_cache
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -27,6 +28,7 @@ class ImageRecognition:
         self._execution_started_remaining = self._execution.remaining() if self._execution is not None else None
         self._use_wall_clock = False
         self._main_models = {}
+        self._reward_button_cache = RewardButtonCache()
         self._checking = 0
         # 同一动作内累计两阶段的次数，切换阶段或进入下一轮都不清零。
         self.main_calls = {'查找': 0, '点击前复查': 0}
@@ -56,25 +58,52 @@ class ImageRecognition:
             from .main_screen import MainScreenRecognition
             self._use_wall_clock = True
             phase = self.main_call_phase
-            if self.main_call_limit is not None and self.main_calls[phase] >= self.main_call_limit:
-                raise VisualError(f"{target['name']}的{phase}已达到模型调用上限，未继续点击")
-            key = tuple(sorted(target['multimodal'].items()))
-            if key not in self._main_models:
-                self._main_models[key] = MainScreenRecognition(target['multimodal'], self.asset_root)
+            is_reward = target['main_menu'] == 'rewards'
+            deadline = (time.monotonic() + float(timeout_seconds)
+                        if is_reward and current_execution() is None and timeout_seconds is not None else None)
             first_frame = True
+            model_called = False
+
+            def check_reward_budget():
+                check_execution()
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise VisualError('奖励入口识别超时，未继续使用坐标')
 
             def observe():
-                nonlocal first_frame
+                nonlocal first_frame, model_called
+                if is_reward:
+                    check_reward_budget()
                 png = screenshot if first_frame else self.client.screenshot()
                 first_frame = False
-                return self._main_models[key].match(
+                if is_reward:
+                    frame = _decode_png(png)
+                    size = frame.shape[1], frame.shape[0]
+                    cache = current_reward_button_cache(self.client) or self._reward_button_cache
+                    cached = cache.get(size)
+                    check_reward_budget()
+                    if cached is not None:
+                        LOGGER.info('复用本次任务奖励入口坐标：(%d, %d)', *cached[0])
+                        return cached
+                if self.main_call_limit is not None and self.main_calls[phase] >= self.main_call_limit:
+                    raise VisualError(f"{target['name']}的{phase}已达到模型调用上限，未继续点击")
+                key = tuple(sorted(target['multimodal'].items()))
+                if key not in self._main_models:
+                    self._main_models[key] = MainScreenRecognition(target['multimodal'], self.asset_root)
+                result = self._main_models[key].match(
                     png, target, stage_timeout(timeout_seconds) if self._execution is not None else timeout_seconds,
                 )
+                if is_reward:
+                    check_reward_budget()
+                    if result[0] is not None:
+                        cache.remember(size, result)
+                model_called = True
+                return result
 
             # check/either 必须整组重拍，避免前后目标分别使用新旧两帧。
             result = observe() if self._checking else retry_observation(observe, name=target['name'])
-            self.main_calls[phase] += 1
-            if self.main_call_limit is not None:
+            if model_called:
+                self.main_calls[phase] += 1
+            if model_called and self.main_call_limit is not None:
                 LOGGER.info('%s：%s模型调用 %d/%d', target['name'], phase,
                             self.main_calls[phase], self.main_call_limit)
             return result
