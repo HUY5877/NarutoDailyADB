@@ -11,17 +11,21 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from naruto_daily.common.execution import check_execution, stage_timeout
+from naruto_daily.common.execution import MODEL_REQUEST_TIMEOUT_SECONDS, check_execution, stage_timeout
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import (
-    TemplateConfigurationError, VisualError, _decode_png, _load_template,
+    NonRetryableVisualError, TemplateConfigurationError, VisualError, _decode_png, _load_template,
     find_template_in_png,
 )
+from naruto_daily.multimodal.client import MultimodalClient
+from naruto_daily.multimodal.diagnostics import model_request_context
+from naruto_daily.multimodal.prompt_jev import SQUAD_AUTO_BATTLE
+from naruto_daily.multimodal.transport import MultimodalError, MultimodalRequestError
 
 
 LOGGER = logging.getLogger("naruto_daily")
 READY_BRIGHTNESS_RATIO = 0.8
-# 自动按钮左上侧，避开准备页的声望奖励卡片。
+# 1920×1080 战斗页自动按钮左上侧；只能在确认战斗后使用。
 AUTO_BATTLE_POINT = (45, 330)
 AUTO_BATTLE_MARKER = dict(
     name="自动战斗中", template="assets/squad_assault_auto_battle.png",
@@ -38,6 +42,21 @@ class SquadAssaultSummary:
     matches: int
     continues: int
     quadruple_disabled: bool
+
+
+def _auto_button_unchanged(before: bytes, after: bytes) -> bool:
+    """模型等待期间可能切页，只核对固定“自动”文字区，避开战斗动画。"""
+    observed, fresh = _decode_png(before), _decode_png(after)
+    if observed.shape[:2] != (1080, 1920) or fresh.shape[:2] != (1080, 1920):
+        return False
+    patches = [cv2.cvtColor(frame[390:425, 35:105], cv2.COLOR_BGR2GRAY)
+               for frame in (observed, fresh)]
+    if any(float(patch.std()) < 20 for patch in patches):
+        return False
+    score = float(cv2.matchTemplate(patches[1], patches[0], cv2.TM_CCOEFF_NORMED)[0, 0])
+    difference = float(cv2.absdiff(*patches).mean())
+    # 相关系数无法排除弹窗的变暗遮罩，还要核对绝对亮度差。
+    return score >= .9 and difference <= 15
 
 
 def _ready_state(images, png: bytes, target: dict, templates: dict) -> str:
@@ -79,6 +98,7 @@ def _ready_state(images, png: bytes, target: dict, templates: dict) -> str:
 def handle_squad_assault(
     client, action: dict, *, template_matcher: Callable = find_template_in_png,
     asset_root: Path = Path("."), sleep: Callable[[float], None] = time.sleep,
+    model: MultimodalClient | None = None,
 ) -> SquadAssaultSummary:
     """首次必匹配一次；明确离开并回到准备页后才检查收益上限。"""
     for key in TARGET_KEYS:
@@ -123,6 +143,49 @@ def handle_squad_assault(
         client.tap(*center)
         remaining()
 
+    def enable_auto_if_battle(png):
+        nonlocal model
+        try:
+            if model is None:
+                model = MultimodalClient({'timeout_seconds': MODEL_REQUEST_TIMEOUT_SECONDS},
+                                         asset_root=asset_root)
+            with model_request_context('小队突袭自动战斗前检查'):
+                result = model.complete_json(
+                    png, SQUAD_AUTO_BATTLE,
+                    timeout_seconds=min(remaining(), MODEL_REQUEST_TIMEOUT_SECONDS),
+                )
+        except MultimodalError as exc:
+            # 配置或不可重试请求错误继续交给上层；网络及解析失败下一轮重截，绝不点击。
+            if isinstance(exc, NonRetryableVisualError) or (
+                isinstance(exc, MultimodalRequestError) and not exc.retryable
+            ):
+                raise
+            remaining()
+            LOGGER.warning('小队突袭 JEV 战斗判断失败（%s），本轮不点击自动，等待重新截图',
+                           type(exc).__name__)
+            return
+        remaining()
+        if not (isinstance(result, dict) and result.get('page') == 'battle'
+                and result.get('can_enable_auto') is True):
+            LOGGER.info('小队突袭 JEV 未确认仍在战斗且可以开启自动，本轮不点击')
+            return
+        fresh = client.screenshot()
+        remaining()
+        if not _auto_button_unchanged(png, fresh):
+            LOGGER.info('小队突袭 JEV 返回后自动按钮区域已变化，本轮不点击，等待重新识别')
+            return
+        blocked = any(match(fresh, key) is not None for key in (
+            'ready_marker', 'dialog_marker', 'continue_button', 'match_button',
+            'quadruple_checked', 'quadruple_unchecked',
+        ))
+        auto_center, _ = images.match(fresh, AUTO_BATTLE_MARKER)
+        remaining()
+        if blocked or auto_center is not None:
+            LOGGER.info('小队突袭点击前已出现准备页、提示或自动战斗中，本轮不点击自动')
+            return
+        LOGGER.info('小队突袭 JEV 确认仍在战斗且自动按钮未变化，点击左侧自动按钮一次')
+        tap(AUTO_BATTLE_POINT)
+
     while True:
         remaining()
         png = client.screenshot()
@@ -155,8 +218,7 @@ def handle_squad_assault(
                     auto_center, _ = images.match(png, AUTO_BATTLE_MARKER)
                     remaining()
                     if auto_center is None:
-                        LOGGER.info("小队突袭未检测到“自动战斗中”文案，点击左侧自动按钮一次")
-                        tap(AUTO_BATTLE_POINT)
+                        enable_auto_if_battle(png)
                     else:
                         LOGGER.info("小队突袭已检测到“自动战斗中”文案，无需点击自动按钮")
                 else:
