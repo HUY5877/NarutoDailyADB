@@ -24,11 +24,11 @@
 **Files:** NarutoLoginClient/src/server/qq-authorizations.ts、qq-authorization-data.ts、app.ts、config.ts；tests/qq-authorizations.test.ts；docs/qq-authorizations-test.md。
 **Interfaces:** POST /api/qq-authorizations/resolve 接受且只接受 {access_token:string}，返回 {item,authorization}；401未登录、400无效输入、404不属于本人/不存在、410过期、409重复匹配。与现有下载返回结构一致。
 
-- [ ] 先补服务与HTTP测试：无密钥明文写入、token精确匹配与归属限制、过期及重复匹配。
-- [ ] 运行专项测试，确认旧实现不满足新增行为。
-- [ ] 实现明文记录与迁移；新指纹使用 owner/app/openid 的 SHA256，迁移校验旧AAD/HMAC与时间后转为新指纹。
-- [ ] 用真实 PostgreSQL 兼容的本地测试验证迁移原子性、过期记录和重复初始化；保留原始时间。
-- [ ] 运行 npm test、npm run typecheck、npm run build，更新文档并提交。
+- [x] 先补服务与HTTP测试：无密钥明文写入、token精确匹配与归属限制、过期及重复匹配。
+- [x] 运行专项测试，确认旧实现不满足新增行为。
+- [x] 实现明文记录与迁移；新指纹使用 owner/app/openid 的 SHA256，迁移校验旧AAD/HMAC与时间后转为新指纹。
+- [x] 用真实 PostgreSQL 兼容的本地测试验证迁移原子性、过期记录和重复初始化；保留原始时间。
+- [x] 运行 npm test、npm run typecheck、npm run build，更新文档并提交。
 
 ### Task 2: 安卓手动 token 入口
 
@@ -43,7 +43,7 @@
 
 ### Task 3: 联调与交付
 
-- [ ] 独立审查两个仓库差异，修复重要问题并重跑相关测试。
+- [x] 独立审查两个仓库差异，修复重要问题并重跑相关测试。
 - [ ] 校验数据库迁移与客户端协议一致，提交并推送对应test分支。
 - [ ] 在可用测试部署中执行迁移并验证，不输出真实token；交付新APK并核对可更新安装条件。
 
