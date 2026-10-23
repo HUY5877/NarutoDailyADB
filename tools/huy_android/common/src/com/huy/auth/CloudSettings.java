@@ -7,12 +7,22 @@ import java.util.UUID;
 
 /** A website session, separate from every QQ WebView cookie and credential. */
 public final class CloudSettings {
-    public static final String DEFAULT_ENDPOINT = "https://naruto-login-client-fx63s9ajo-sust-acmer.vercel.app";
+    public static final String DEFAULT_ENDPOINT = "https://naruto-login-client-git-test-sust-acmer.vercel.app";
     private final SharedPreferences preferences;
 
     public CloudSettings(Context context) {
         preferences = context.getApplicationContext().getSharedPreferences("huy_cloud", Context.MODE_PRIVATE);
+        synchronized (CloudSettings.class) {
+            if (CloudRules.legacyEndpoint(preferences.getString("endpoint", ""))) {
+                preferences.edit().putString("endpoint", DEFAULT_ENDPOINT)
+                        .remove("cookie").remove("user_id").remove("username").remove("selected_id")
+                        .putString("revision", UUID.randomUUID().toString())
+                        .putBoolean("endpoint_sign_in_required", true).commit();
+            }
+        }
     }
+
+    public boolean needsEndpointSignIn() { return preferences.getBoolean("endpoint_sign_in_required", false); }
 
     public Snapshot snapshot() {
         synchronized (CloudSettings.class) {
@@ -31,7 +41,8 @@ public final class CloudSettings {
         synchronized (CloudSettings.class) {
             preferences.edit().putString("endpoint", session.endpoint).putString("cookie", session.cookie)
                     .putString("user_id", session.userId).putString("username", session.username)
-                    .remove("selected_id").putString("revision", UUID.randomUUID().toString()).commit();
+                    .remove("selected_id").remove("endpoint_sign_in_required")
+                    .putString("revision", UUID.randomUUID().toString()).commit();
         }
     }
 

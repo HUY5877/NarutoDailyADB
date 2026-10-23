@@ -7,6 +7,10 @@ import java.time.Instant;
 final class CloudRules {
     private CloudRules() {}
 
+    static boolean legacyEndpoint(String value) {
+        return "https://naruto-login-client-fx63s9ajo-sust-acmer.vercel.app".equals(value);
+    }
+
     static String endpoint(String value) {
         try {
             String text = value == null ? "" : value.trim();
@@ -28,6 +32,30 @@ final class CloudRules {
 
     static boolean recordId(String value) {
         return value != null && value.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+    }
+
+    static String token(String value) {
+        if (value == null) throw new IllegalArgumentException("请粘贴 16 至 256 位十六进制 token");
+        int start = 0, end = value.length();
+        while (start < end && whitespace(value.charAt(start))) start++;
+        while (end > start && whitespace(value.charAt(end - 1))) end--;
+        String result = value.substring(start, end);
+        if (!result.matches("[0-9a-fA-F]{16,256}")) {
+            throw new IllegalArgumentException("请粘贴 16 至 256 位十六进制 token");
+        }
+        return result;
+    }
+
+    private static boolean whitespace(char value) {
+        return Character.isWhitespace(value) || Character.isSpaceChar(value) || value == '\ufeff';
+    }
+
+    static void resolvedToken(String input, String returned, String id, long recordExpiry, long authExpiry,
+            boolean expired, long now) {
+        if (!token(input).equals(returned) || !recordId(id) || recordExpiry != authExpiry
+                || expired || recordExpiry <= now || recordExpiry - now < 1000) {
+            throw new IllegalArgumentException("云端授权与输入不匹配或已过期，请重新扫码");
+        }
     }
 
     static String sessionCookie(String setCookie) {

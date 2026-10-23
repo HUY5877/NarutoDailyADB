@@ -163,7 +163,8 @@ public final class MainActivity extends Activity {
 
     private void refresh() {
         CloudSettings.Snapshot session = settings.snapshot();
-        account.setText(session.isSignedIn() ? "网站账号：" + session.username : "网站账号：未登录");
+        account.setText(session.isSignedIn() ? "网站账号：" + session.username
+                : settings.needsEndpointSignIn() ? "测试服务地址已更新，请重新登录网站账号" : "网站账号：未登录");
         retry.setVisibility(View.GONE);
         try {
             Authorization authorization = CredentialStore.load(this);

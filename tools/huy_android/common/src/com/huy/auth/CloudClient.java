@@ -24,6 +24,8 @@ public final class CloudClient {
     /** Validates a visible account label before starting the QR authorization flow. */
     public static String validateLabel(String value) { return CloudRules.label(value); }
 
+    public static String validateToken(String value) { return CloudRules.token(value); }
+
     public static SignIn signIn(String endpoint, String username, String password) throws CloudException {
         try {
             String base = CloudRules.endpoint(endpoint);
@@ -90,6 +92,25 @@ public final class CloudClient {
         catch (Exception error) { throw new CloudException("云端授权无效，请回到抓号器重新扫码"); }
     }
 
+    /** Resolve only the signed-in website user's record; no credentials are stored here. */
+    public Download resolveToken(String value) throws CloudException {
+        final String token;
+        try { token = CloudRules.token(value); }
+        catch (IllegalArgumentException error) { throw new CloudException(error.getMessage()); }
+        prepare();
+        try {
+            JSONObject body = new JSONObject().put("access_token", token);
+            JSONObject data = request(session.endpoint, "/api/qq-authorizations/resolve", "POST", body, session.cookie).json;
+            CloudRecord record = new CloudRecord(data.getJSONObject("item"));
+            long now = System.currentTimeMillis();
+            Authorization authorization = Authorization.fromJson(data.getJSONObject("authorization").toString(), now);
+            CloudRules.resolvedToken(token, authorization.accessToken(), record.id, record.expiresAtMs,
+                    authorization.expiresAtMs(), record.expired, now);
+            return new Download(record, authorization);
+        } catch (CloudException error) { throw error; }
+        catch (Exception error) { throw new CloudException("云端授权与输入不匹配或已过期，请重新扫码"); }
+    }
+
     public void delete(String id) throws CloudException {
         prepare();
         if (!CloudRules.recordId(id)) throw new CloudException("账号记录无效");
@@ -143,8 +164,12 @@ public final class CloudClient {
                 throw new CloudException("网站登录已失效，请重新登录", true);
             }
             if (status == 403) throw new CloudException("当前网站账号无权访问，请检查账号或服务地址");
-            if (status == 404) throw new CloudException("未找到账号或接口，请刷新列表并检查服务地址");
-            if (status == 409) throw new CloudException("账号数据发生变化，请刷新后重试");
+            if (status == 404) throw new CloudException("/api/qq-authorizations/resolve".equals(path)
+                    ? "当前网站账号下未找到此 token，请检查网站账号或重新扫码上传"
+                    : "未找到账号或接口，请刷新列表并检查服务地址");
+            if (status == 409) throw new CloudException("/api/qq-authorizations/resolve".equals(path)
+                    ? "此 token 对应多条记录，请从账号列表手动选择"
+                    : "账号数据发生变化，请刷新后重试");
             if (status == 410) throw new CloudException("授权已过期，请回到抓号器重新扫码");
             if (status == 413) throw new CloudException("上传内容过大，请重新扫码");
             if (status == 429) throw new CloudException("请求过于频繁，请稍后重试");
@@ -157,7 +182,8 @@ public final class CloudClient {
             try (InputStream input = connection.getInputStream()) {
                 boolean download = "GET".equals(method) && path.startsWith("/api/qq-authorizations/")
                         && CloudRules.recordId(path.substring("/api/qq-authorizations/".length()));
-                json = download ? CloudResponse.readAuthorizationEnvelope(input)
+                boolean resolve = "POST".equals(method) && "/api/qq-authorizations/resolve".equals(path);
+                json = download || resolve ? CloudResponse.readAuthorizationEnvelope(input)
                         : CloudResponse.read(input, "GET".equals(method) && "/api/qq-authorizations".equals(path));
             }
             String sessionCookie = null;

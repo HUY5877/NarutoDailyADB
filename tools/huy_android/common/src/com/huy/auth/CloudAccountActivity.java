@@ -60,7 +60,9 @@ public final class CloudAccountActivity extends Activity {
         column.setOrientation(LinearLayout.VERTICAL);
         column.setPadding(dp(24), dp(24), dp(24), dp(24));
         host.addView(column, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.CENTER_HORIZONTAL));
-        status = text(saved.isSignedIn() ? "已登录：" + saved.username : "登录测试网站账号后，可保存和选择 QQ 授权。", 14, 0xff777777);
+        status = text(saved.isSignedIn() ? "已登录：" + saved.username
+                : settings.needsEndpointSignIn() ? "测试服务地址已更新，请重新登录网站账号。"
+                : "登录测试网站账号后，可保存和选择 QQ 授权。", 14, 0xff777777);
         column.addView(status, spacing(0, 20));
         endpoint = input(column, "测试服务地址", saved.endpoint, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         username = input(column, "网站账号", saved.username, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);

@@ -77,6 +77,8 @@ public final class Authorization {
 
     public long expiresAtMs() { return rules.expiresAtMs(); }
 
+    String accessToken() { return rules.fields().get("access_token"); }
+
     private static String string(Object value) {
         if (!(value instanceof String)) throw AuthorizationRules.invalid();
         return (String) value;
