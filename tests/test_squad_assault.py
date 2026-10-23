@@ -9,6 +9,7 @@ import pytest
 from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import TemplateConfigurationError, VisualError, find_template_in_png
+from naruto_daily.multimodal.transport import MultimodalError
 from naruto_daily.squad_assault import SquadAssaultSummary, handle_squad_assault
 from naruto_daily.squad_assault import handler as squad_handler
 from naruto_daily.squad_assault.handler import _ready_state
@@ -24,6 +25,29 @@ READY = {"ready_marker", "match_button", "quadruple_unchecked"}
 CHECKED = {"ready_marker", "match_button", "quadruple_checked"}
 CAP = READY | {"limit_marker"}
 BATTLE_ON = {"auto_battle_marker"}
+AUTO_ALLOWED = {"page": "battle", "can_enable_auto": True}
+
+
+class AutoBattleModel:
+    def __init__(self, results=(), *, on_call=None):
+        self.results = iter(results)
+        self.on_call = on_call
+        self.calls = []
+
+    def complete_json(self, png, prompt, *, timeout_seconds):
+        self.calls.append((png, prompt, timeout_seconds))
+        if self.on_call is not None:
+            self.on_call()
+        result = next(self.results, {"page": "unknown", "can_enable_auto": False})
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+@pytest.fixture(autouse=True)
+def offline_auto_battle_model(monkeypatch):
+    monkeypatch.setattr(squad_handler, "MultimodalClient",
+                        lambda *args, **kwargs: AutoBattleModel(), raising=False)
 
 
 @dataclass
@@ -75,12 +99,13 @@ def setup(tmp_path, monkeypatch):
         action[key] = dict(name=key, template=f"{key}.png", left=0, top=0, right=128, bottom=96, threshold=.9)
     monkeypatch.setattr(squad_handler, 'AUTO_BATTLE_MARKER', action['auto_battle_marker'], raising=False)
 
-    def run(scenes, *, changes=None):
+    def run(scenes, *, changes=None, model=None):
         client = SceneClient(scenes, template)
         waits = []
         selected = {**action, **(changes or {})}
         summary = handle_squad_assault(client, selected, template_matcher=client.matcher,
-                                      asset_root=tmp_path, sleep=waits.append)
+                                      asset_root=tmp_path, sleep=waits.append,
+                                      model=model or AutoBattleModel())
         return client, waits, summary
 
     return tmp_path, template, action, run
@@ -297,7 +322,7 @@ def test_real_dialog_background_correlates_but_brightness_rejects_ready():
     assert _ready_state(images, ready, target, {}) == "ready"
 
 
-def test_real_frames_match_continue_and_finish_at_limit_without_other_clicks():
+def test_real_frames_match_continue_and_unknown_black_frame_never_clicks_auto():
     root = Path(__file__).resolve().parents[1]
     black = cv2.imencode(".png", np.zeros((1080, 1920, 3), np.uint8))[1].tobytes()
     frames = iter([
@@ -319,17 +344,151 @@ def test_real_frames_match_continue_and_finish_at_limit_without_other_clicks():
     client = Client()
     summary = handle_squad_assault(client, real_action(), asset_root=root, sleep=lambda _: None)
     assert summary == SquadAssaultSummary(1, 1, False)
-    assert len(client.taps) == 3
-    assert client.taps[-1] == (45, 330)
+    assert len(client.taps) == 2
     assert 1550 <= client.taps[0][0] < 1920 and 740 <= client.taps[0][1] < 1080
     assert 570 <= client.taps[1][0] < 1030 and 520 <= client.taps[1][1] < 740
 
 
-def test_missing_auto_text_clicks_fixed_button_once_per_poll_without_extra_screenshots(setup):
+def test_missing_auto_text_without_positive_battle_confirmation_never_clicks(setup):
     _, _, _, run = setup
     client, waits, summary = run([READY, set(), set(), BATTLE_ON, CAP])
     assert summary == SquadAssaultSummary(matches=1, continues=0, quadruple_disabled=False)
-    assert client.taps == [POINTS['match_button'], (45, 330), (45, 330)]
+    assert client.taps == [POINTS['match_button']]
     assert client.screenshot_count == 5
     assert waits == [1, 5, 5, 5]
     assert [number for number, key in client.probes if key == 'auto_battle_marker'] == [2, 3, 4]
+
+
+def test_explicit_battle_confirmation_and_unchanged_new_frame_allow_auto_click(setup, monkeypatch):
+    from naruto_daily.multimodal import prompt_jev
+
+    _, _, _, run = setup
+    checked_frames = []
+    monkeypatch.setattr(squad_handler, "_auto_button_unchanged",
+                        lambda before, after: checked_frames.append((before, after)) or True,
+                        raising=False)
+    model = AutoBattleModel([AUTO_ALLOWED])
+    client, _, summary = run([READY, set(), set(), BATTLE_ON, CAP], model=model)
+    assert summary.matches == 1
+    assert client.taps == [POINTS["match_button"], squad_handler.AUTO_BATTLE_POINT]
+    assert client.screenshot_count == 5
+    assert len(model.calls) == len(checked_frames) == 1
+    assert model.calls[0][1] == prompt_jev.SQUAD_AUTO_BATTLE
+    assert 0 < model.calls[0][2] <= 30
+
+
+@pytest.mark.parametrize("result", [
+    {"page": "home", "can_enable_auto": True},
+    {"page": "friends", "can_enable_auto": True},
+    {"page": "unknown", "can_enable_auto": False},
+    {"page": "battle"},
+    {"can_enable_auto": True},
+    {"page": "battle", "can_enable_auto": "true"},
+    {"page": "battle", "can_enable_auto": 1},
+    {"page": "battle", "can_enable_auto": False},
+    None,
+    "battle",
+])
+def test_unconfirmed_page_or_non_boolean_permission_never_clicks_auto(setup, result):
+    _, _, _, run = setup
+    model = AutoBattleModel([result])
+    client, _, summary = run([READY, set(), CAP], model=model)
+    assert summary.matches == 1
+    assert client.taps == [POINTS["match_button"]]
+    assert client.screenshot_count == 3
+    assert len(model.calls) == 1
+
+
+def test_model_exception_retries_on_new_screenshot_before_any_auto_click(setup, monkeypatch):
+    root, template, action, _ = setup
+    monkeypatch.setattr(squad_handler, "_auto_button_unchanged", lambda *_: True, raising=False)
+    client = SceneClient([READY, set(), set(), set(), BATTLE_ON, CAP], template)
+    observed_frames = []
+    observed_taps = []
+    model = AutoBattleModel([MultimodalError("temporary model failure"), AUTO_ALLOWED],
+                            on_call=lambda: (observed_frames.append(client.screenshot_count),
+                                             observed_taps.append(list(client.taps))))
+    summary = handle_squad_assault(client, action, template_matcher=client.matcher,
+                                  asset_root=root, sleep=lambda _: None, model=model)
+    assert summary.matches == 1
+    assert observed_frames == [2, 3]
+    assert observed_taps == [[POINTS["match_button"]]] * 2
+    assert client.taps == [POINTS["match_button"], squad_handler.AUTO_BATTLE_POINT]
+
+
+def test_positive_battle_permission_is_not_cached_for_later_auto_clicks(setup, monkeypatch):
+    root, template, action, _ = setup
+    monkeypatch.setattr(squad_handler, "_auto_button_unchanged", lambda *_: True, raising=False)
+    client = SceneClient([READY, set(), set(), set(), BATTLE_ON, CAP], template)
+    observed_frames = []
+    model = AutoBattleModel([AUTO_ALLOWED, {"page": "home", "can_enable_auto": False}],
+                            on_call=lambda: observed_frames.append(client.screenshot_count))
+    summary = handle_squad_assault(client, action, template_matcher=client.matcher,
+                                  asset_root=root, sleep=lambda _: None, model=model)
+    assert summary.matches == 1
+    assert observed_frames == [2, 4]
+    assert client.taps == [POINTS["match_button"], squad_handler.AUTO_BATTLE_POINT]
+
+
+def test_shared_deadline_expiring_during_model_discards_positive_result(setup, monkeypatch):
+    root, template, action, _ = setup
+    monkeypatch.setattr(squad_handler, "_auto_button_unchanged", lambda *_: True, raising=False)
+    now = [0.0]
+    client = SceneClient([READY, set()], template)
+    model = AutoBattleModel([AUTO_ALLOWED], on_call=lambda: now.__setitem__(0, 4))
+    with pytest.raises(DailyDeadlineExceeded), execution_scope(
+        4, clock=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    ):
+        handle_squad_assault(client, action, template_matcher=client.matcher,
+                             asset_root=root, model=model)
+    assert len(model.calls) == 1
+    assert client.screenshot_count == 2
+    assert client.taps == [POINTS["match_button"]]
+
+
+def test_standalone_deadline_expiring_during_model_discards_positive_result(setup, monkeypatch):
+    root, template, action, _ = setup
+    monkeypatch.setattr(squad_handler, "_auto_button_unchanged", lambda *_: True, raising=False)
+    now = [0.0]
+    monkeypatch.setattr(squad_handler.time, "monotonic", lambda: now[0])
+    client = SceneClient([READY, set()], template)
+    model = AutoBattleModel([AUTO_ALLOWED], on_call=lambda: now.__setitem__(0, 61))
+    with pytest.raises(VisualError, match="超时"):
+        handle_squad_assault(client, action, template_matcher=client.matcher,
+                             asset_root=root, sleep=lambda _: None, model=model)
+    assert len(model.calls) == 1
+    assert client.screenshot_count == 2
+    assert client.taps == [POINTS["match_button"]]
+
+
+def test_cancellation_during_model_propagates_without_auto_click(setup):
+    root, template, action, _ = setup
+    client = SceneClient([READY, set()], template)
+    model = AutoBattleModel([asyncio.CancelledError()])
+    with pytest.raises(asyncio.CancelledError):
+        handle_squad_assault(client, action, template_matcher=client.matcher,
+                             asset_root=root, sleep=lambda _: None, model=model)
+    assert client.screenshot_count == 2
+    assert client.taps == [POINTS["match_button"]]
+
+
+@pytest.mark.parametrize("changed", [
+    CAP,
+    {"dialog_marker"},
+    {"continue_button"},
+    {"match_button"},
+    {"quadruple_checked"},
+    {"quadruple_unchecked"},
+    BATTLE_ON,
+    {"home"},
+])
+def test_new_frame_during_model_blocks_auto_on_page_or_control_change(setup, monkeypatch, changed):
+    _, _, _, run = setup
+    monkeypatch.setattr(squad_handler, "_auto_button_unchanged",
+                        lambda *_: changed != {"home"}, raising=False)
+    model = AutoBattleModel([AUTO_ALLOWED])
+    client, _, summary = run([READY, set(), changed, CAP], model=model)
+    assert summary.matches == 1
+    assert client.taps == [POINTS["match_button"]]
+    assert len(model.calls) == 1
+    assert client.screenshot_count >= 3

@@ -100,26 +100,99 @@ def test_obscured_ready_title_does_not_allow_a_second_match_before_departure():
     assert len(taps) == 1 and taps[0][0] == 1
 
 
-def test_user_battle_frames_enable_auto_once_then_return_to_original_limit_check():
+@pytest.mark.parametrize('auto_on_before_click', [False, True])
+def test_user_battle_frames_recheck_auto_state_before_click_then_return_to_limit(auto_on_before_click):
+    from naruto_daily.multimodal.prompt_jev import SQUAD_AUTO_BATTLE
+
     config = json.loads((ROOT / 'config.example.json').read_text(encoding='utf-8'))
     action = next(a for a in config['tasks']['squad_assault'] if a['type'] == 'handle_squad_assault')
-    names = ['squad_assault_ready_unchecked', 'squad_assault_battle_auto_off',
-             'squad_assault_battle_auto_on', 'squad_assault_limit_unannotated']
+    names = ['squad_assault_ready_unchecked', 'squad_assault_battle_auto_off']
+    if not auto_on_before_click:
+        names.append('squad_assault_battle_auto_off')
+    names += ['squad_assault_battle_auto_on', 'squad_assault_limit_unannotated']
     frames = iter(names)
     taps = []
+
     class Replay:
         current = None
         screenshots = 0
+
         def screenshot(self):
             self.screenshots += 1
             self.current = next(frames)
             return (FIXTURES / (self.current + '.png')).read_bytes()
+
         def tap(self, x, y):
             taps.append((self.current, x, y))
+
+    class Model:
+        def __init__(self):
+            self.calls = []
+
+        def complete_json(self, png, prompt, *, timeout_seconds):
+            self.calls.append((png, prompt, timeout_seconds))
+            return {'page': 'battle', 'can_enable_auto': True}
+
     device = Replay()
-    summary = handle_squad_assault(device, action, asset_root=ROOT, sleep=lambda _: None)
+    model = Model()
+    summary = handle_squad_assault(device, action, asset_root=ROOT, sleep=lambda _: None, model=model)
     assert summary.matches == 1 and summary.continues == 0
-    assert device.screenshots == 4
-    assert len(taps) == 2
+    assert device.screenshots == (4 if auto_on_before_click else 5)
+    assert len(model.calls) == 1
+    assert model.calls[0][0] == (FIXTURES / 'squad_assault_battle_auto_off.png').read_bytes()
+    assert model.calls[0][1] == SQUAD_AUTO_BATTLE
+    assert 0 < model.calls[0][2] <= 30
     assert taps[0][0] == 'squad_assault_ready_unchecked'
-    assert taps[1] == ('squad_assault_battle_auto_off', 45, 330)
+    if auto_on_before_click:
+        assert len(taps) == 1
+    else:
+        assert len(taps) == 2
+        assert taps[1] == ('squad_assault_battle_auto_off', 45, 330)
+
+
+@pytest.mark.parametrize('observation,answer,confirmation', [
+    ('main_rewards_right_hud', {'page': 'other', 'can_enable_auto': False}, None),
+    ('squad_assault_battle_auto_off', {'page': 'battle', 'can_enable_auto': True},
+     'main_rewards_right_hud'),
+])
+def test_real_home_frame_never_receives_auto_click_before_or_after_model(
+    observation, answer, confirmation,
+):
+    config = json.loads((ROOT / 'config.example.json').read_text(encoding='utf-8'))
+    action = next(a for a in config['tasks']['squad_assault'] if a['type'] == 'handle_squad_assault')
+    names = ['squad_assault_ready_unchecked', observation]
+    if confirmation is not None:
+        names.append(confirmation)
+    names.append('squad_assault_limit_unannotated')
+    frames = iter(names)
+    taps = []
+
+    class Replay:
+        current = None
+        screenshots = 0
+
+        def screenshot(self):
+            self.screenshots += 1
+            self.current = next(frames)
+            return (FIXTURES / (self.current + '.png')).read_bytes()
+
+        def tap(self, x, y):
+            taps.append((self.current, x, y))
+
+    class Model:
+        calls = 0
+
+        def complete_json(self, png, prompt, *, timeout_seconds):
+            self.calls += 1
+            assert png == (FIXTURES / (observation + '.png')).read_bytes()
+            return answer
+
+    device, model = Replay(), Model()
+    summary = handle_squad_assault(device, action, asset_root=ROOT, sleep=lambda _: None, model=model)
+    assert summary.matches == 1 and summary.continues == 0
+    assert device.screenshots == len(names)
+    assert model.calls == 1
+    assert len(taps) == 1
+    frame, x, y = taps[0]
+    assert frame == 'squad_assault_ready_unchecked'
+    assert 1640 <= x <= 1870 and 780 <= y <= 1040
