@@ -9,6 +9,7 @@ from typing import Callable, Sequence
 from naruto_daily.common.adb_client import AdbClient
 from naruto_daily.common.execution import action_with_execution_budget, check_execution, execution_sleep
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.reward_button_cache import reward_button_cache_scope
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.login import cleanup_popups
 from naruto_daily.return_to_main import return_to_main
@@ -80,6 +81,10 @@ class ActionRunner:
         self.user_options = parse_user_options({} if user_options is None else user_options)
 
     def run(self, actions: Sequence[dict]) -> RunSummary:
+        with reward_button_cache_scope(self.client):
+            return self._run(actions)
+
+    def _run(self, actions: Sequence[dict]) -> RunSummary:
         LOGGER.info(
             "开始执行，共 %d 个动作", len(actions),
             extra={"action_index": 0, "action_total": len(actions)},
