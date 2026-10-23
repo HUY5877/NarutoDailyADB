@@ -1,6 +1,6 @@
 # 明文授权与 token 输入实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 数据库可直接复制 token，上号器可粘贴并选择对应授权。
 **Architecture:** 服务端迁移到明文列并提供当前用户的 token 查询；安卓继续使用现有 Cookie 与按编号读取授权流程。
@@ -44,9 +44,16 @@
 ### Task 3: 联调与交付
 
 - [x] 独立审查两个仓库差异，修复重要问题并重跑相关测试。
-- [ ] 校验数据库迁移与客户端协议一致，提交并推送对应test分支。
-- [ ] 在可用测试部署中执行迁移并验证，不输出真实token；交付新APK并核对可更新安装条件。
+- [x] 校验数据库迁移与客户端协议一致，提交并推送对应test分支。
+- [x] 在可用测试部署中执行迁移并验证，不输出真实token；交付新APK并核对可更新安装条件。
 
 ## 执行记录
 
 - 2026-10-24：源码基线 Android d265bed，服务端 1c308d2。工作目录分别为现有 test-main-review 工作树与桌面 NarutoLoginClient。无未提交用户改动。
+
+- 2026-10-24 完成：后端提交 75a2cc1，安卓功能提交 ea4fea7，均推送 test；独立任务审查及跨仓库最终审查通过。
+- 验证：后端完整 298 项及 15 项授权专项通过，Android 10 组 214 项通过，APK 签名/对齐/版本通过。
+- 真实测试库原 3 条记录迁移后逐字段一致，移除密文列，无密钥读取 3/3 通过。稳定测试地址 https://naruto-login-client-git-test-sust-acmer.vercel.app 已部署成功。
+- 远端 HTTP 18 项检查通过（正常登录、resolve/get、归属隔离、过期、冲突、重复 JSON、CSRF、列表不含凭据）；创建的 2 个临时用户及 4 条合成授权已清理，原 3 条记录保持不变。
+- 用户确认卸载重装后，两款 versionCode 6 APK 已安装到 emulator-5554：抓号器 1.2.1、上号器 3.7，启动界面检查通过。个人账号实际扫码/游戏登录待用户重新登录后使用，未宣称已验证。
+- 新版 APK 保存于 Downloads/HUY-Android-2026-10-24-v6；签名材料在工作树 .secrets/huy-android-signing，并保留副本于 Desktop/NarutoDailyADB/.secrets/huy-android-signing。
