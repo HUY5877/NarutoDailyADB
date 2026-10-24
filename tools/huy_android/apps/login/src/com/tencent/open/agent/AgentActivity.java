@@ -32,7 +32,6 @@ public final class AgentActivity extends Activity {
     private CloudSettings settings;
     private boolean foreground;
     private boolean firstResume = true;
-    private boolean reading;
     private boolean clearingInput;
     private final SharedPreferences.OnSharedPreferenceChangeListener sessionListener = (preferences, key) -> {
         if ("revision".equals(key) && foreground) sessionChanged();
@@ -76,7 +75,7 @@ public final class AgentActivity extends Activity {
     }
 
     private void readInput() {
-        if (!foreground || reading || !isTrustedRequest()) return;
+        if (!foreground || requests.isPending() || !isTrustedRequest()) return;
         invalidateAuthorization();
         CloudSettings.Snapshot session = settings.snapshot();
         if (!session.isSignedIn()) { showInputPrompt(); return; }
@@ -88,7 +87,6 @@ public final class AgentActivity extends Activity {
 
     private void readAuthorization(CloudSettings.Snapshot session, AuthorizationInput input) {
         final long attempt = requests.begin(session.revision);
-        reading = true;
         updateControls();
         screen.busy(input == null ? "正在读取所选账号的授权，也可直接粘贴其他授权。" : "正在当前网站账号下查找授权。");
         worker.execute(() -> {
@@ -101,7 +99,6 @@ public final class AgentActivity extends Activity {
                     catch (IllegalArgumentException error) { failed("授权已过期，请回到抓号器重新扫码。"); return; }
                     if (result.record.isExpired()) { failed("授权已过期，请回到抓号器重新扫码。"); return; }
                     if (!requests.accept(attempt, settings.snapshot().revision, result.authorization)) return;
-                    reading = false;
                     clearInput();
                     screen.show("登录：" + result.record.label,
                             "尾号 " + result.record.accountHint + "\n请核对账号，点击确认后返回游戏。");
@@ -136,7 +133,7 @@ public final class AgentActivity extends Activity {
     }
 
     private void confirmLogin() {
-        if (!foreground || reading || !isTrustedRequest()) return;
+        if (!foreground || requests.isPending() || !isTrustedRequest()) return;
         CloudSettings.Snapshot session = settings.snapshot();
         Authorization authorization = requests.value(session.revision);
         if (!session.isSignedIn() || authorization == null) { sessionChanged(); return; }
@@ -167,13 +164,12 @@ public final class AgentActivity extends Activity {
         CloudSettings.Snapshot session = settings.snapshot();
         boolean allowed = foreground && session.isSignedIn() && isTrustedRequest();
         tokenInput.setEnabled(allowed);
-        HuyUi.enabled(readButton, allowed && !reading);
-        HuyUi.enabled(confirmButton, allowed && !reading && requests.value(session.revision) != null);
+        HuyUi.enabled(readButton, allowed && !requests.isPending());
+        HuyUi.enabled(confirmButton, allowed && !requests.isPending() && requests.value(session.revision) != null);
     }
 
     private void invalidateAuthorization() {
         requests.invalidate();
-        reading = false;
         updateControls();
     }
 
@@ -217,7 +213,6 @@ public final class AgentActivity extends Activity {
     @Override protected void onStop() {
         foreground = false;
         requests.stop();
-        reading = false;
         clearInput();
         updateControls();
         settings.unregisterListener(sessionListener);

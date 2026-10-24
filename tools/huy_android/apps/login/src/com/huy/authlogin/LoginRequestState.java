@@ -24,6 +24,9 @@ public final class LoginRequestState<T> {
         return foreground && generation == attempt && revision != null && revision.equals(currentRevision);
     }
 
+    /** Derive button busy state from the request gate so lifecycle invalidation also enables retry. */
+    public boolean isPending() { return foreground && revision != null && value == null; }
+
     public boolean accept(long attempt, String currentRevision, T result) {
         if (!isCurrent(attempt, currentRevision) || result == null) return false;
         value = result;
