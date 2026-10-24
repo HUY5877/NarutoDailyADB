@@ -31,6 +31,15 @@ class Result:
         self.returncode = returncode
 
 
+def command_result(kwargs, stdout=b"", stderr=b"", returncode=0):
+    """Model subprocess.run output redirected into the caller's open files."""
+    kwargs["stdout"].write(stdout)
+    kwargs["stdout"].flush()
+    kwargs["stderr"].write(stderr)
+    kwargs["stderr"].flush()
+    return Result(None, None, returncode)
+
+
 class FakeLDPlayer:
     def __init__(self, console, *, template="clean-template"):
         self.console = str(console)
@@ -44,8 +53,6 @@ class FakeLDPlayer:
 
     def __call__(self, args, **kwargs):
         assert kwargs["shell"] is False
-        assert kwargs["stdout"] is subprocess.PIPE
-        assert kwargs["stderr"] is subprocess.PIPE
         with self._lock:
             command = tuple(map(str, args))
             assert kwargs["timeout"] > 0
@@ -55,33 +62,33 @@ class FakeLDPlayer:
             self.timeouts.append((command, kwargs["timeout"]))
             if command[:2] == (self.console, "list2"):
                 lines = [row(index, name, running) for name, (index, running) in self.instances.items()]
-                return Result(("\n".join(lines) + "\n").encode("utf-8"))
+                return command_result(kwargs, ("\n".join(lines) + "\n").encode("utf-8"))
             if command[:2] == (self.console, "copy"):
                 self.copy_count += 1
                 name = command[command.index("--name") + 1]
                 source = command[command.index("--from") + 1]
                 assert source == self.template
                 self.instances[name] = [8, 0]
-                return Result()
+                return command_result(kwargs)
             if command[:2] == (self.console, "launch"):
                 name = command[command.index("--name") + 1]
                 self.instances[name][1] = 1
-                return Result()
+                return command_result(kwargs)
             if command[:2] == (self.console, "quit"):
                 name = command[command.index("--name") + 1]
                 self.instances[name][1] = 0
-                return Result()
+                return command_result(kwargs)
             if command[:2] == (self.console, "adb"):
-                return Result(b"emulator-5570\r\n")
+                return command_result(kwargs, b"emulator-5570\r\n")
             if command[0] == self.adb and command[-2:] == ("getprop", "sys.boot_completed"):
-                return Result(b"1\r\n")
+                return command_result(kwargs, b"1\r\n")
             if command[0] == self.adb and command[-2:] == ("wm", "size"):
-                return Result(b"Physical size: 1920x1080\r\n")
+                return command_result(kwargs, b"Physical size: 1920x1080\r\n")
             if (command[0] == self.adb and len(command) == 7
                     and command[3:6] == ("shell", "am", "force-stop")):
-                return Result()
+                return command_result(kwargs)
             if command[:2] == (self.console, "runapp"):
-                return Result()
+                return command_result(kwargs)
             raise AssertionError(f"unexpected command: {command}")
 
 
@@ -99,7 +106,7 @@ class ProcessFakeLDPlayer:
         if command[:2] == (self.console, "list2"):
             with self.guard:
                 lines = [row(index, name, running) for name, (index, running) in self.instances.items()]
-            return Result(("\n".join(lines) + "\n").encode())
+            return command_result(kwargs, ("\n".join(lines) + "\n").encode())
         if command[:2] == (self.console, "copy"):
             name = command[command.index("--name") + 1]
             with self.guard:
@@ -113,7 +120,7 @@ class ProcessFakeLDPlayer:
             with self.guard:
                 self.instances[name] = (index, 0)
                 self.counters["active"] -= 1
-            return Result()
+            return command_result(kwargs)
         raise AssertionError(f"unexpected command: {command}")
 
 
@@ -296,7 +303,7 @@ def test_list2_starting_state_two_is_busy_until_adb_reports_ready(tmp_path, monk
             if command[:2] == (self.console, "launch"):
                 self.calls.append(command)
                 self.instances["existing-zero"][1] = 2
-                return Result()
+                return command_result(kwargs)
             if command[:2] == (self.console, "adb"):
                 self.instances["existing-zero"][1] = 1
             return super().__call__(args, **kwargs)
@@ -576,7 +583,7 @@ def test_start_retries_serial_lookup_until_adb_is_ready(tmp_path, monkeypatch):
             attempts += 1
             if attempts == 1:
                 fake.calls.append(command)
-                return Result(b"", b"ADB not ready", 1)
+                return command_result(kwargs, b"", b"ADB not ready", 1)
         return original(args, **kwargs)
 
     monkeypatch.setattr("naruto_daily.login_service.ldplayer.subprocess.run", delayed_serial)
@@ -596,7 +603,7 @@ def test_start_rejects_wrong_resolution_and_never_accepts_index_zero(tmp_path, m
         command = tuple(map(str, args))
         if command[0] == fake.adb and command[-2:] == ("wm", "size"):
             fake.calls.append(command)
-            return Result(b"Physical size: 1280x720\n")
+            return command_result(kwargs, b"Physical size: 1280x720\n")
         return original(args, **kwargs)
     monkeypatch.setattr("naruto_daily.login_service.ldplayer.subprocess.run", wrong_size)
     with pytest.raises(LDPlayerError, match="1920x1080"):
@@ -663,7 +670,7 @@ def test_copy_uses_task_deadline_and_exit_one_succeeds_only_when_target_exists(t
             fake.calls.append(command)
             fake.timeouts.append((command, kwargs["timeout"]))
             fake.instances[NAME] = [8, 0]
-            return Result(b"copy reported failure", b"private detail", 1)
+            return command_result(kwargs, b"copy reported failure", b"private detail", 1)
         return original(args, **kwargs)
 
     monkeypatch.setattr("naruto_daily.login_service.ldplayer.subprocess.run", exit_one_with_instance)
@@ -680,7 +687,7 @@ def test_copy_uses_task_deadline_and_exit_one_succeeds_only_when_target_exists(t
         command = tuple(map(str, args))
         if command[:2] == (fake.console, "copy") and command[command.index("--name") + 1] == second_name:
             fake.calls.append(command)
-            return Result(b"PRIVATE", b"TOKEN", 1)
+            return command_result(kwargs, b"PRIVATE", b"TOKEN", 1)
         return original(args, **kwargs)
 
     monkeypatch.setattr("naruto_daily.login_service.ldplayer.subprocess.run", exit_one_without_instance)
@@ -700,9 +707,9 @@ def test_list2_accepts_gb18030_and_errors_never_expose_process_output(tmp_path, 
         if command[:2] == (fake.console, "list2"):
             fake.calls.append(command)
             lines = [row(index, name, running) for name, (index, running) in fake.instances.items()]
-            return Result(("\n".join(lines) + "\n").encode("gb18030"))
+            return command_result(kwargs, ("\n".join(lines) + "\n").encode("gb18030"))
         if command[:2] == (fake.console, "copy"):
-            return Result(b"PRIVATE", b"TOKEN", 1)
+            return command_result(kwargs, b"PRIVATE", b"TOKEN", 1)
         return original(args, **kwargs)
 
     monkeypatch.setattr("naruto_daily.login_service.ldplayer.subprocess.run", encoded)

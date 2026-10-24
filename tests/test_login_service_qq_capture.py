@@ -666,7 +666,7 @@ def test_wechat_never_probes_capture_apps(monkeypatch, tmp_path, channel):
 def test_package_detection_is_exact_and_on_the_owned_instance(monkeypatch, tmp_path, installed, expected):
     import time
     from naruto_daily.login_service.ldplayer import LDPlayerManager
-    from test_login_service_ldplayer import FakeLDPlayer, Result
+    from test_login_service_ldplayer import FakeLDPlayer, command_result
     console = tmp_path / 'ldconsole.exe'
     runner = FakeLDPlayer(console)
     probes = []
@@ -674,7 +674,7 @@ def test_package_detection_is_exact_and_on_the_owned_instance(monkeypatch, tmp_p
         parts = tuple(map(str, args))
         if 'list' in parts and 'packages' in parts:
             probes.append(parts)
-            return Result(('\n'.join('package:' + value for value in installed + ['com.tencent.tim.fake'])).encode())
+            return command_result(kwargs, ('\n'.join('package:' + value for value in installed + ['com.tencent.tim.fake'])).encode())
         return runner(args, **kwargs)
     monkeypatch.setattr('naruto_daily.login_service.ldplayer.subprocess.run', run)
     manager = LDPlayerManager(console, 'clean-template', tmp_path / 'state')
@@ -685,7 +685,7 @@ def test_package_detection_is_exact_and_on_the_owned_instance(monkeypatch, tmp_p
 
 
 def package_probe_boundary(monkeypatch, tmp_path, probe, calls):
-    from test_login_service_ldplayer import FakeLDPlayer
+    from test_login_service_ldplayer import FakeLDPlayer, command_result
     console = tmp_path / 'ldconsole.exe'
     runner = FakeLDPlayer(console)
     probes = []
@@ -694,7 +694,8 @@ def package_probe_boundary(monkeypatch, tmp_path, probe, calls):
         parts = tuple(map(str, args))
         if parts[-4:] == ('shell', 'pm', 'list', 'packages'):
             probes.append(parts)
-            return probe(args, kwargs)
+            result = probe(args, kwargs)
+            return command_result(kwargs, result.stdout, result.stderr, result.returncode)
         if parts[:2] == (str(console), 'runapp'):
             calls.append('game')
         return runner(args, **kwargs)
