@@ -44,6 +44,11 @@ def _load_daily_session():
     return DailySession
 
 
+def _load_capture_session():
+    from .qq_capture import QQCaptureSession
+    return QQCaptureSession
+
+
 def _send(stream: TextIO, event: dict[str, object]) -> None:
     # Task logs may originate from a background thread. All protocol events use
     # the same lock so neither a JSON line nor its flush can be interleaved.
@@ -179,6 +184,7 @@ def main(
     phase = "configuration"
     log_context = ExitStack()
     refresh_requests = None
+    capture_session = None
     try:
         # Capture ordinary prints across imports, navigation and daily execution;
         # structured logs retain the original protocol stream captured above.
@@ -218,14 +224,34 @@ def main(
                     user_options=user_options,
                 )
 
-        phase = "game"
-        _send(output_stream, {"type": "stage", "status": "opening_game"})
-        manager.launch_game(instance, package, deadline)
+        if (daily_session is not None and login_type in ('android_qq', 'ios_qq')
+                and manager.capture_apps_installed(instance, deadline)):
+            phase = 'configuration'
+            device = LoginDevice(manager.adb_path, serial, deadline, command_timeout,
+                                 game_package=package, login_type=login_type)
+            CaptureSession = _load_capture_session()
+            capture_session = CaptureSession(
+                device, user_id=message.get('captureUserId'), task_id=task_id,
+                attempt_id=message.get('captureAttemptId'), database_url=os.environ.get('DATABASE_URL'),
+                api_base=os.environ.get('QQ_CAPTURE_API_BASE'), clock=clock,
+            )
+            # Flush before the first database write. The parent can revoke this
+            # execution even if Windows terminates us without running finally.
+            _send(output_stream, {'type': 'capture_started'})
+            phase = 'qr'
+            _send(output_stream, {'type': 'stage', 'status': 'preparing_qr'})
+            png = capture_session.prepare()
+        else:
+            phase = "game"
+            _send(output_stream, {"type": "stage", "status": "opening_game"})
+            manager.launch_game(instance, package, deadline)
 
-        phase = "qr"
-        _send(output_stream, {"type": "stage", "status": "preparing_qr"})
-        device = LoginDevice(manager.adb_path, serial, deadline, command_timeout, game_package=package, login_type=login_type)
-        png = fetch_login_qr(device)
+            phase = "qr"
+            _send(output_stream, {"type": "stage", "status": "preparing_qr"})
+            device = LoginDevice(manager.adb_path, serial, deadline, command_timeout, game_package=package, login_type=login_type)
+            # Every new game launch must select this task's channel. A restored
+            # OAuth page cannot prove which Android/iOS channel created it.
+            png = fetch_login_qr(device, require_channel_selection=True)
         if (not isinstance(png, bytes) or not png.startswith(_PNG_SIGNATURE)
                 or len(png) > _MAX_PNG_BYTES):
             raise ValueError
@@ -251,8 +277,17 @@ def main(
                         _send(output_stream, {'type': 'qr', 'requestId': request_id,
                                               'png': base64.b64encode(replacement).decode('ascii')})
 
+            if capture_session is not None:
+                authorization = capture_session.wait(
+                    refresh_requests=refresh_requests, publish=lambda event: _send(output_stream, event),
+                )
+                # Receiving a database row is not game authorization. The same
+                # instance must return to the game through the selected channel.
+                capture_session.prepare_login()
+                manager.launch_game(instance, package, deadline)
+                capture_session.inject(authorization)
             with redirect_stdout(sys.stderr):
-                if on_wait is None:
+                if on_wait is None or capture_session is not None:
                     daily_session.wait_for_authorization(deadline)
                 else:
                     daily_session.wait_for_authorization(deadline, on_wait=on_wait)
@@ -311,6 +346,11 @@ def main(
             pass
         return 1
     finally:
+        if capture_session is not None:
+            try:
+                capture_session.close()
+            except Exception:
+                logging.getLogger(__name__).warning('QQ 抓号轮次清理暂未完成；本轮仍受原截止时间限制')
         if refresh_requests is not None:
             refresh_requests.close()
         log_context.close()

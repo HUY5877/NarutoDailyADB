@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -634,6 +635,30 @@ class LDPlayerManager:
             bindings[binding_key]["serial"] = serial
             self._save_state(bindings, pool=mode == "pool")
             return serial
+
+    def capture_apps_installed(self, instance: LDPlayerInstance, deadline: float) -> bool:
+        """Probe only the running instance still owned by this task."""
+        with self._exclusive(deadline):
+            binding_key, bindings, current, _ = self._tracked(instance, deadline)
+            serial = bindings[binding_key].get('serial')
+            if (not current.running or not isinstance(serial, str) or _SERIAL.fullmatch(serial) is None
+                    or instance.serial != serial):
+                raise LDPlayerError('Start the managed LDPlayer before checking capture applications.')
+            try:
+                output = self._run([self.adb_path, '-s', serial, 'shell', 'pm', 'list', 'packages'],
+                                   deadline, 'capture package check')
+                lines = [line.strip() for line in self._decode(output).splitlines() if line.strip()]
+                if not lines or any(not line.startswith('package:') for line in lines):
+                    raise LDPlayerError('Capture package check returned no complete package list.')
+                packages = {line.removeprefix('package:') for line in lines}
+            except LDPlayerError:
+                # Discovery is optional; ownership and serial checks above are not.
+                # A failed probe must not give an expired task a legacy login attempt.
+                self._remaining(deadline)
+                logging.getLogger(__name__).warning('暂时无法检测 QQ 辅助应用，将继续原扫码登录流程')
+                return False
+            self._remaining(deadline)
+            return {'com.huy.authcapture', 'com.tencent.tim'} <= packages
 
     def launch_game(self, instance: LDPlayerInstance, package: str, deadline: float) -> None:
         if not isinstance(package, str) or _PACKAGE.fullmatch(package) is None:

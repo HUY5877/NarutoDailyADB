@@ -329,6 +329,12 @@ class LoginRuntime:
         if daily and self.config.redis_url:
             # 与常驻 worker 使用同一 Redis 轮询计数；不放进日志或 JSON 协议。
             child_env['REDIS_URL'] = self.config.redis_url
+        if daily and record.login_type in ('android_qq', 'ios_qq'):
+            # These selected-profile values never enter the public task protocol.
+            if self.config.database_url:
+                child_env['DATABASE_URL'] = self.config.database_url
+            if self.config.qq_capture_api_base:
+                child_env['QQ_CAPTURE_API_BASE'] = self.config.qq_capture_api_base
         # 子进程复用启动时的模型配置，不重新请求 KV，也不读取本地模型 key。
         child = subprocess.Popen(
             command,
@@ -347,20 +353,44 @@ class LoginRuntime:
         action_count: int | None = None
         refresh_id: str | None = None
         arena_started = False
+        capture_owner = message.get('captureUserId')
+        if not (daily and record.login_type in ('android_qq', 'ios_qq')
+                and self.config.database_url and self._redis_queue is not None
+                and isinstance(capture_owner, str) and UUID_PATTERN.fullmatch(capture_owner)
+                and record.attempt_id and message.get('captureAttemptId') == record.attempt_id):
+            capture_owner = None
+        capture_started = False
+        read_task = None
         try:
             child.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
             child.stdin.close()
             async with asyncio.timeout(max(0.001, record.expires_at_ms / 1000 - time.time())) as timeout:
                 while True:
-                    line = await asyncio.to_thread(child.stdout.readline, 1_000_001)
-                    self._check_interrupted(record)
+                    if capture_owner is not None:
+                        # Preserve the in-flight read on cancellation, so its
+                        # private capture marker cannot be lost before cleanup.
+                        read_task = asyncio.create_task(asyncio.to_thread(child.stdout.readline, 1_000_001))
+                        line = await asyncio.shield(read_task)
+                        read_task = None
+                    else:
+                        line = await asyncio.to_thread(child.stdout.readline, 1_000_001)
                     if not line:
+                        self._check_interrupted(record)
                         break
                     if len(line) > 1_000_000:
                         raise ValueError("Emulator output exceeds limit")
                     event = json.loads(line)
                     if not isinstance(event, dict):
                         raise ValueError("Invalid emulator output")
+                    if event == {'type': 'capture_started'}:
+                        if capture_owner is None or capture_started or png is not None:
+                            raise ValueError('Unexpected QQ capture start')
+                        capture_started = True
+                        self._check_interrupted(record)
+                        if self._stopping:
+                            raise _WorkerStopping
+                        continue
+                    self._check_interrupted(record)
                     if self._stopping:
                         raise _WorkerStopping
                     if daily and event.get("type") == "log":
@@ -476,6 +506,20 @@ class LoginRuntime:
             self._kill(child)
             try:
                 await asyncio.to_thread(child.wait)
+                if capture_owner is not None:
+                    try:
+                        if read_task is not None:
+                            unread = await read_task
+                            capture_started |= self._contains_capture_start(unread)
+                        if not capture_started:
+                            # The process has exited. Drain only bounded buffered
+                            # protocol output, never publish it or execute events.
+                            unread = await asyncio.to_thread(child.stdout.read, 1_000_001)
+                            capture_started |= self._contains_capture_start(unread)
+                    except (OSError, ValueError):
+                        logger.warning('Task %s: capture marker drain unavailable', record.id)
+                    if capture_started:
+                        await self._revoke_capture_attempt(record, capture_owner)
                 if stderr_task is not None:
                     # The child has closed its writer; drain buffered diagnostics
                     # before closing our pipe, but do not hold shutdown indefinitely.
@@ -491,6 +535,27 @@ class LoginRuntime:
                 child.stdout.close()
                 if stderr is not None:
                     stderr.close()
+
+    @staticmethod
+    def _contains_capture_start(raw) -> bool:
+        for line in raw.splitlines():
+            try:
+                if json.loads(line) == {'type': 'capture_started'}:
+                    return True
+            except (ValueError, TypeError):
+                pass
+        return False
+
+    async def _revoke_capture_attempt(self, record: TaskRecord, user_id: str) -> None:
+        """OS kills bypass child finally; the parent revokes only its execution."""
+        try:
+            from .qq_capture import CaptureStore
+            store = CaptureStore(self.config.database_url, user_id=user_id, task_id=record.id,
+                                 attempt_id=record.attempt_id, login_type=record.login_type,
+                                 deadline=record.expires_at_ms / 1000)
+            await asyncio.to_thread(store.cancel_attempt)
+        except Exception:
+            logger.warning('Task %s: QQ 抓号轮次撤销暂不可用；按原有效期失效', record.id)
 
     async def _relay_child_stderr(self, record: TaskRecord, stream) -> None:
         """Show full diagnostics locally without publishing them to Redis."""
@@ -583,6 +648,18 @@ class LoginRuntime:
             "loginType": record.login_type,
             **({'refreshQueueKey': self.config.redis_queue_key} if record.login_timeout_seconds else {}),
         }
+        if record.login_type in ('android_qq', 'ios_qq') and self._redis_queue is not None:
+            try:
+                user_id = await self._redis_queue.notification_user_id(record)
+            except RedisQueueError:
+                # Only the child can determine whether both apps are installed.
+                # Missing identity fails capture configuration there; legacy QQ
+                # remains usable when its optional identity lookup is unavailable.
+                user_id = ''
+                logger.warning('Task %s: QQ capture identity temporarily unavailable', record.id)
+            if user_id:
+                message['captureUserId'] = user_id
+                message['captureAttemptId'] = record.attempt_id
         return await self._run_child(
             record, [sys.executable, "-u", "-m", "naruto_daily.login_service.ldplayer_worker"], message,
             daily=True,

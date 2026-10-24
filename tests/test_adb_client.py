@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from naruto_daily.common.adb_client import AdbClient, AdbError, CommandResult
+from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 
 
 class FakeRunner:
@@ -73,3 +74,75 @@ def test_screenshot_uses_binary_exec_out():
 
     assert client.screenshot() == b"png-bytes"
     assert binary_commands == [["adb.exe", "-s", "emulator-5554", "exec-out", "screencap", "-p"]]
+
+
+class ScreenshotClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+@pytest.mark.parametrize('empty_frames', [1, 2])
+def test_screenshot_recovers_from_empty_frames_on_the_same_device(empty_frames):
+    clock = ScreenshotClock()
+    runner = FakeRunner([(0, b'', b'')] * empty_frames + [(0, b'fresh-frame', b'')])
+    client = AdbClient(Path('adb.exe'), serial='emulator-5554', run_binary=runner)
+
+    with execution_scope(5, clock=clock, sleep=clock.sleep):
+        assert client.screenshot() == b'fresh-frame'
+
+    assert runner.commands == [
+        ['adb.exe', '-s', 'emulator-5554', 'exec-out', 'screencap', '-p']
+    ] * (empty_frames + 1)
+    assert 0 < clock() < 5
+
+
+def test_screenshot_stops_after_three_empty_frames():
+    clock = ScreenshotClock()
+    runner = FakeRunner([(0, b'', b'')] * 3)
+    client = AdbClient(Path('adb.exe'), run_binary=runner)
+
+    with execution_scope(5, clock=clock, sleep=clock.sleep):
+        with pytest.raises(AdbError, match='返回内容为空'):
+            client.screenshot()
+
+    assert len(runner.commands) == 3
+    assert clock() < 5
+
+
+def test_screenshot_does_not_retry_a_disconnected_device():
+    runner = FakeRunner([(1, b'', b'error: device offline')])
+    client = AdbClient(Path('adb.exe'), run_binary=runner)
+
+    with pytest.raises(AdbError, match='device offline'):
+        client.screenshot()
+
+    assert len(runner.commands) == 1
+
+
+def test_screenshot_empty_retry_does_not_outlive_execution_deadline():
+    clock = ScreenshotClock()
+    runner = FakeRunner([(0, b'', b'')])
+    client = AdbClient(Path('adb.exe'), run_binary=runner)
+
+    with pytest.raises(DailyDeadlineExceeded):
+        with execution_scope(.1, clock=clock, sleep=clock.sleep):
+            client.screenshot()
+
+    assert clock() == pytest.approx(.1)
+    assert len(runner.commands) == 1
+
+
+def test_screenshot_empty_retry_also_works_without_execution_scope(monkeypatch):
+    waits = []
+    monkeypatch.setattr('time.sleep', waits.append)
+    runner = FakeRunner([(0, b'', b''), (0, b'fresh-frame', b'')])
+    client = AdbClient(Path('adb.exe'), run_binary=runner)
+
+    assert client.screenshot() == b'fresh-frame'
+    assert len(waits) == 1 and waits[0] > 0

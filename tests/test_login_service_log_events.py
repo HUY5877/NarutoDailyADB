@@ -287,6 +287,9 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
     class Manager:
         adb_path = tmp_path / "adb.exe"
 
+        def capture_apps_installed(self, instance, deadline):
+            return False
+
         def __init__(self, **kwargs):
             logger.info("initialize manager")
 
@@ -305,7 +308,8 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
         def __init__(self, *args, game_package, login_type):
             assert game_package == "test.game"
 
-    def fetch(device):
+    def fetch(device, *, require_channel_selection):
+        assert require_channel_selection is True
         logger.info("fetch qr")
         return png
 

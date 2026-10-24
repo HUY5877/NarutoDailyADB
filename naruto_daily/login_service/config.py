@@ -55,6 +55,7 @@ class ServiceConfig:
     qq_bot_app_secret: str = field(default="", repr=False)
     qq_bot_group_openid: str = ""
     database_url: str | None = field(default=None, repr=False)
+    qq_capture_api_base: str | None = None
     app_env: str = "prod"
     sls_enabled: bool = False
     sls_endpoint: str = ""
@@ -201,6 +202,18 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         raise EnvironmentConfigError("Invalid QQ_BOT_GROUP_OPENID")
     if any(ord(char) < 32 for char in qq["qq_bot_app_secret"]):
         raise EnvironmentConfigError("Invalid QQ_BOT_APP_SECRET")
+    capture_base = env.get("QQ_CAPTURE_API_BASE", "")
+    if capture_base:
+        try:
+            address = urlsplit(capture_base)
+            if (address.scheme != 'https' or not address.hostname or address.username or address.password
+                    or address.path not in ('', '/') or address.query or address.fragment
+                    or any(character.isspace() or ord(character) < 32 for character in capture_base)
+                    or address.port not in (None, 443)):
+                raise ValueError
+        except ValueError:
+            raise EnvironmentConfigError('QQ_CAPTURE_API_BASE 必须为不含路径和凭据的 HTTPS 网站根地址') from None
+        capture_base = capture_base.rstrip('/')
     database_url = env.get("DATABASE_URL", "").strip() or None
     if qq["qq_bot_app_id"] and not database_url:
         raise EnvironmentConfigError("请配置 DATABASE_URL，以查询 QQ 通知中的网站用户名")
@@ -239,5 +252,5 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
         ldplayer_command_timeout_seconds=_integer(
             env, "LDPLAYER_COMMAND_TIMEOUT_SECONDS", 20, 1, 300,
         ),
-        **oss, **qq, **sls, database_url=database_url,
+        **oss, **qq, **sls, database_url=database_url, qq_capture_api_base=capture_base or None,
     )

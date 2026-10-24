@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -116,14 +118,28 @@ class AdbClient:
         if self.serial:
             command.extend(["-s", self.serial])
         command.extend(["exec-out", "screencap", "-p"])
-        returncode, stdout, stderr = self._run_binary(command)
-        check_execution()
-        if returncode != 0:
-            detail = stderr.decode("utf-8", errors="replace").strip() or f"退出码 {returncode}"
-            raise AdbError(f"ADB 截图失败：{detail}")
-        if not stdout:
-            raise AdbError("ADB 截图失败：返回内容为空")
-        return stdout
+        # Activity 切回游戏时，screencap 可能成功退出却尚无画面。
+        # 只重取空帧，不重放输入，也不延长调用方的执行截止时间。
+        for attempt in range(3):
+            check_execution()
+            returncode, stdout, stderr = self._run_binary(command)
+            check_execution()
+            if returncode != 0:
+                detail = stderr.decode("utf-8", errors="replace").strip() or f"退出码 {returncode}"
+                raise AdbError(f"ADB 截图失败：{detail}")
+            if stdout:
+                return stdout
+            if attempt < 2:
+                logging.getLogger(__name__).warning(
+                    "ADB 截图暂时为空，0.5 秒后重取（第 %d 次重试）", attempt + 1,
+                    extra={"backend_only": True},
+                )
+                budget = current_execution()
+                if budget is not None:
+                    budget.sleep(0.5)
+                else:
+                    time.sleep(0.5)
+        raise AdbError("ADB 截图失败：返回内容为空（连续 3 次）")
 
     def ui_hierarchy(self) -> str:
         path = '/sdcard/naruto_daily_ui.xml'

@@ -155,17 +155,19 @@ def test_cloud_overrides_local_and_process_settings_and_clears_deleted_keys(monk
 
 
 def test_profile_qq_and_database_credentials_load_without_entering_child_environment(monkeypatch, tmp_path):
-    names = ('QQ_BOT_APP_ID', 'QQ_BOT_APP_SECRET', 'QQ_BOT_GROUP_OPENID', 'DATABASE_URL')
+    names = ('QQ_BOT_APP_ID', 'QQ_BOT_APP_SECRET', 'QQ_BOT_GROUP_OPENID', 'DATABASE_URL', 'QQ_CAPTURE_API_BASE')
     with (tmp_path / '.env').open('a', encoding='utf-8') as stream:
         stream.write('\n' + '\n'.join(f'{name}=stale-local-value' for name in names))
     os.environ.update(dict.fromkeys(names, 'stale-process-value'))
     remote = {**OSS_ENV, 'QQ_BOT_APP_ID': '1900000001', 'QQ_BOT_APP_SECRET': 'cloud-qq-secret',
-              'QQ_BOT_GROUP_OPENID': 'A' * 32, 'DATABASE_URL': 'postgresql://user:password@db.invalid/naruto'}
+              'QQ_BOT_GROUP_OPENID': 'A' * 32, 'DATABASE_URL': 'postgresql://user:password@db.invalid/naruto',
+              'QQ_CAPTURE_API_BASE': 'https://selected-profile.test'}
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: dict(remote))
     environment.initialize_environment(tmp_path / '.env')
     config = load_config()
     assert config.qq_bot_app_id == remote['QQ_BOT_APP_ID']
     assert config.database_url == remote['DATABASE_URL']
+    assert config.qq_capture_api_base == remote['QQ_CAPTURE_API_BASE']
     assert all(name not in environment.model_environment_for_child() for name in names)
     environment._initialized = False
     remote.clear()

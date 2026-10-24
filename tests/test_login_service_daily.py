@@ -230,6 +230,47 @@ def test_authorized_screen_skips_refresh_callback_and_refresh_can_handoff_author
     assert session._authorized
 
 
+def test_empty_adb_frame_waits_for_real_start_game_marker_without_replaying_login(tmp_path):
+    calls = []
+
+    def run(command, **kwargs):
+        # Returning from the helper is not authorization; even the first valid
+        # frame below has no start-game marker and must keep the wait active.
+        assert not session._authorized
+        calls.append((list(command), kwargs))
+        assert list(command) == [
+            'current-adb.exe', '-s', 'emulator-5580', 'exec-out', 'screencap', '-p',
+        ]
+        return subprocess.CompletedProcess(command, 0, next(frames), b'')
+
+    session, clock, _ = session_for(
+        tmp_path, matcher=find_template_in_png, subprocess_runner=run,
+    )
+    target = session._login_actions[0]['start_game']
+    template_path = PROJECT_ROOT / target['template']
+    (tmp_path / target['template']).write_bytes(template_path.read_bytes())
+    loading = np.zeros((1080, 1920, 3), np.uint8)
+    ready = loading.copy()
+    template = cv2.imdecode(np.frombuffer(template_path.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    height, width = template.shape[:2]
+    left, top = target['left'] + 12, target['top'] + 12
+    ready[top:top + height, left:left + width] = template
+    frames = iter([
+        b'', cv2.imencode('.png', loading)[1].tobytes(), cv2.imencode('.png', ready)[1].tobytes(),
+    ])
+    started = clock()
+    deadline = started + 5
+
+    session.wait_for_authorization(deadline)
+
+    assert session._authorized
+    assert not session._logged_in
+    assert len(calls) == 3
+    assert started < clock() < deadline
+    assert all(0 < kwargs['timeout'] <= 5 and not kwargs.get('text') for _, kwargs in calls)
+    assert current_execution() is None
+
+
 @pytest.mark.parametrize('with_refresh', [False, True])
 def test_portrait_qr_waits_for_landscape_authorization_and_keeps_refresh_responsive(tmp_path, monkeypatch, with_refresh):
     matches = []
