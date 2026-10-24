@@ -61,6 +61,7 @@ class TaskRecord:
     secret_realm_completed_at: str | None = None
     daily_error_code: str | None = None
     authorized_at: float | None = None
+    scan_captured_at: float | None = None
     execution_deadline: float | None = None
     user_options: UserOptions = field(default_factory=parse_user_options)
     login_timeout_seconds: int | None = None

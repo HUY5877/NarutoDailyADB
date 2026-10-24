@@ -188,6 +188,15 @@ redis.call('DEL', KEYS[2])
 return 1
 """
 
+_SCAN_CAPTURED_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
+if session.status == 'failed' or session.status == 'expired' then return 0 end
+session.scanCaptured = true
+session.refreshRequestId = nil
+redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+redis.call('DEL', KEYS[2])
+return 1
+"""
+
 _AUTHORIZE_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
 if session.status == 'failed' or session.status == 'expired' then return 0 end
 session.loginAuthorized = true
@@ -489,6 +498,12 @@ return session.userId
         return bool(await self._call('eval', _ACK_REFRESH_SCRIPT, 2, self._session_key(record),
                                     f'{self.config.redis_queue_key}:refresh:{record.id}',
                                     *self._session_args(record), request_id, record.attempt_id or ''))
+
+    async def mark_scan_captured(self, record: TaskRecord) -> bool:
+        """Publish captured scan input without authorizing login or renewing its lease."""
+        return bool(await self._call('eval', _SCAN_CAPTURED_SCRIPT, 2, self._session_key(record),
+                                    f'{self.config.redis_queue_key}:refresh:{record.id}',
+                                    *self._session_args(record), record.attempt_id or ''))
 
     async def mark_authorized(self, record: TaskRecord) -> bool:
         return bool(await self._call('eval', _AUTHORIZE_SCRIPT, 2, self._session_key(record),

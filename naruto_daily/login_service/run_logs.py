@@ -190,6 +190,8 @@ class RedisRunReporter:
             state.setdefault('secretRealmCompletedAt', record.secret_realm_completed_at)
         if record.authorized_at is not None:
             state["authorizedAt"] = iso_time(record.authorized_at)
+        if record.scan_captured_at is not None:
+            state["scanCapturedAt"] = iso_time(record.scan_captured_at)
         if error_code is not None:
             state["errorCode"] = error_code
         if action_index is not None and action_total is not None:

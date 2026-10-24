@@ -406,7 +406,8 @@ class LoginRuntime:
                             await self._set_status(record, event["status"])
                     elif daily and event.get('type') == 'refreshing':
                         request_id = event.get('requestId')
-                        if (not record.qr_published or record.authorized_at is not None or record.daily_started_at is not None or refresh_id is not None
+                        if (not record.qr_published or record.scan_captured_at is not None
+                                or record.authorized_at is not None or record.daily_started_at is not None or refresh_id is not None
                                 or not isinstance(request_id, str) or not UUID_PATTERN.fullmatch(request_id)
                                 or self._redis_queue is None
                                 or not await self._redis_queue.pending_refresh(record, request_id)):
@@ -416,7 +417,7 @@ class LoginRuntime:
                     elif event.get("type") == "qr" and isinstance(event.get("png"), str):
                         if daily and png is not None and (refresh_id is None or event.get('requestId') != refresh_id):
                             raise ValueError("Duplicate QR output")
-                        if record.authorized_at is not None or record.daily_started_at is not None:
+                        if record.scan_captured_at is not None or record.authorized_at is not None or record.daily_started_at is not None:
                             raise ValueError('QR output after authorization')
                         candidate = base64.b64decode(event["png"], validate=True)
                         if candidate.startswith(b"\x89PNG\r\n\x1a\n") and len(candidate) <= 700_000:
@@ -427,6 +428,22 @@ class LoginRuntime:
                                 self._set_daily_status(record, "waiting_scan")
                         elif daily:
                             raise ValueError("Invalid QR image")
+                    elif daily and event == {'type': 'capture_received'}:
+                        if (not capture_started or not record.qr_published or record.scan_captured_at is not None
+                                or record.authorized_at is not None or record.daily_started_at is not None
+                                or refresh_id is not None or record.expires_at_ms <= time.time() * 1000):
+                            raise ValueError('Unexpected QQ scan receipt')
+                        record.scan_captured_at = time.time()
+                        # Report receipt before opening the game. This must not start
+                        # the execution budget or stand in for game authorization.
+                        self._set_daily_status(record, 'waiting_scan')
+                        if self._run_reporter is not None:
+                            self._run_reporter.emit(record, message='扫码成功，正在登录游戏，无需再次扫码')
+                        logger.info('Task %s: 抓号器扫码结果已收到，正在登录游戏', record.id)
+                        try:
+                            await self._redis_queue.mark_scan_captured(record)
+                        except RedisQueueError:
+                            logger.warning('Task %s: scan receipt session update unavailable', record.id)
                     elif daily and event.get("type") == "authorized":
                         if (not record.qr_published or record.authorized_at is not None
                                 or record.daily_started_at is not None
@@ -806,6 +823,8 @@ class LoginRuntime:
                          record.daily_started_at + self.config.daily_timeout_seconds
                          if record.daily_started_at is not None else record.expires_at_ms / 1000),
         }
+        if record.scan_captured_at is not None:
+            result['scanCapturedAt'] = record.scan_captured_at
         if error_code is not None:
             result["errorCode"] = error_code
         if action_count is not None:
