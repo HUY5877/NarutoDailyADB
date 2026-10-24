@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import time
 from typing import Any
 from uuid import UUID, uuid4
@@ -122,14 +123,30 @@ class LDPlayerManager:
         timeout = remaining if full_deadline else min(self.command_timeout, remaining)
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         try:
-            result = subprocess.run(
-                arguments,
-                shell=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout,
-                creationflags=flags,
-            )
+            # LDPlayer can spawn a long-lived ADB server that inherits stdout
+            # and stderr. On Windows, run() drains PIPEs without a deadline
+            # after a timeout; inherited handles can keep that drain blocked.
+            # Regular files let us wait only for this command, without killing
+            # the shared ADB server or waiting for its output handles to close.
+            with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                result = subprocess.run(
+                    arguments,
+                    shell=False,
+                    stdout=stdout,
+                    stderr=stderr,
+                    timeout=timeout,
+                    creationflags=flags,
+                )
+                # Read a finite snapshot even if an inherited handle is still
+                # receiving output after the command itself has exited.
+                stdout_size = os.fstat(stdout.fileno()).st_size
+                stderr_size = os.fstat(stderr.fileno()).st_size
+                stdout.seek(0)
+                stderr.seek(0)
+                result = subprocess.CompletedProcess(
+                    arguments, result.returncode,
+                    stdout.read(stdout_size), stderr.read(stderr_size),
+                )
         except subprocess.TimeoutExpired:
             raise LDPlayerError(f"LDPlayer {action} timed out; retry or close the login task.") from None
         except OSError:
