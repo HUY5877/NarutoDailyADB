@@ -186,15 +186,111 @@ def test_injection_selects_requested_game_channel_then_confirms_current_round(mo
     assert ('confirm', session.current.capture_id) in calls
 
 
-def test_injection_refuses_a_tim_page_that_was_not_opened_by_the_selected_channel(monkeypatch):
+class RestoredLoginDevice:
+    """A game restores QQ authorization before this task selects its channel."""
+
+    def __init__(self, boundary, *, channel='ios_qq', cancellation='leaves', deadline=200.):
+        from test_login_service_channels import login_frame
+        self.clock = boundary.clock
+        self.login_type, self.deadline = channel, deadline
+        self.cancellation = cancellation
+        self.events = []
+        self.back_at = None
+        self.taps = []
+        self.frames = 0
+        self.game_frame = login_frame()
+
+    def _run(self, *args):
+        assert args == ('shell', 'dumpsys', 'activity', 'activities')
+        is_login = (self.back_at is None or self.cancellation == 'stuck'
+                    or self.clock[0] - self.back_at < 1.5 or self.taps
+                    or self.cancellation == 'reopens' and self.frames > 0)
+        return (b'mResumedActivity: com.tencent.tim/com.tencent.open.agent.AgentActivity'
+                if is_login else b'mResumedActivity: com.tencent.KiHan/.GameActivity')
+
+    def back(self):
+        assert self.back_at is None, 'Cancelling the restored request must not send Back twice'
+        self.back_at = self.clock[0]
+        self.events.append('back')
+
+    def screenshot(self):
+        assert self.back_at is not None and self.clock[0] - self.back_at >= 1.5, (
+            'Wait until the cancelled authorization page has actually left')
+        self.frames += 1
+        self.events.append('game_frame')
+        return self.game_frame
+
+    def hierarchy(self):
+        return ''
+
+    def tap(self, x, y):
+        self.taps.append((x, y))
+        self.events.append('channel_tap')
+
+
+@pytest.mark.parametrize('channel,left,right', [('android_qq', 1400, 1850), ('ios_qq', 950, 1400)])
+def test_injection_cancels_restored_login_and_selects_requested_channel(monkeypatch, channel, left, right):
     capture = module()
     boundary = SessionBoundary(capture)
     session = boundary.setup(monkeypatch)
     session.prepare()
-    session.device._run = lambda *_: b'mResumedActivity: com.tencent.tim/com.tencent.open.agent.AgentActivity'
+    device = RestoredLoginDevice(boundary, channel=channel)
+
+    class Login:
+        def call(self, method, argument=None):
+            assert device.taps, 'A restored request must never receive this task authorization'
+            device.events.append(method)
+            if method == 'inject':
+                assert argument['taskId'] == TASK
+                assert argument['captureId'] == session.current.capture_id
+            else:
+                assert method == 'confirm' and argument == session.current.capture_id
+            return {'captureId': session.current.capture_id,
+                    'state': 'submitted' if method == 'confirm' else 'ready'}
+
+    session.device, session.login = device, Login()
+    session.inject(capture.CapturedAuthorization('auth://callback?access_token=private', 1792821600000))
+
+    assert len(device.taps) == 1 and left < device.taps[0][0] < right
+    assert device.events == ['back', 'game_frame', 'channel_tap', 'inject', 'confirm']
+
+
+@pytest.mark.parametrize('deadline,expected_error', [(200., 'capture'), (102.25, 'deadline')])
+def test_injection_refuses_unselected_tim_page_when_cancel_cannot_leave(monkeypatch, deadline, expected_error):
+    capture = module()
+    boundary = SessionBoundary(capture)
+    session = boundary.setup(monkeypatch)
+    session.prepare()
+    session.device = device = RestoredLoginDevice(boundary, cancellation='stuck', deadline=deadline)
+
+    with pytest.raises(capture.CaptureError if expected_error == 'capture' else TimeoutError):
+        session.inject(capture.CapturedAuthorization('auth://callback?access_token=private', 1792821600000))
+
+    assert device.events == ['back']
+    assert boundary.clock[0] == min(110., deadline)
+    assert not any(event[:2] == ('login', 'inject') for event in boundary.events)
+
+
+def test_injection_refuses_unselected_login_that_reopens_before_channel_tap(monkeypatch):
+    capture = module()
+    boundary = SessionBoundary(capture)
+    session = boundary.setup(monkeypatch)
+    session.prepare()
+    session.device = device = RestoredLoginDevice(boundary, cancellation='reopens')
+
+    class Login:
+        def call(self, method, argument=None):
+            device.events.append(method)
+            return {'captureId': session.current.capture_id,
+                    'state': 'submitted' if method == 'confirm' else 'ready'}
+
+    session.login = Login()
+
     with pytest.raises(capture.CaptureError):
         session.inject(capture.CapturedAuthorization('auth://callback?access_token=private', 1792821600000))
-    assert not any(event[:2] == ('login', 'inject') for event in boundary.events)
+
+    assert device.events == ['back', 'game_frame']
+    assert not device.taps
 
 
 def encoded_result(value):

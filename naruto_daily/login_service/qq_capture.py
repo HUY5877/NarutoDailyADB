@@ -281,13 +281,28 @@ class QQCaptureSession:
         from .qr_navigation import choose_action, find_startup_ad_close
         expected = {'android_qq': 'qq_android', 'ios_qq': 'qq_ios'}[self.device.login_type]
         selected_at = None
+        cancelled_unselected = False
         last_action, repeated, ad_observed, ad_clicks = None, 0, False, 0
         while True:
             self._remaining()
             if self._login_activity():
-                if selected_at is None:
-                    raise CaptureError('QQ 上号器未由本次指定游戏通道打开')
-                return
+                if selected_at is not None:
+                    return
+                if cancelled_unselected:
+                    raise CaptureError('QQ 上号器再次提前打开，无法确认本次游戏通道')
+                # The game can restore its last QQ channel on startup. Cancel
+                # that request before selecting this task's Android/iOS channel.
+                logging.getLogger(__name__).info('QQ 上号器提前打开，返回游戏重新选择本次登录通道')
+                self._remaining()
+                self.device.back()
+                cancelled_unselected = True
+                cancel_deadline = self._clock() + 10
+                while self._login_activity():
+                    self._remaining()
+                    if self._clock() >= cancel_deadline:
+                        raise CaptureError('取消提前打开的 QQ 授权页后未返回游戏')
+                    self._pause()
+                continue
             if selected_at is not None:
                 if self._clock() - selected_at >= 30:
                     raise CaptureError('选择 QQ 通道后上号器未打开')
@@ -312,6 +327,10 @@ class QQCaptureSession:
             if action is not None:
                 if action.name not in (expected, 'game_agreement', 'game_back', 'game_wait'):
                     raise CaptureError('游戏未进入本次 QQ 通道，已停止自动上号')
+                if action.name == expected and self._login_activity():
+                    # The authorization page may reopen after the screenshot.
+                    # Do not count a tap on that page as selecting a channel.
+                    continue
                 repeated = repeated + 1 if action.name == last_action else 1
                 if repeated > 6:
                     raise CaptureError('QQ 游戏通道在重复操作后未前进')
