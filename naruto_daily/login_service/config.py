@@ -56,6 +56,9 @@ class ServiceConfig:
     qq_bot_group_openid: str = ""
     database_url: str | None = field(default=None, repr=False)
     qq_capture_api_base: str | None = None
+    qq_apk_release_prefix: str | None = None
+    qq_capture_apk_sha256: str | None = None
+    qq_login_apk_sha256: str | None = None
     app_env: str = "prod"
     sls_enabled: bool = False
     sls_endpoint: str = ""
@@ -215,6 +218,15 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
             raise EnvironmentConfigError('QQ_CAPTURE_API_BASE 必须为不含路径和凭据的 HTTPS 网站根地址') from None
         capture_base = capture_base.rstrip('/')
     database_url = env.get("DATABASE_URL", "").strip() or None
+    apk_prefix = env.get('QQ_APK_RELEASE_PREFIX', '').strip()
+    capture_sha = env.get('QQ_CAPTURE_APK_SHA256', '').strip().lower()
+    login_sha = env.get('QQ_LOGIN_APK_SHA256', '').strip().lower()
+    if any((apk_prefix, capture_sha, login_sha)):
+        if (not re.fullmatch(r'releases/huy-android/[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}', apk_prefix)
+                or not re.fullmatch(r'[0-9a-f]{64}', capture_sha)
+                or not re.fullmatch(r'[0-9a-f]{64}', login_sha)):
+            raise EnvironmentConfigError(
+                'QQ_APK_RELEASE_PREFIX、QQ_CAPTURE_APK_SHA256、QQ_LOGIN_APK_SHA256 必须配置完整的固定版本和摘要')
     if qq["qq_bot_app_id"] and not database_url:
         raise EnvironmentConfigError("请配置 DATABASE_URL，以查询 QQ 通知中的网站用户名")
     if database_url:
@@ -253,4 +265,6 @@ def load_config(env: Mapping[str, str] | None = None) -> ServiceConfig:
             env, "LDPLAYER_COMMAND_TIMEOUT_SECONDS", 20, 1, 300,
         ),
         **oss, **qq, **sls, database_url=database_url, qq_capture_api_base=capture_base or None,
+        qq_apk_release_prefix=apk_prefix or None,
+        qq_capture_apk_sha256=capture_sha or None, qq_login_apk_sha256=login_sha or None,
     )

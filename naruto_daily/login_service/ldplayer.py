@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import tempfile
 import time
@@ -24,6 +25,7 @@ _MANAGED_NAME = re.compile(
 _PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+")
 _SERIAL = re.compile(r"[A-Za-z0-9._:-]+")
 _SIZE = re.compile(r"(\d+)x(\d+)")
+_CAPTURE_PACKAGES = frozenset({"com.huy.authcapture", "com.tencent.tim"})
 
 
 def _binding_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -41,6 +43,10 @@ class LDPlayerError(RuntimeError):
 
 class LDPlayerPoolFull(LDPlayerError):
     """All explicitly configured LDPlayer pool instances are reserved."""
+
+
+class LDPlayerOwnershipError(LDPlayerError):
+    """The task's running instance cannot be verified; never attempt fallback."""
 
 
 @dataclass
@@ -676,6 +682,98 @@ class LDPlayerManager:
                 return False
             self._remaining(deadline)
             return {'com.huy.authcapture', 'com.tencent.tim'} <= packages
+
+    def _capture_serial(self, instance: LDPlayerInstance, deadline: float) -> str:
+        """Verify stored ownership and the current ADB target while bindings are locked."""
+        try:
+            index = instance.index if isinstance(instance, LDPlayerInstance) else None
+            binding_key, bindings, current, _ = self._tracked(instance, deadline)
+            serial = bindings[binding_key].get("serial")
+            if (current.index != index or not current.running
+                    or not isinstance(serial, str) or serial == "unknown"
+                    or _SERIAL.fullmatch(serial) is None or instance.serial != serial):
+                raise LDPlayerError("The running LDPlayer instance no longer matches the task binding.")
+            output = self._run(
+                [self.console_path, "adb", "--index", str(index), "--command", "get-serialno"],
+                deadline, "ADB serial verification",
+            )
+            lines = [line.strip() for line in self._decode(output).splitlines() if line.strip()]
+            if not lines or lines[-1] != serial:
+                raise LDPlayerError("LDPlayer ADB serial no longer matches the task binding.")
+            self._remaining(deadline)
+            return serial
+        except LDPlayerError as error:
+            raise LDPlayerOwnershipError(str(error)) from None
+
+    def _capture_packages(self, serial: str, deadline: float) -> set[str]:
+        output = self._run(
+            [self.adb_path, "-s", serial, "shell", "pm", "list", "packages"],
+            deadline, "capture package check",
+        )
+        lines = [line.strip() for line in self._decode(output).splitlines() if line.strip()]
+        if not lines or any(
+            not line.startswith("package:")
+            or (line != "package:android" and _PACKAGE.fullmatch(line.removeprefix("package:")) is None)
+            for line in lines
+        ):
+            raise LDPlayerError("Capture package check returned no complete package list.")
+        self._remaining(deadline)
+        return {line.removeprefix("package:") for line in lines}
+
+    def missing_capture_apps(self, instance: LDPlayerInstance, deadline: float) -> set[str]:
+        """Return confirmed missing helper packages; an uncertain probe never means absent."""
+        with self._exclusive(deadline):
+            serial = self._capture_serial(instance, deadline)
+            return set(_CAPTURE_PACKAGES) - self._capture_packages(serial, deadline)
+
+    def verify_capture_instance(self, instance: LDPlayerInstance, deadline: float) -> None:
+        """Verify the fallback target independently of helper package discovery."""
+        with self._exclusive(deadline):
+            self._capture_serial(instance, deadline)
+
+    def install_missing_app(
+        self, instance: LDPlayerInstance, apk: Path, package: str, deadline: float,
+    ) -> None:
+        """Install one verified helper APK without replacing any existing application."""
+        if not isinstance(package, str) or package not in _CAPTURE_PACKAGES:
+            raise LDPlayerError("Only configured QQ helper applications may be installed.")
+        try:
+            apk = Path(apk)
+            if apk.suffix.lower() != ".apk" or not stat.S_ISREG(apk.lstat().st_mode):
+                raise ValueError
+        except (OSError, TypeError, ValueError):
+            raise LDPlayerError("A regular local APK file is required for helper installation.") from None
+
+        with self._exclusive(deadline):
+            serial = self._capture_serial(instance, deadline)
+            identity = (instance.name, instance.index, instance.serial, instance.task_id)
+            if package in self._capture_packages(serial, deadline):
+                return
+
+        # A reserved task retains its instance through the worker lifecycle. Do
+        # not block admission to other slots while ADB streams a large APK.
+        # Recheck the owner even after a failed install before allowing fallback.
+        install_error = None
+        try:
+            result = self._run_result(
+                [self.adb_path, "-s", serial, "install", apk],
+                min(deadline, time.time() + 60), "helper application installation",
+                full_deadline=True,
+            )
+            lines = [line.strip() for line in self._decode(result.stdout).splitlines() if line.strip()]
+            if not lines or lines[-1] != "Success":
+                raise LDPlayerError("LDPlayer helper application installation did not report success.")
+        except LDPlayerError as error:
+            install_error = error
+
+        with self._exclusive(deadline):
+            current_serial = self._capture_serial(instance, deadline)
+            if (instance.name, instance.index, current_serial, instance.task_id) != identity:
+                raise LDPlayerOwnershipError("LDPlayer instance changed during helper application installation.")
+            if install_error is not None:
+                raise install_error
+            if package not in self._capture_packages(current_serial, deadline):
+                raise LDPlayerError("Installed helper application was not found on the managed LDPlayer.")
 
     def launch_game(self, instance: LDPlayerInstance, package: str, deadline: float) -> None:
         if not isinstance(package, str) or _PACKAGE.fullmatch(package) is None:
