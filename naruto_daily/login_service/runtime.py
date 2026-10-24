@@ -335,6 +335,28 @@ class LoginRuntime:
                 child_env['DATABASE_URL'] = self.config.database_url
             if self.config.qq_capture_api_base:
                 child_env['QQ_CAPTURE_API_BASE'] = self.config.qq_capture_api_base
+            if self.config.qq_apk_release_prefix:
+                try:
+                    downloads = await asyncio.wait_for(
+                        self.storage.apk_download_requests(self.config.qq_apk_release_prefix),
+                        timeout=max(0.001, min(5.0, record.expires_at_ms / 1000 - time.time())),
+                    )
+                    child_env['QQ_APK_DOWNLOADS'] = json.dumps({
+                        package: {**downloads[package], 'sha256': digest}
+                        for package, digest in (('com.huy.authcapture', self.config.qq_capture_apk_sha256),
+                                                ('com.tencent.tim', self.config.qq_login_apk_sha256))
+                    })
+                except Exception:
+                    # Signing errors may contain credentials; keep the legacy
+                    # startup path available without logging exception contents.
+                    logger.warning('Task %s: 辅助应用下载地址暂不可用，继续原有应用检测和扫码流程', record.id)
+                # Signing yields to cancellation/shutdown. Do not launch work
+                # that became inactive while its private requests were prepared.
+                self._check_interrupted(record)
+                if self._stopping:
+                    raise _WorkerStopping
+                if record.expires_at_ms <= time.time() * 1000:
+                    raise _TaskExpired
         # 子进程复用启动时的模型配置，不重新请求 KV，也不读取本地模型 key。
         child = subprocess.Popen(
             command,

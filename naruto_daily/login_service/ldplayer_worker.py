@@ -49,6 +49,53 @@ def _load_capture_session():
     return QQCaptureSession
 
 
+def _capture_apps_ready(manager, instance, deadline: float, state_dir: Path,
+                        clock: Callable[[], float]) -> bool:
+    """Install only absent helpers; failed provisioning retains legacy QQ attempts."""
+    if clock() >= deadline:
+        raise TimeoutError
+    if manager.capture_apps_installed(instance, deadline):
+        return True
+    raw = os.environ.get('QQ_APK_DOWNLOADS')
+    if not raw:
+        return False
+    from .capture_apks import CAPTURE_PACKAGE, LOGIN_PACKAGE, download_apk, parse_downloads
+    from .ldplayer import LDPlayerOwnershipError
+    step = '检查应用'
+    try:
+        missing = manager.missing_capture_apps(instance, deadline)
+        if not missing:
+            return True
+        downloads = parse_downloads(raw)
+        for package, name in ((CAPTURE_PACKAGE, '抓号器'), (LOGIN_PACKAGE, '上号器')):
+            if package not in missing:
+                continue
+            step = f'下载{name}'
+            logging.getLogger(__name__).info('当前雷电实例缺少%s，正在下载并安装', name)
+            apk = download_apk(downloads[package], state_dir / 'apk-cache', deadline)
+            if clock() >= deadline:
+                raise TimeoutError
+            step = f'安装{name}'
+            manager.install_missing_app(instance, apk, package, deadline)
+        step = '安装后检查'
+        if manager.missing_capture_apps(instance, deadline):
+            raise RuntimeError('Missing helpers after install')
+        if clock() >= deadline:
+            raise TimeoutError
+        logging.getLogger(__name__).info('抓号器和上号器已准备完成')
+        return True
+    except LDPlayerOwnershipError:
+        raise
+    except Exception:
+        if clock() >= deadline:
+            raise TimeoutError from None
+        # A download can outlive an instance reassignment. Fallback is safe
+        # only while the same task still owns the same live emulator.
+        manager.verify_capture_instance(instance, deadline)
+        logging.getLogger(__name__).warning('辅助应用自动补装失败（%s），继续尝试原 QQ 扫码流程', step)
+        return False
+
+
 def _send(stream: TextIO, event: dict[str, object]) -> None:
     # Task logs may originate from a background thread. All protocol events use
     # the same lock so neither a JSON line nor its flush can be interleaved.
@@ -225,7 +272,7 @@ def main(
                 )
 
         if (daily_session is not None and login_type in ('android_qq', 'ios_qq')
-                and manager.capture_apps_installed(instance, deadline)):
+                and _capture_apps_ready(manager, instance, deadline, state_dir, clock)):
             phase = 'configuration'
             device = LoginDevice(manager.adb_path, serial, deadline, command_timeout,
                                  game_package=package, login_type=login_type)

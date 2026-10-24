@@ -37,6 +37,7 @@ class ObjectStorage(Protocol):
     async def get(self, id: str) -> StoredObject | None: ...
     async def delete(self, id: str) -> None: ...
     async def sweep(self) -> None: ...
+    async def apk_download_requests(self, release_prefix: str) -> dict[str, dict[str, Any]]: ...
 
 
 def _safe_id(id: str) -> None:
@@ -112,6 +113,32 @@ class AliyunObjectStorage:
     def _initialize(self) -> None:
         with self._lock:
             self._client()
+
+    async def apk_download_requests(self, release_prefix: str) -> dict[str, dict[str, Any]]:
+        """Sign two fixed GET requests without passing OSS signing secrets to a child."""
+        if not re.fullmatch(r'releases/huy-android/[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}', release_prefix):
+            raise ValueError('Invalid QQ APK release prefix')
+        return await asyncio.to_thread(self._apk_download_requests, release_prefix)
+
+    def _apk_download_requests(self, release_prefix: str) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            bucket = self._client()
+            oss2 = importlib.import_module('oss2')
+            downloads = {}
+            for package, filename in (('com.huy.authcapture', 'HUYCapture.apk'),
+                                      ('com.tencent.tim', 'HUYLogin.apk')):
+                key = f'{release_prefix}/{filename}'
+                # Default OSS public endpoints reject APK query-signed URLs.
+                # Use the SDK's own request signer, as Bucket._do does, without
+                # issuing I/O. Date limits reuse; method/resource bind this GET.
+                request = oss2.http.Request('GET', bucket._make_url(bucket.bucket_name, key))
+                bucket.auth._sign_request(request, bucket.bucket_name, key)
+                downloads[package] = {
+                    'url': request.url,
+                    'headers': {name.lower(): value for name, value in request.headers.items()
+                                if name.lower() in ('authorization', 'date', 'x-oss-security-token')},
+                }
+            return downloads
 
     async def put(self, id: str, png: bytes, expires_at: str) -> None:
         await asyncio.to_thread(self._put, id, png, expires_at)

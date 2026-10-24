@@ -26,6 +26,8 @@ CLOUDFLARE_KV_NAMESPACE_ID_TEST=your-hyrz-test-namespace-id
 | `LDPLAYER_STATE_DIR` | worker 的绑定、锁、运行状态和本地日志目录；必填，相对 worker 项目根目录解析 |
 | `OSS_REGION` / `OSS_BUCKET` | 各环境的 OSS 地域及 Bucket；该环境内客户端与 worker 必须一致，当前正式与测试使用不同 Bucket |
 | `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | 后端 OSS 凭据；只授权相应对象前缀的所需操作 |
+| `QQ_APK_RELEASE_PREFIX` | 可选；worker 自动补装 QQ 辅助应用的私有 OSS 固定版本目录 `releases/huy-android/<版本>`，该环境 OSS 身份须可读取两款 APK |
+| `QQ_CAPTURE_APK_SHA256` / `QQ_LOGIN_APK_SHA256` | 与版本目录共同配置；`HUYCapture.apk` 和 `HUYLogin.apk` 的 64 位 SHA256；三项全部缺省时不启用自动补装 |
 | `OSS_KEY_PREFIX` | 二维码对象目录前缀；客户端与 worker 必须一致，必填 |
 | `STORAGE_DRIVER` | 网站对象读取方式；当前两个 namespace 均为 `oss` |
 | `DATABASE_URL` | 网站 PostgreSQL 及 worker 通知查询所用的数据库连接；同主机、账号等连接信息，数据库名分别配置 |
@@ -93,6 +95,6 @@ PostgreSQL 复用同一主机、端口和账号，仅 URL 中的数据库名不�
 
 本机 `.env` 的 `EMULATOR_DRIVER=mock` 保持模拟运行。切换真实驱动前，配置测试专用的 `LDPLAYER_POOL_INDICES`，逐个确认 1920×1080、DPI 240 和 ADB；状态目录隔离不能防止两个 worker 指定同一模拟器索引。
 
-worker 启动先完整读取选定 Cloudflare namespace，再在解析后的 `LDPLAYER_STATE_DIR` 重置实例登记。任务子进程继承 `APP_ENV`、队列、路由计数器、Redis 和模型配置，不重新读取云端或本地 `.env`。OSS、数据库、QQ 和 Cloudflare 凭据不传给执行子进程。
+worker 启动先完整读取选定 Cloudflare namespace，再在解析后的 `LDPLAYER_STATE_DIR` 重置实例登记。任务子进程继承 `APP_ENV`、队列、路由计数器、Redis 和模型配置，不重新读取云端或本地 `.env`。QQ 日常、周胜子进程另接收同环境的 `DATABASE_URL`、`QQ_CAPTURE_API_BASE`，供抓号交接使用；启用自动补装时，内部 `QQ_APK_DOWNLOADS` 仅包含两个固定 APK 的下载 URL、带 Date 的 GET 签名头和摘要。长期 OSS 密钥、QQ 机器人和 Cloudflare 凭据不传给执行子进程。微信和仅二维码模式不下载、安装辅助应用。
 
 配置写入并不代表网站已部署或实机验收。本次需另行部署测试站，确认它使用 `APP_ENV=test`，再在测试专用模拟器池联调任务投递、二维码上传与刷新、扫码授权、日常执行、日志查询和清理；正式站、正式 worker 与正式模拟器池均保持各自配置。
