@@ -66,7 +66,7 @@ Redis、OSS、数据库和隔离路径统一从选定 KV namespace 读取，不�
 
 QQ 通知使用选定 namespace 的普通 `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID` 和 `DATABASE_URL` 字段，不再使用本地 `TEST_JEV_*` 变量。当前测试 namespace 的三项 QQ 值留空，因此不主动发群消息。启用时三项机器人配置必须同时填写，并有测试数据库配置；通知通过只读查询选定数据库的 `users` 表获取用户名。机器人配置不传给任务子进程；数据库配置仅供 QQ 登录子进程的抓号交接使用。
 
-安卓 QQ 和 iOS QQ 任务会在已启动的本次实例中检查 `com.huy.authcapture`（抓号器）和 `com.tencent.tim`（上号器）。两款应用都在时，先由抓号器生成二维码，网站用户扫码后上传本次授权，再由同一实例打开游戏中对应 QQ 通道，把完整授权 URL 交给游戏拉起的上号器确认。两款应用的自动流程均无需登录网站账号，云端账号名称固定为“自己账号”。只有游戏实际出现原有授权完成标记后才进入登录收尾、日常或决斗场周胜。缺少任意一款应用时使用原 QQ 扫码流程，微信保持原流程。
+安卓 QQ 和 iOS QQ 的日常、周胜任务会在已启动的本次实例中检查 `com.huy.authcapture`（抓号器）和 `com.tencent.tim`（上号器）。两款应用都在时，先由抓号器生成二维码，网站用户扫码后上传本次授权，再由同一实例打开游戏中对应 QQ 通道，把完整授权 URL 交给游戏拉起的上号器确认。两款应用的自动流程均无需登录网站账号，云端账号名称固定为“自己账号”。只有游戏实际出现原有授权完成标记后才进入登录收尾、日常或决斗场周胜。缺少任意一款应用时使用原 QQ 扫码流程；可选的包查询失败且任务仍有效时，记录警告后走原流程。实例所有权、设备串号和截止时间校验失败仍然终止。微信和仅取二维码模式保持原流程。
 
 启用抓号路径前需同时升级两款应用到支持 `protocol:1` provider 的版本，部署网站抓号接口和表结构，并在选定 Cloudflare KV namespace 配置 `QQ_CAPTURE_API_BASE=https://你的登录网站域名` 及同环境 `DATABASE_URL`。地址只能是 HTTPS 网站根地址，端口须为默认或 443，不能含路径、查询参数或凭据。数据库账户需可读写 `naruto_login.qq_capture_requests`；worker 不查询用户的最新历史授权，而是按可信 Redis 会话的用户、任务、执行轮次和二维码轮次精确交接。双应用齐全但缺少身份、数据库、网站地址或新版 provider 时明确报配置错误。业务配置不从本地 `.env` 回退。进入抓号路径的子进程即使被系统强制终止，父进程仍按可信用户、任务和执行轮次尽力撤销；数据库临时不可用时仅记录不含凭据的警告，并保留原有效期限制。
 
@@ -262,7 +262,7 @@ HTTP 模式可用 `HOST` / `PORT` 修改监听地址，用 `MAX_QUEUE_SIZE` / `M
 
 配置 `LDPLAYER_POOL_INDICES=0,1,2`、`WORKER_CONCURRENCY=3` 时，最多有三个任务同时占用实例，等待扫码和执行日常都计入占用。第四个任务保持在 Redis 的 `queued` 状态，直到已有任务结束并释放槽位；排队期间仍遵守客户端会话 TTL。并发数不能扩大实际实例池容量，冷启动管理操作仍通过锁依次执行。
 
-真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，并通过子进程环境传入 `APP_ENV`、已解析的 `REDIS_URL`、`MULTIMODAL_ROUTING_COUNTER_KEY` 和模型渠道配置。子进程使用同一 namespace 的模型计数器及任务刷新 key；Redis 地址不进入 JSON 协议或日志。选定队列名和状态目录原样传给子进程，不重新拉取 KV，也不重新读取本地模型配置；OSS、数据库、QQ 密钥和 Cloudflare Token 不传递。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
+真实驱动通过 `python -u -m naruto_daily.login_service.ldplayer_worker` 运行隔离子进程。父进程传递任务 ID、登录有效期、雷电配置、日常配置路径和独立超时，并通过子进程环境传入 `APP_ENV`、已解析的 `REDIS_URL`、`MULTIMODAL_ROUTING_COUNTER_KEY` 和模型渠道配置。QQ 日常、周胜子进程还会收到同环境的 `DATABASE_URL` 与 `QQ_CAPTURE_API_BASE`，仅在进入抓号路径后使用。子进程使用同一 namespace 的模型计数器及任务刷新 key；Redis 和数据库地址不进入 JSON 协议或日志。选定队列名和状态目录原样传给子进程，不重新拉取 KV，也不重新读取本地模型配置；OSS、QQ 密钥和 Cloudflare Token 不传递。子进程 stdout 只用于结构化事件，执行异常只输出固定错误码。
 
 ## 对象存储
 

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -643,10 +644,20 @@ class LDPlayerManager:
             if (not current.running or not isinstance(serial, str) or _SERIAL.fullmatch(serial) is None
                     or instance.serial != serial):
                 raise LDPlayerError('Start the managed LDPlayer before checking capture applications.')
-            output = self._run([self.adb_path, '-s', serial, 'shell', 'pm', 'list', 'packages'],
-                               deadline, 'capture package check')
-            packages = {line.strip().removeprefix('package:') for line in self._decode(output).splitlines()
-                        if line.strip().startswith('package:')}
+            try:
+                output = self._run([self.adb_path, '-s', serial, 'shell', 'pm', 'list', 'packages'],
+                                   deadline, 'capture package check')
+                lines = [line.strip() for line in self._decode(output).splitlines() if line.strip()]
+                if not lines or any(not line.startswith('package:') for line in lines):
+                    raise LDPlayerError('Capture package check returned no complete package list.')
+                packages = {line.removeprefix('package:') for line in lines}
+            except LDPlayerError:
+                # Discovery is optional; ownership and serial checks above are not.
+                # A failed probe must not give an expired task a legacy login attempt.
+                self._remaining(deadline)
+                logging.getLogger(__name__).warning('暂时无法检测 QQ 辅助应用，将继续原扫码登录流程')
+                return False
+            self._remaining(deadline)
             return {'com.huy.authcapture', 'com.tencent.tim'} <= packages
 
     def launch_game(self, instance: LDPlayerInstance, package: str, deadline: float) -> None:

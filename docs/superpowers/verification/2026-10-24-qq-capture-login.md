@@ -2,7 +2,7 @@
 
 功能分支：两个仓库的 `codex/qq-capture-login`，分别基于 NarutoDailyADB 的远端 main `b81bc27` 和 NarutoLoginClient 的远端 main `667382e`。
 
-功能提交已推送：执行端和 Android 为 `4f727bd`，网站为 `29eb851`。没有合并到 main。
+本记录为初次交付时的验证：执行端和 Android 为 `4f727bd`，网站为 `29eb851`，当时均未合并到 main。后续正式配置、网站发布和 worker 合并请求的验证见同目录 `2026-10-24-qq-capture-production.md`。
 
 ## 本地验证
 

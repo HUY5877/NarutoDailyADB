@@ -487,6 +487,195 @@ def test_package_detection_is_exact_and_on_the_owned_instance(monkeypatch, tmp_p
     assert probes == [(str(console.with_name('adb.exe')), '-s', 'emulator-5570', 'shell', 'pm', 'list', 'packages')]
 
 
+def package_probe_boundary(monkeypatch, tmp_path, probe, calls):
+    from test_login_service_ldplayer import FakeLDPlayer
+    console = tmp_path / 'ldconsole.exe'
+    runner = FakeLDPlayer(console)
+    probes = []
+
+    def run(args, **kwargs):
+        parts = tuple(map(str, args))
+        if parts[-4:] == ('shell', 'pm', 'list', 'packages'):
+            probes.append(parts)
+            return probe(args, kwargs)
+        if parts[:2] == (str(console), 'runapp'):
+            calls.append('game')
+        return runner(args, **kwargs)
+
+    monkeypatch.setattr('naruto_daily.login_service.ldplayer.subprocess.run', run)
+    return console, runner, probes
+
+
+@pytest.mark.parametrize('failure', ['nonzero', 'timeout', 'os_error', 'decode', 'empty', 'non_package', 'partial'])
+def test_capture_package_probe_failure_preserves_legacy_login(monkeypatch, tmp_path, caplog, failure):
+    import subprocess
+    import time
+    from naruto_daily.login_service.ldplayer import LDPlayerManager
+    from test_login_service_ldplayer import Result
+
+    def probe(args, kwargs):
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(args, kwargs['timeout'], stderr=b'private-token')
+        if failure == 'os_error':
+            raise OSError('private-token')
+        return {
+            'nonzero': Result(b'private-token', b'private-token', 1),
+            'decode': Result(b'\xff'), 'empty': Result(),
+            'non_package': Result(b'Error: private-token'),
+            'partial': Result(b'package:com.huy.authcapture\npackage:com.tencent.tim\nError: private-token'),
+        }[failure]
+
+    calls = []
+    console, _, probes = package_probe_boundary(monkeypatch, tmp_path, probe, calls)
+    manager = LDPlayerManager(console, 'clean-template', tmp_path / 'state')
+    deadline = time.time() + 20
+    instance = manager.allocate(TASK, deadline)
+    manager.start(instance, deadline)
+    assert manager.capture_apps_installed(instance, deadline) is False
+    manager.launch_game(instance, 'com.tencent.naruto', deadline)
+    assert calls == ['game'] and len(probes) == 1
+    assert 'private-token' not in caplog.text
+    assert any(record.levelname == 'WARNING' for record in caplog.records)
+
+
+@pytest.mark.parametrize('invalid', ['owner', 'serial', 'stopped', 'deadline',
+                                     'deadline_during_probe', 'deadline_after_output'])
+def test_capture_package_fallback_never_bypasses_task_ownership_or_deadline(monkeypatch, tmp_path, invalid):
+    import subprocess
+    import time
+    from naruto_daily.login_service.ldplayer import LDPlayerError, LDPlayerManager
+    from test_login_service_ldplayer import Result
+
+    now = [time.time()]
+    monkeypatch.setattr('naruto_daily.login_service.ldplayer.time.time', lambda: now[0])
+    deadline = now[0] + 20
+
+    def probe(args, kwargs):
+        now[0] = deadline
+        if invalid == 'deadline_after_output':
+            return Result(b'package:com.huy.authcapture\npackage:com.tencent.tim')
+        raise subprocess.TimeoutExpired(args, kwargs['timeout'])
+
+    console, runner, probes = package_probe_boundary(monkeypatch, tmp_path, probe, [])
+    manager = LDPlayerManager(console, '', tmp_path / 'state', pool_indices=(7,))
+    instance = manager.allocate(TASK, deadline)
+    manager.start(instance, deadline)
+    if invalid == 'owner':
+        instance.task_id = USER
+    elif invalid == 'serial':
+        instance.serial = 'emulator-9999'
+    elif invalid == 'stopped':
+        runner.instances['clean-template'][1] = 0
+    elif invalid == 'deadline':
+        now[0] = deadline
+    with pytest.raises(LDPlayerError):
+        manager.capture_apps_installed(instance, deadline)
+    assert len(probes) == int(invalid in ('deadline_during_probe', 'deadline_after_output'))
+
+
+@pytest.mark.parametrize('mode', ['qr_only', 'daily', 'arena_weekly'])
+@pytest.mark.parametrize('channel', ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat'])
+@pytest.mark.parametrize('installed', [[], ['com.huy.authcapture'], ['com.tencent.tim'],
+                                       ['com.huy.authcapture', 'com.tencent.tim']])
+def test_worker_package_matrix_preserves_qr_daily_and_weekly_protocol(
+    monkeypatch, tmp_path, mode, channel, installed,
+):
+    from naruto_daily.login_service import ldplayer_worker
+    from naruto_daily.login_service.ldplayer import LDPlayerError, LDPlayerManager
+    from test_login_service_ldplayer import Result
+    from test_login_service_ldplayer_worker import invoke, request, PNG
+
+    calls = []
+    console, _, probes = package_probe_boundary(monkeypatch, tmp_path,
+        lambda *_: Result('\n'.join('package:' + name for name in
+            installed + ['com.android.settings', 'com.tencent.tim.fake']).encode()), calls)
+    uses_capture = mode != 'qr_only' and channel in ('android_qq', 'ios_qq') and len(installed) == 2
+    probes_apps = mode != 'qr_only' and channel in ('android_qq', 'ios_qq')
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Package dispatch must not access a real capture provider or database')
+
+    monkeypatch.setattr(module().psycopg, 'connect', forbidden)
+    monkeypatch.setattr(module().AutomationProvider, 'call', forbidden)
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    monkeypatch.delenv('QQ_CAPTURE_API_BASE', raising=False)
+
+    class Device:
+        def __init__(self, adb_path, serial, deadline, command_timeout, *, game_package, login_type):
+            assert serial == 'emulator-5570' and login_type == channel
+
+    class Capture:
+        def __init__(self, device, **kwargs):
+            assert uses_capture
+        def prepare(self):
+            calls.append('capture_qr')
+            return PNG
+        def wait(self, **kwargs):
+            calls.append('capture_wait')
+            return 'current-authorization'
+        def prepare_login(self):
+            calls.append('capture_reset')
+        def inject(self, authorization):
+            assert authorization == 'current-authorization'
+            calls.append('capture_inject')
+        def close(self):
+            calls.append('capture_close')
+
+    def load_capture():
+        assert uses_capture, 'Legacy login must not load capture configuration or dependencies'
+        return Capture
+
+    class Daily:
+        def __init__(self, **kwargs):
+            assert mode != 'qr_only'
+        def wait_for_authorization(self, deadline):
+            calls.append('game_authorized')
+        def finish_login(self, deadline):
+            calls.append('login_finished')
+        def run_daily(self, deadline, **kwargs):
+            if mode == 'arena_weekly':
+                kwargs['on_arena_started'](1_800_001_000.0)
+            else:
+                assert not kwargs
+            calls.append(mode)
+            return 3
+
+    def fetch(device):
+        calls.append('legacy_qr')
+        return PNG
+
+    monkeypatch.setattr(ldplayer_worker, '_load_capture_session', load_capture)
+    monkeypatch.setattr(ldplayer_worker, '_load_daily_session', lambda: Daily)
+    changes = dict(consolePath=str(console), stateDir=str(tmp_path / 'state'),
+                   commandTimeout=20, loginType=channel)
+    if mode != 'qr_only':
+        changes.update(dailyConfigPath=str(tmp_path / 'daily.json'), dailyTimeoutSeconds=600)
+    if mode == 'arena_weekly':
+        changes['userOptions'] = {'mainTask': 'arena_weekly'}
+    code, events = invoke(monkeypatch, request(**changes), (LDPlayerManager, LDPlayerError, Device, fetch))
+    assert code == 0
+    protocol = [event for event in events if event['type'] != 'log']
+    expected = [{'type': 'stage', 'status': 'starting_emulator'}]
+    expected += ([{'type': 'capture_started'}] if uses_capture
+                 else [{'type': 'stage', 'status': 'opening_game'}])
+    expected += [{'type': 'stage', 'status': 'preparing_qr'},
+                 {'type': 'qr', 'png': base64.b64encode(PNG).decode()}]
+    if mode != 'qr_only':
+        expected += [{'type': 'authorized', 'executionDeadline': 1_800_000_600.0}, {'type': 'logged_in'}]
+        if mode == 'arena_weekly':
+            expected += [{'type': 'arena_started', 'executionDeadline': 1_800_001_000.0}]
+        expected += [{'type': 'daily_completed', 'actionCount': 3}]
+    assert protocol == expected
+    expected_calls = (['capture_qr', 'capture_wait', 'capture_reset', 'game', 'capture_inject']
+                      if uses_capture else ['game', 'legacy_qr'])
+    if mode != 'qr_only':
+        expected_calls += ['game_authorized', 'login_finished', mode]
+    if uses_capture:
+        expected_calls += ['capture_close']
+    assert calls == expected_calls
+    assert len(probes) == int(probes_apps)
+
+
 class SessionBoundary:
     def __init__(self, capture, *, refresh=False):
         self.capture = capture
