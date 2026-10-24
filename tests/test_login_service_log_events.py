@@ -287,6 +287,9 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
     class Manager:
         adb_path = tmp_path / "adb.exe"
 
+        def capture_apps_installed(self, instance, deadline):
+            return False
+
         def __init__(self, **kwargs):
             logger.info("initialize manager")
 

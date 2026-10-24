@@ -275,6 +275,9 @@ def daily_dependencies(calls):
     class Manager:
         adb_path = Path("C:/LDPlayer/adb.exe")
 
+        def capture_apps_installed(self, instance, deadline):
+            return False
+
         def __init__(self, **kwargs):
             pass
 

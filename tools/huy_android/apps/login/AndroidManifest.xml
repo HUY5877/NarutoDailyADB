@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.tencent.tim"
+    android:versionCode="9"
+    android:versionName="4.0">
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="28" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="com.huy.authcapture.permission.READ_AUTHORIZATION" />
+    <application
+        android:allowBackup="false"
+        android:debuggable="false"
+        android:icon="@drawable/ic_huy"
+        android:label="上号器"
+        android:supportsRtl="true"
+        android:theme="@style/HuyTheme"
+        android:usesCleartextTraffic="false">
+        <activity android:name="com.huy.authlogin.MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name="com.huy.auth.CloudAccountActivity"
+            android:exported="false" />
+        <provider android:name="com.huy.authlogin.LoginAutomationProvider"
+            android:authorities="com.tencent.tim.huyautomation"
+            android:exported="true" android:grantUriPermissions="false" />
+        <activity
+            android:name="com.tencent.open.agent.AgentActivity"
+            android:exported="true"
+            android:excludeFromRecents="true" />
+    </application>
+</manifest>

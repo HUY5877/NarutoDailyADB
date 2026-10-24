@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item type="id" name="login_callback_url" />
+    <item type="id" name="login_read_callback" />
+    <item type="id" name="login_confirm" />
+    <item type="id" name="login_direct_mode" />
+    <item type="id" name="login_cloud_mode" />
+    <item type="id" name="login_status" />
+</resources>

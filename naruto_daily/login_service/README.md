@@ -64,7 +64,13 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 
 Redis、OSS、数据库和隔离路径统一从选定 KV namespace 读取，不回退到本地文件。JEV、DeepSeek 的 key/model 放在该 namespace；鱼玩 `YUWAN_API_KEY` / `YUWAN_MODEL` 按原约定成对保存在本地 `.env`，由父进程启动时解析并传给任务子进程。启动时按 key 是否非空冻结有效渠道，不请求上游校验密钥；启用的渠道必须填写独立模型名。每次生成模型 HTTP 尝试通过同一 Redis 的配置计数器执行 `INCR`，详见[多模态路由说明](../multimodal/README.md)。修改配置后，请重启正在运行的任务和常驻 worker。凭据不放进浏览器或提交到仓库。
 
-QQ 通知使用选定 namespace 的普通 `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID` 和 `DATABASE_URL` 字段，不再使用本地 `TEST_JEV_*` 变量。当前测试 namespace 的三项 QQ 值留空，因此不主动发群消息。启用时三项机器人配置必须同时填写，并有测试数据库配置；worker 只查询选定数据库的 `users` 表获取用户名。这些配置不传给任务子进程。
+QQ 通知使用选定 namespace 的普通 `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID` 和 `DATABASE_URL` 字段，不再使用本地 `TEST_JEV_*` 变量。当前测试 namespace 的三项 QQ 值留空，因此不主动发群消息。启用时三项机器人配置必须同时填写，并有测试数据库配置；通知通过只读查询选定数据库的 `users` 表获取用户名。机器人配置不传给任务子进程；数据库配置仅供 QQ 登录子进程的抓号交接使用。
+
+安卓 QQ 和 iOS QQ 任务会在已启动的本次实例中检查 `com.huy.authcapture`（抓号器）和 `com.tencent.tim`（上号器）。两款应用都在时，先由抓号器生成二维码，网站用户扫码后上传本次授权，再由同一实例打开游戏中对应 QQ 通道，把完整授权 URL 交给游戏拉起的上号器确认。两款应用的自动流程均无需登录网站账号，云端账号名称固定为“自己账号”。只有游戏实际出现原有授权完成标记后才进入登录收尾、日常或决斗场周胜。缺少任意一款应用时使用原 QQ 扫码流程，微信保持原流程。
+
+启用抓号路径前需同时升级两款应用到支持 `protocol:1` provider 的版本，部署网站抓号接口和表结构，并在选定 Cloudflare KV namespace 配置 `QQ_CAPTURE_API_BASE=https://你的登录网站域名` 及同环境 `DATABASE_URL`。地址只能是 HTTPS 网站根地址，端口须为默认或 443，不能含路径、查询参数或凭据。数据库账户需可读写 `naruto_login.qq_capture_requests`；worker 不查询用户的最新历史授权，而是按可信 Redis 会话的用户、任务、执行轮次和二维码轮次精确交接。双应用齐全但缺少身份、数据库、网站地址或新版 provider 时明确报配置错误。业务配置不从本地 `.env` 回退。进入抓号路径的子进程即使被系统强制终止，父进程仍按可信用户、任务和执行轮次尽力撤销；数据库临时不可用时仅记录不含凭据的警告，并保留原有效期限制。
+
+网站的刷新按钮沿用现有 requestId/上传成功后 ACK 机制，每次刷新先使旧抓号轮次失效再生成新码，不延长任务原截止时间。自动抓号模式的本机刷新按钮会提示到网页刷新。二维码通过仅允许本机 ADB shell/root/应用自身访问的 provider 导出本轮 PNG，保留应用的 `FLAG_SECURE`。授权 URL、任务能力凭证和数据库连接串不会放入公开任务状态或日志；成功消费、失败和取消均只清理本轮数据，旧执行轮次不能清理新任务。
 
 worker 在任务开始时从自己的有效 Redis 会话读取 `userId`，通过只读、参数绑定的数据库查询取得一次 `username`，保存在 `runs.username` 并供通知复用。二维码上传 OSS 并成功发布 `qr_ready` 后，异步发送“用户名，你的二维码准备好啦！快打开登录页面扫码吧～”的群消息，通知不展示任务编号；初次生成及每个成功刷新各通知一次，过期二维码不再提醒。任务全部完成、超时或报错退出后再发送一次最终结果，失败原因使用安全提示；登录会话过期不影响结束通知。Ctrl+C、服务停止或任务取消不发送结束通知，模拟二维码生成也不会误报日常完成。数据库查询或 QQ 接口失败只记后台日志，不改变任务结果；查不到用户名时跳过提醒。连接、SQL 和 QQ 请求均有超时，通知不自动重试。机器人需要已加入目标群，且群主已开启主动消息权限；`group_openid` 是该机器人收到群事件时的群标识，并非 QQ 群号。无需保持 WebSocket 连接，也不需要客户端接入 QQ。
 
@@ -88,6 +94,8 @@ QQ群结束通知按任务类型区分：日常成功仍提示“日常任务全
 | `LDPLAYER_TEMPLATE` | 仅复制模式必填；配置实例池时无需模板 |
 | `LDPLAYER_STATE_DIR` | 选定 KV namespace 必填；任务、日志和实例状态目录，相对项目根目录解析，绝对路径原样使用 |
 | `LDPLAYER_PACKAGE` | `com.tencent.KiHan`，游戏 Android 包名 |
+| `QQ_CAPTURE_API_BASE` | 选定 KV namespace 的 HTTPS 登录网站根地址；双辅助应用 QQ 抓号路径必填 |
+| `DATABASE_URL` | 选定 KV namespace 的 PostgreSQL 地址；QQ 通知读取用户名，QQ 抓号路径读写本次任务轮次 |
 | `LDPLAYER_COMMAND_TIMEOUT_SECONDS` | `20`，单条雷电控制台命令的超时秒数 |
 | `DAILY_CONFIG_PATH` | 项目根目录的 `config.example.json`；复用原日常任务配置，相对路径以项目根目录解析 |
 | `DAILY_TIMEOUT_SECONDS` | 默认 `3000` 秒；扫码授权成功后起算，登录收尾和全部日常共用。可设置更短时限；旧配置中超过3000秒的值按3000秒执行，最多50分钟 |

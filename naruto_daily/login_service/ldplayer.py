@@ -635,6 +635,20 @@ class LDPlayerManager:
             self._save_state(bindings, pool=mode == "pool")
             return serial
 
+    def capture_apps_installed(self, instance: LDPlayerInstance, deadline: float) -> bool:
+        """Probe only the running instance still owned by this task."""
+        with self._exclusive(deadline):
+            binding_key, bindings, current, _ = self._tracked(instance, deadline)
+            serial = bindings[binding_key].get('serial')
+            if (not current.running or not isinstance(serial, str) or _SERIAL.fullmatch(serial) is None
+                    or instance.serial != serial):
+                raise LDPlayerError('Start the managed LDPlayer before checking capture applications.')
+            output = self._run([self.adb_path, '-s', serial, 'shell', 'pm', 'list', 'packages'],
+                               deadline, 'capture package check')
+            packages = {line.strip().removeprefix('package:') for line in self._decode(output).splitlines()
+                        if line.strip().startswith('package:')}
+            return {'com.huy.authcapture', 'com.tencent.tim'} <= packages
+
     def launch_game(self, instance: LDPlayerInstance, package: str, deadline: float) -> None:
         if not isinstance(package, str) or _PACKAGE.fullmatch(package) is None:
             raise LDPlayerError("Invalid Android package name; check the game package setting.")

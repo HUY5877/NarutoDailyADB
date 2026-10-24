@@ -40,6 +40,9 @@ class FakeRedisQueue:
     async def initialize(self):
         pass
 
+    async def notification_user_id(self, record):
+        return ''
+
     async def pop(self):
         self.pop_count += 1
         return self.records.popleft() if self.records else None
