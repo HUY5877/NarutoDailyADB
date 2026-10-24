@@ -595,6 +595,12 @@ def test_worker_captures_before_opening_game_and_requires_game_authorization(mon
     from naruto_daily.login_service import ldplayer_worker
     from test_login_service_ldplayer_worker import daily_dependencies, invoke, request, PNG
     calls = []
+    original_send = ldplayer_worker._send
+    def observe_send(stream, event):
+        if event == {'type': 'capture_received'}:
+            calls.append('capture_received')
+        original_send(stream, event)
+    monkeypatch.setattr(ldplayer_worker, '_send', observe_send)
     dependencies = list(daily_dependencies(calls))
     class Manager(dependencies[0]):
         def capture_apps_installed(self, instance, deadline):
@@ -635,10 +641,10 @@ def test_worker_captures_before_opening_game_and_requires_game_authorization(mon
         dailyConfigPath=str(tmp_path / 'daily.json'), dailyTimeoutSeconds=600), tuple(dependencies))
     assert code == 0
     assert calls == ['allocate', 'start', 'daily_config', 'probe', 'capture_config', 'capture_qr',
-                     'database_capture', 'reset_login', 'launch', 'inject', 'game_authorization',
+                     'database_capture', 'capture_received', 'reset_login', 'launch', 'inject', 'game_authorization',
                      'finish_login', 'daily', 'capture_close']
     assert [event['type'] for event in events if event['type'] != 'log'] == [
-        'stage', 'capture_started', 'stage', 'qr', 'authorized', 'logged_in', 'daily_completed']
+        'stage', 'capture_started', 'stage', 'qr', 'capture_received', 'authorized', 'logged_in', 'daily_completed']
 
 
 @pytest.mark.parametrize('channel', ['android_wechat', 'ios_wechat'])
@@ -859,6 +865,8 @@ def test_worker_package_matrix_preserves_qr_daily_and_weekly_protocol(
                  else [{'type': 'stage', 'status': 'opening_game'}])
     expected += [{'type': 'stage', 'status': 'preparing_qr'},
                  {'type': 'qr', 'png': base64.b64encode(PNG).decode()}]
+    if uses_capture:
+        expected += [{'type': 'capture_received'}]
     if mode != 'qr_only':
         expected += [{'type': 'authorized', 'executionDeadline': 1_800_000_600.0}, {'type': 'logged_in'}]
         if mode == 'arena_weekly':

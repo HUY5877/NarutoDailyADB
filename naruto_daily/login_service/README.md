@@ -173,6 +173,8 @@ TypeScript 后端通过 `LPUSH` 投递，Python 先用 `LINDEX -1` 查看最早�
 
 日常状态不写入原客户端的 `status` 白名单，独立保存在 `${LDPLAYER_STATE_DIR}/runs/<任务UUID>.json`，并将执行快照同步到 Redis、日志异步上传到 SLS。二维码生成后依次为 `waiting_scan`、`finishing_login`、`running_daily`、`completed`，失败为 `failed`，服务停止为 `interrupted`。`finishing_login` 表示扫码授权完成、正在进入游戏；`authorizedAt` 保存授权完成时间，`startedAt` 保存确认主界面后开始日常的时间，后续终态保留这两个时间。客户端收到对应任务的授权完成状态后收起二维码并停止倒计时。进入游戏失败与等待扫码失败使用不同错误码。
 
+QQ 抓号器成功上传、本次 worker 读到授权后，立即发送 `capture_received`，不等待返回游戏或上号器完成登录。父进程记录独立的 `scanCapturedAt`（Redis 执行快照为 ISO 时间）、设置会话 `scanCaptured: true` 并清除待处理的二维码刷新请求，客户端即可收起二维码和倒计时，显示“扫码成功，正在登录游戏”。此时执行状态仍为 `waiting_scan`，不设置 `authorizedAt` 或 `startedAt`，不延长原登录时限、不提前启动日常预算；后续游戏登录失败仍显示失败结果。标记写入校验当前用户、worker 和 attempt，保留会话 TTL。微信及未安装完整两款 HUY 应用的旧 QQ 扫码流程不发送此事件，继续沿用原有识别与授权状态。
+
 管理员中断正在执行的任务时，客户端应原子地修改 `${REDIS_QUEUE_KEY}:runs:<UUID>` 中的 `status` 为 `interrupted`，保留原 JSON 的 `taskId`、`workerId`、`attemptId`、`sequence` 等字段及 TTL；不要把整个值替换成字符串，也不要把登录会话 `sessions` 的状态改为 `interrupted`。worker 在每次已有的摘要回写中，用同一个 Lua 脚本检查中断并决定是否更新，不新增 Redis 轮询。同一次执行已中断时，进度、完成和失败均不得覆盖它，且无需管理员额外增加序号。
 
 发现中断后，回调只终止该任务的执行子进程，唤醒该任务的失败现场保留等待，随后关闭并释放对应模拟器、结束登录会话，不重新入队，也不停止其他任务。最后一次结果尚未确认回写时不提前发送成功通知；Redis 较慢而导致迟到的中断回调，也会补做已释放实例的会话清理。正常服务停止后的重排仍可沿用原任务 UUID；每次成功领取生成新的 `attemptId`，旧执行的迟到回写和回调均不能影响新执行。
