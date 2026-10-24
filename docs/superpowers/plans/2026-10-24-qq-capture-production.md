@@ -14,7 +14,9 @@
 - [x] 准备幂等、保留既有数据的数据库变更，先验证后执行；正式 Cloudflare 仅修改功能必需项并回读验证。
 - [x] 验证正式上传接口及环境归属，确认旧 worker 和普通扫码不受影响。
 - [x] 运行 worker 完整测试及涉及组件检查；第二轮独立审查最终 diff，并复核修复后的边界。
-- [ ] 记录实际验证、上线顺序、回退方式和未完成的实机验证；推送分支并创建 worker → main 合并请求，保持等待合并状态。
+- [x] 记录实际验证、上线顺序、回退方式和未完成的实机验证；推送分支并创建 worker → main 合并请求，保持等待合并状态。
+
+交付：[worker 合并请求 #23](https://github.com/HUY5877/NarutoDailyADB/pull/23)，草稿状态，待真实扫码验收；未合并 worker main。实际结果见同日期 `verification/2026-10-24-qq-capture-production.md`。
 
 ## 重点验证
 

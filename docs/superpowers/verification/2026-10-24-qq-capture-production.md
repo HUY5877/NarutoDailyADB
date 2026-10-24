@@ -2,6 +2,8 @@
 
 日期：2026-10-24。worker 基线为远端 main `b81bc2736bea7cd738f83ac594df257de91fcf4e`，提交分支为 `codex/qq-capture-login`。网站后端为 NarutoLoginClient `29eb8519e1e96c328b7e300bd6f04b600f0e5a13`。
 
+worker [合并请求 #23](https://github.com/HUY5877/NarutoDailyADB/pull/23) 已创建并保持草稿；实现和测试提交为 `aeb8925`，后续交付记录更新仅修改文档。
+
 ## 已完成的正式配置
 
 - 明确选择 `prod` namespace，核对正式数据库、Redis 队列和 OSS 与测试环境分离。
