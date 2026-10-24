@@ -5,7 +5,10 @@ public final class LoginRequestStateTest {
     private static int assertions;
 
     public static void main(String[] args) {
+        directAuthorizationDoesNotNeedWebsiteSession();
+        switchingModesRejectsOldCloudResponse();
         LoginRequestState<String> state = new LoginRequestState<>();
+        state.setMode(LoginRequestState.Mode.CLOUD);
         state.resume();
         long initial = state.begin("website-a");
         state.invalidate(); // User starts typing before startup's selected download completes.
@@ -49,6 +52,36 @@ public final class LoginRequestStateTest {
         check(state.accept(retry, "website-a", "retried"));
         check(!state.isPending());
         check("retried".equals(state.value("website-a")));
+    }
+
+    private static void directAuthorizationDoesNotNeedWebsiteSession() {
+        LoginRequestState<String> direct = new LoginRequestState<>();
+        direct.resume();
+        long attempt = direct.begin(null);
+        direct.websiteSessionChanged();
+        check(direct.accept(attempt, "website-a", "direct"));
+        check("direct".equals(direct.value("website-b")));
+        direct.websiteSessionChanged();
+        check("direct".equals(direct.value(null)));
+    }
+
+    private static void switchingModesRejectsOldCloudResponse() {
+        LoginRequestState<String> state = new LoginRequestState<>();
+        state.resume();
+        state.setMode(LoginRequestState.Mode.CLOUD);
+        long old = state.begin("website-a");
+        state.setMode(LoginRequestState.Mode.DIRECT);
+        long direct = state.begin(null);
+        check(!state.isCurrent(old, "website-a"));
+        check(!state.accept(old, "website-a", "cloud"));
+        check(state.accept(direct, null, "direct"));
+        state.setMode(LoginRequestState.Mode.CLOUD);
+        long fresh = state.begin("website-a");
+        check(!state.accept(old, "website-a", "stale-cloud"));
+        check(!state.accept(direct, "website-a", "stale-direct"));
+        check(state.accept(fresh, "website-a", "fresh-cloud"));
+        state.websiteSessionChanged();
+        check(state.value("website-a") == null);
     }
 
     private static void check(boolean condition) {

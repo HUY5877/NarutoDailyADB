@@ -6,7 +6,7 @@ import org.json.JSONObject;
 import java.util.Map;
 
 /** Immutable credentials. Never log this object's serialized form or callback. */
-public final class Authorization {
+public final class Authorization implements GameAuthorization {
     private final String callbackUrl;
     private final long capturedAt;
     private final AuthorizationRules rules;
@@ -60,7 +60,7 @@ public final class Authorization {
     }
 
     /** The original lifetime is never reused when returning a previously saved login. */
-    public String responseJson(long now) {
+    @Override public String responseJson(long now) {
         long remaining = rules.remainingSeconds(now);
         try {
             JSONObject response = new JSONObject();
@@ -76,6 +76,11 @@ public final class Authorization {
     }
 
     public long expiresAtMs() { return rules.expiresAtMs(); }
+
+    @Override public String accountHint() {
+        String openid = rules.fields().get("openid");
+        return openid.substring(openid.length() - 4);
+    }
 
     String accessToken() { return rules.fields().get("access_token"); }
 

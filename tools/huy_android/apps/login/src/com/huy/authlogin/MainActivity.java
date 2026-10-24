@@ -6,11 +6,10 @@ import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
-import com.huy.auth.AuthorizationInput;
+import android.widget.TextView;
 import com.huy.auth.CloudAccountActivity;
 import com.huy.auth.CloudClient;
 import com.huy.auth.CloudException;
@@ -24,209 +23,186 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Selects a cloud record by list or token; AgentActivity fetches it again for game login. */
+/** Direct mode only guides the game launch; it never stores or hands off credentials. */
 public final class MainActivity extends Activity {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final LoginRequestState<Boolean> requests = new LoginRequestState<>();
     private HuyUi.Screen screen;
     private CloudSettings settings;
+    private LoginPreferences preferences;
     private CloudSettings.Snapshot listSession;
     private RadioGroup choices;
-    private EditText tokenInput;
-    private Button refreshButton, tokenButton, gameButton;
+    private LinearLayout directSection, cloudSection;
+    private Button refreshButton, gameButton;
     private List<CloudRecord> records = new ArrayList<>();
-    private int generation;
-    private boolean busy;
+    private CloudRecord selected;
     private boolean foreground;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         settings = new CloudSettings(this);
-        screen = new HuyUi.Screen(this, "上号器", "粘贴 token，或选择一个已保存的 QQ 账号。");
-        tokenInput = HuyUi.authorizationInput(screen);
-        tokenButton = screen.button("读取授权", true, view -> resolveToken());
+        preferences = new LoginPreferences(this);
+        preferences.restore(requests);
+        screen = new HuyUi.Screen(this, "上号器", "选择回调 URL 登录或云端账号登录，再打开游戏。");
+        RadioGroup modes = HuyUi.selector(screen, screen.column, new String[]{"回调 URL 登录", "云端账号登录"},
+                requests.mode() == LoginRequestState.Mode.DIRECT ? 0 : 1, this::switchMode);
+        screen.column.removeView(modes);
+        screen.column.addView(modes, 0);
+        directSection = screen.section();
+        TextView instructions = new TextView(this);
+        instructions.setText("打开游戏后选择 QQ 登录，在确认页粘贴原始完整 callback_url。回调 URL 登录仅本地解析，无需网站登录。");
+        instructions.setTextSize(14);
+        instructions.setPadding(0, 8, 0, 20);
+        directSection.addView(instructions);
+        cloudSection = screen.section();
         choices = new RadioGroup(this);
-        choices.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        layout.bottomMargin = dp(16);
-        screen.column.addView(choices, layout);
-        refreshButton = screen.button("刷新账号列表", true, view -> refresh());
+        choices.setSaveEnabled(false);
+        cloudSection.addView(choices);
+        refreshButton = screen.button(cloudSection, "刷新账号列表", true, view -> refresh());
+        screen.button(cloudSection, "云端账号设置", false, view -> startActivity(new Intent(this, CloudAccountActivity.class)));
         gameButton = screen.button("打开游戏", false, view -> openGame());
-        screen.button("云端账号设置", false, view -> startActivity(new Intent(this, CloudAccountActivity.class)));
-        screen.footnote("授权需已上传到当前网站账号。可粘贴 token 或完整 QQ 回调地址；选择后打开游戏，点击 QQ 登录并确认账号。");
+        screen.footnote("登录模式切换会清空当前选择。云端模式在游戏确认页仍需手动选择、读取并确认账号。");
+        renderMode();
     }
 
-    @Override protected void onResume() { super.onResume(); foreground = true; refresh(); }
+    @Override protected void onResume() {
+        super.onResume();
+        foreground = true;
+        requests.resume();
+        clearCloud();
+        if (requests.mode() == LoginRequestState.Mode.CLOUD) refresh();
+        else { showDirect(); updateControls(); }
+    }
+
+    private void switchMode(int index) {
+        requests.setMode(index == 0 ? LoginRequestState.Mode.DIRECT : LoginRequestState.Mode.CLOUD);
+        preferences.save(requests);
+        clearCloud();
+        renderMode();
+        if (foreground && requests.mode() == LoginRequestState.Mode.CLOUD) refresh();
+        else { showDirect(); updateControls(); }
+    }
+
+    private void renderMode() {
+        boolean direct = requests.mode() == LoginRequestState.Mode.DIRECT;
+        directSection.setVisibility(direct ? View.VISIBLE : View.GONE);
+        cloudSection.setVisibility(direct ? View.GONE : View.VISIBLE);
+    }
+
+    private void showDirect() {
+        screen.show("到游戏确认页粘贴完整 callback_url", "点击打开游戏，选择 QQ 登录。读取后核对账号，再点击确认登录；此模式无需网站账号。");
+    }
 
     private void refresh() {
-        if (busy) return;
-        final int attempt = ++generation;
-        CloudSettings.Snapshot session = settings.snapshot();
-        listSession = null;
-        records = new ArrayList<>();
-        choices.removeAllViews();
-        HuyUi.enabled(gameButton, false);
+        if (!foreground || requests.mode() != LoginRequestState.Mode.CLOUD || requests.isPending()) return;
+        requests.invalidate();
+        clearCloud();
+        final CloudSettings.Snapshot session = settings.snapshot();
         if (!session.isSignedIn()) {
-            tokenInput.setText("");
             screen.show(settings.needsEndpointSignIn() ? "测试服务地址已更新，请重新登录" : "未登录网站账号",
-                    "点击“云端账号设置”，登录测试网站账号后读取已保存的 QQ 账号。");
-            setBusy(false);
+                    "点击云端账号设置，登录网站账号后读取已保存的 QQ 账号。");
+            updateControls();
             return;
         }
-        setBusy(true);
+        final long attempt = requests.begin(session.revision);
         screen.busy("正在读取已保存的账号列表。");
+        updateControls();
         worker.execute(() -> {
             try {
                 List<CloudRecord> result = new CloudClient(session).list();
                 runOnUiThread(() -> {
-                    if (!active(attempt)) return;
-                    setBusy(false);
-                    if (!settings.isCurrent(session)) { refresh(); return; }
+                    if (!active(attempt, session)) return;
+                    requests.accept(attempt, session.revision, Boolean.TRUE);
                     records = result;
-                    CloudRecord chosen = find(session.selectedId);
-                    if (!session.selectedId.isEmpty() && (chosen == null || chosen.isExpired())) settings.select("");
-                    listSession = settings.snapshot();
+                    listSession = session;
                     render();
+                    updateControls();
                 });
             } catch (CloudException error) {
                 runOnUiThread(() -> {
-                    if (!active(attempt)) return;
-                    setBusy(false);
-                    if (!settings.isCurrent(session)) { refresh(); return; }
+                    if (!active(attempt, session)) return;
+                    requests.invalidate();
                     if (error.isAuthenticationRequired()) settings.clearSession();
-                    setBusy(false);
+                    clearCloud();
+                    updateControls();
                     screen.show("读取失败", error.getMessage());
                 });
             }
         });
     }
 
-    private void resolveToken() {
-        if (busy || !foreground) return;
-        final AuthorizationInput input;
-        try { input = AuthorizationInput.parse(tokenInput.getText().toString(), System.currentTimeMillis()); }
-        catch (IllegalArgumentException error) { screen.show("授权输入无效", error.getMessage()); return; }
-        final CloudSettings.Snapshot session = settings.snapshot();
-        if (!session.isSignedIn()) { refresh(); return; }
-        final int attempt = ++generation;
-        setBusy(true);
-        screen.busy("正在当前网站账号下查找授权。");
-        worker.execute(() -> {
-            try {
-                CloudClient.Download result = new CloudClient(session).resolveInput(input);
-                runOnUiThread(() -> {
-                    if (!active(attempt)) return;
-                    setBusy(false);
-                    if (!settings.isCurrent(session)) { tokenInput.setText(""); refresh(); return; }
-                    if (result.record.isExpired()) {
-                        screen.show("授权已过期", "请回到抓号器重新扫码。");
-                        return;
-                    }
-                    // Persist only the record ID. The full callback is downloaded again at game login.
-                    settings.select(result.record.id);
-                    tokenInput.setText("");
-                    List<CloudRecord> updated = new ArrayList<>();
-                    updated.add(result.record);
-                    if (listSession != null && listSession.revision.equals(session.revision)) {
-                        for (CloudRecord record : records) if (!record.id.equals(result.record.id)) updated.add(record);
-                    }
-                    records = updated;
-                    listSession = settings.snapshot();
-                    render();
-                });
-            } catch (CloudException error) {
-                runOnUiThread(() -> {
-                    if (!active(attempt)) return;
-                    setBusy(false);
-                    if (!settings.isCurrent(session)) { tokenInput.setText(""); refresh(); return; }
-                    if (error.isAuthenticationRequired()) {
-                        settings.clearSession();
-                        listSession = null;
-                        records = new ArrayList<>();
-                        choices.removeAllViews();
-                        tokenInput.setText("");
-                    }
-                    setBusy(false);
-                    screen.show("无法读取授权", error.getMessage());
-                });
-            }
-        });
-    }
-
-    private void setBusy(boolean value) {
-        busy = value;
-        boolean signedIn = settings.snapshot().isSignedIn();
-        HuyUi.enabled(refreshButton, !value);
-        HuyUi.enabled(tokenButton, !value && signedIn);
-        tokenInput.setEnabled(!value && signedIn);
-        CloudRecord chosen = listSession == null ? null : find(listSession.selectedId);
-        HuyUi.enabled(gameButton, !value && chosen != null && !chosen.isExpired());
-        for (int i = 0; i < choices.getChildCount(); i++) {
-            choices.getChildAt(i).setEnabled(!value && !records.get(i).isExpired());
+    private boolean active(long attempt, CloudSettings.Snapshot session) {
+        if (!foreground || isFinishing() || isDestroyed() || !requests.isCurrent(attempt, session.revision)) return false;
+        if (!settings.isCurrent(session)) {
+            requests.invalidate();
+            clearCloud();
+            refresh();
+            return false;
         }
+        return true;
     }
 
     private void render() {
         choices.removeAllViews();
         if (listSession == null) return;
-        CloudRecord chosen = find(listSession.selectedId);
-        HuyUi.enabled(gameButton, chosen != null && !chosen.isExpired());
         if (records.isEmpty()) {
             screen.show("还没有保存的账号", "请先在抓号器登录同一个网站账号，再扫码上传授权。");
             return;
         }
-        if (chosen == null) screen.show("请选择账号", "共 " + records.size() + " 个已保存账号。点击下面的账号，再打开游戏。");
-        else screen.show("已选择：" + chosen.label, "尾号 " + chosen.accountHint + " · 有效期至 " + expiry(chosen));
+        screen.show(selected == null ? "请选择账号" : "已选择：" + selected.label,
+                selected == null ? "共 " + records.size() + " 个已保存账号。手动选择一个账号后打开游戏。"
+                        : "尾号 " + selected.accountHint + " · 有效期至 " + expiry(selected));
         for (CloudRecord record : records) {
             RadioButton choice = new RadioButton(this);
-            choice.setId(android.view.View.generateViewId());
+            choice.setId(View.generateViewId());
+            choice.setSaveEnabled(false);
             choice.setText(record.label + "\n尾号 " + record.accountHint + (record.isExpired() ? " · 已过期" : " · 至 " + expiry(record)));
             choice.setTextSize(15);
             choice.setTextColor(0xff222222);
-            choice.setPadding(dp(8), dp(12), dp(8), dp(12));
-            choice.setButtonTintList(android.content.res.ColorStateList.valueOf(0xff3568a8));
+            choice.setPadding(8, 12, 8, 12);
             choice.setEnabled(!record.isExpired());
             choice.setAlpha(record.isExpired() ? 0.5f : 1f);
             choices.addView(choice, new RadioGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            choice.setChecked(record.id.equals(listSession.selectedId));
+            choice.setChecked(selected != null && record.id.equals(selected.id));
             choice.setOnClickListener(view -> choose(record));
         }
     }
 
     private void choose(CloudRecord record) {
-        if (busy || !foreground) return;
+        if (!foreground || requests.mode() != LoginRequestState.Mode.CLOUD || requests.isPending()) return;
         if (listSession == null || !settings.isCurrent(listSession)) { refresh(); return; }
         if (record.isExpired()) { screen.show("授权已过期", "请回到抓号器重新扫码。"); return; }
-        settings.select(record.id);
+        requests.invalidate();
+        selected = record;
+        settings.select(record.id); // Only a nonsecret record ID may persist.
         listSession = settings.snapshot();
         render();
+        updateControls();
     }
 
-    private CloudRecord find(String id) {
-        for (CloudRecord record : records) if (record.id.equals(id)) return record;
-        return null;
+    private void updateControls() {
+        boolean direct = requests.mode() == LoginRequestState.Mode.DIRECT;
+        HuyUi.enabled(refreshButton, foreground && !direct && !requests.isPending());
+        HuyUi.enabled(gameButton, foreground && (direct || (!requests.isPending() && selected != null && !selected.isExpired())));
     }
 
     private void openGame() {
-        if (busy || !foreground) return;
-        if (listSession == null || !settings.isCurrent(listSession)) { refresh(); return; }
-        CloudRecord record = find(listSession.selectedId);
-        if (record == null || record.isExpired()) { refresh(); return; }
+        if (!foreground || requests.isPending()) return;
+        if (requests.mode() == LoginRequestState.Mode.CLOUD) {
+            if (listSession == null || !settings.isCurrent(listSession) || selected == null || selected.isExpired()) { refresh(); return; }
+        }
         try {
             Intent launch = getPackageManager().getLaunchIntentForPackage(RequestPolicy.GAME_PACKAGE);
             if (launch == null) { screen.show("未找到火影忍者", "请先安装游戏。"); return; }
+            // The still-live home screen can outlast mode changes made in the game screen.
+            // Persist what this screen actually shows before the SDK opens AgentActivity.
+            preferences.save(requests);
             startActivity(launch);
         } catch (RuntimeException error) { screen.show("无法打开游戏", "请从桌面打开火影忍者，再选择 QQ 登录。"); }
     }
 
-    private boolean active(int attempt) { return foreground && attempt == generation && !isFinishing() && !isDestroyed(); }
+    private void clearCloud() { selected = null; listSession = null; records = new ArrayList<>(); if (choices != null) choices.removeAllViews(); }
     private String expiry(CloudRecord record) { return new SimpleDateFormat("MM月dd日 HH:mm", Locale.SIMPLIFIED_CHINESE).format(new Date(record.expiresAtMs)); }
-    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
-    @Override protected void onStop() {
-        foreground = false;
-        generation++;
-        busy = false;
-        tokenInput.setText("");
-        super.onStop();
-    }
+    @Override protected void onStop() { foreground = false; requests.stop(); clearCloud(); updateControls(); super.onStop(); }
     @Override protected void onDestroy() { worker.shutdownNow(); super.onDestroy(); }
 }

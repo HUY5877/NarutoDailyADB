@@ -6,223 +6,285 @@ import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
-
-import com.huy.auth.Authorization;
-import com.huy.auth.AuthorizationInput;
+import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import com.huy.auth.CloudClient;
 import com.huy.auth.CloudException;
+import com.huy.auth.CloudRecord;
 import com.huy.auth.CloudSettings;
+import com.huy.auth.DirectAuthorization;
+import com.huy.auth.GameAuthorization;
 import com.huy.authlogin.HuyUi;
+import com.huy.authlogin.LoginPreferences;
 import com.huy.authlogin.LoginRequestState;
 import com.huy.authlogin.MainActivity;
 import com.huy.authlogin.RequestPolicy;
-
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Compatibility endpoint invoked by the game's QQ SDK. */
+/** QQ SDK endpoint; direct credentials are parsed locally and never sent to HUY. */
 public final class AgentActivity extends Activity {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
-    private final LoginRequestState<Authorization> requests = new LoginRequestState<>();
+    private final LoginRequestState<GameAuthorization> requests = new LoginRequestState<>();
     private HuyUi.Screen screen;
-    private EditText tokenInput;
-    private Button readButton, confirmButton;
+    private EditText callbackInput;
+    private LinearLayout directSection, cloudSection;
+    private RadioGroup choices;
+    private Button readButton, refreshButton, downloadButton, confirmButton;
     private CloudSettings settings;
-    private boolean foreground;
-    private boolean firstResume = true;
-    private boolean clearingInput;
-    private final SharedPreferences.OnSharedPreferenceChangeListener sessionListener = (preferences, key) -> {
-        if ("revision".equals(key) && foreground) sessionChanged();
+    private LoginPreferences preferences;
+    private CloudSettings.Snapshot listSession;
+    private CloudRecord selected;
+    private boolean foreground, clearingInput;
+    private final SharedPreferences.OnSharedPreferenceChangeListener sessionListener = (store, key) -> {
+        if ("revision".equals(key) && foreground && requests.mode() == LoginRequestState.Mode.CLOUD) sessionChanged();
     };
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         setResult(RESULT_CANCELED);
-        firstResume = state == null;
         settings = new CloudSettings(this);
-        screen = new HuyUi.Screen(this, "确认登录", "粘贴 token 或完整 QQ 回调地址，读取并确认要登录的账号。");
-        tokenInput = HuyUi.authorizationInput(screen);
-        readButton = screen.button("读取授权", true, view -> readInput());
+        preferences = new LoginPreferences(this);
+        preferences.restore(requests);
+        screen = new HuyUi.Screen(this, "确认登录", "选择一种登录方式，读取后核对账号并确认。");
+        RadioGroup modes = HuyUi.selector(screen, screen.column, new String[]{"回调 URL 登录", "云端账号登录"},
+                requests.mode() == LoginRequestState.Mode.DIRECT ? 0 : 1, this::switchMode);
+        screen.column.removeView(modes);
+        screen.column.addView(modes, 0);
+        directSection = screen.section();
+        callbackInput = HuyUi.authorizationInput(screen, directSection);
+        readButton = screen.button(directSection, "读取回调授权", true, view -> readDirect());
+        cloudSection = screen.section();
+        choices = new RadioGroup(this);
+        choices.setSaveEnabled(false);
+        cloudSection.addView(choices);
+        refreshButton = screen.button(cloudSection, "刷新账号列表", false, view -> refreshCloud());
+        downloadButton = screen.button(cloudSection, "读取所选账号授权", true, view -> downloadSelected());
         confirmButton = screen.button("确认登录", true, view -> confirmLogin());
-        HuyUi.enabled(confirmButton, false);
         screen.button("取消", false, view -> cancelLogin());
         screen.button("打开上号器", false, view -> openHome());
-        screen.footnote("需先在上号器登录保存该授权的网站账号。回调地址不会延长授权有效期。取消不会删除已保存的授权。");
-        tokenInput.addTextChangedListener(new TextWatcher() {
+        screen.footnote("回调 URL 仅本地解析，无需网站登录。请粘贴原始完整 callback_url；云端账号需登录网站并手动选择。");
+        callbackInput.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
                 if (clearingInput) return;
-                invalidateAuthorization();
-                if (foreground) showInputPrompt();
+                requests.invalidate();
+                if (foreground) showPrompt();
+                updateControls();
             }
             @Override public void afterTextChanged(Editable text) {}
         });
+        renderMode();
     }
 
     @Override protected void onResume() {
         super.onResume();
         foreground = true;
-        requests.resume();
+        requests.resume(); // Also handles onPause -> onResume without onStop.
+        clearCloud();
         settings.registerListener(sessionListener);
-        CloudSettings.Snapshot session = settings.snapshot();
-        boolean loadSelected = firstResume && session.isSignedIn() && !session.selectedId.isEmpty();
-        firstResume = false;
-        showInputPrompt();
+        showPrompt();
         updateControls();
-        if (isTrustedRequest() && loadSelected) readAuthorization(session, null);
+        if (requests.mode() == LoginRequestState.Mode.CLOUD && isTrustedRequest()) refreshCloud();
     }
 
-    private void readInput() {
-        if (!foreground || requests.isPending() || !isTrustedRequest()) return;
-        invalidateAuthorization();
-        CloudSettings.Snapshot session = settings.snapshot();
-        if (!session.isSignedIn()) { showInputPrompt(); return; }
-        final AuthorizationInput input;
-        try { input = AuthorizationInput.parse(tokenInput.getText().toString(), System.currentTimeMillis()); }
-        catch (IllegalArgumentException error) { failed(error.getMessage()); return; }
-        readAuthorization(session, input);
+    private void switchMode(int index) {
+        requests.setMode(index == 0 ? LoginRequestState.Mode.DIRECT : LoginRequestState.Mode.CLOUD);
+        preferences.save(requests);
+        clearInput();
+        clearCloud();
+        renderMode();
+        showPrompt();
+        updateControls();
+        if (foreground && requests.mode() == LoginRequestState.Mode.CLOUD) refreshCloud();
     }
 
-    private void readAuthorization(CloudSettings.Snapshot session, AuthorizationInput input) {
+    private void renderMode() {
+        boolean direct = requests.mode() == LoginRequestState.Mode.DIRECT;
+        directSection.setVisibility(direct ? View.VISIBLE : View.GONE);
+        cloudSection.setVisibility(direct ? View.GONE : View.VISIBLE);
+        callbackInput.setHint("粘贴完整 callback_url");
+    }
+
+    private void readDirect() {
+        if (!allowed() || requests.mode() != LoginRequestState.Mode.DIRECT || requests.isPending()) return;
+        String input = callbackInput.getText().toString();
+        long attempt = requests.begin(null);
+        try {
+            GameAuthorization result = DirectAuthorization.fromUrl(input, System.currentTimeMillis());
+            result.responseJson(System.currentTimeMillis());
+            if (!canApply(attempt, null) || !requests.accept(attempt, null, result)) return;
+            clearInput();
+            screen.show("已读取授权，等待游戏验证", "OpenID 尾号 " + result.accountHint() + "\n请核对后点击确认登录。缺少原始时间时无法确认实际到期时间。");
+            updateControls();
+        } catch (IllegalArgumentException error) { failed(error.getMessage()); }
+    }
+
+    private void refreshCloud() {
+        if (!allowed() || requests.mode() != LoginRequestState.Mode.CLOUD || requests.isPending()) return;
+        requests.invalidate();
+        clearCloud();
+        final CloudSettings.Snapshot session = settings.snapshot();
+        if (!session.isSignedIn()) { showPrompt(); updateControls(); return; }
         final long attempt = requests.begin(session.revision);
+        screen.busy("正在读取云端账号列表，请手动选择账号。");
         updateControls();
-        screen.busy(input == null ? "正在读取所选账号的授权，也可直接粘贴其他授权。" : "正在当前网站账号下查找授权。");
         worker.execute(() -> {
             try {
-                CloudClient client = new CloudClient(session);
-                CloudClient.Download result = input == null ? client.download(session.selectedId) : client.resolveInput(input);
+                List<CloudRecord> result = new CloudClient(session).list();
+                runOnUiThread(() -> {
+                    if (!canApply(attempt, session)) return;
+                    requests.invalidate();
+                    listSession = session;
+                    renderRecords(result);
+                    screen.show(result.isEmpty() ? "还没有保存的账号" : "请选择云端账号", "手动选择一项，再读取授权。不会自动选择此前的账号。");
+                    updateControls();
+                });
+            } catch (CloudException error) { cloudFailure(attempt, session, error); }
+        });
+    }
+
+    private void renderRecords(List<CloudRecord> records) {
+        choices.removeAllViews();
+        for (CloudRecord record : records) {
+            RadioButton option = new RadioButton(this);
+            option.setId(View.generateViewId());
+            option.setSaveEnabled(false);
+            option.setText(record.label + " · 尾号 " + record.accountHint + (record.isExpired() ? " · 已过期" : ""));
+            option.setEnabled(!record.isExpired());
+            choices.addView(option, new RadioGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            option.setOnClickListener(view -> {
+                if (!allowed() || requests.mode() != LoginRequestState.Mode.CLOUD || listSession == null) return;
+                if (!settings.isCurrent(listSession)) { sessionChanged(); return; }
+                requests.invalidate();
+                selected = record;
+                screen.show("已选择：" + record.label, "尾号 " + record.accountHint + "\n点击读取所选账号授权，再确认登录。");
+                updateControls();
+            });
+        }
+    }
+
+    private void downloadSelected() {
+        if (!allowed() || requests.mode() != LoginRequestState.Mode.CLOUD || requests.isPending() || selected == null) return;
+        final CloudSettings.Snapshot session = listSession;
+        if (!settings.isCurrent(session)) { sessionChanged(); return; }
+        if (selected.isExpired()) { failed("授权已过期，请回到抓号器重新扫码。"); return; }
+        final String id = selected.id;
+        final long attempt = requests.begin(session.revision);
+        screen.busy("正在读取所选账号授权。");
+        updateControls();
+        worker.execute(() -> {
+            try {
+                CloudClient.Download result = new CloudClient(session).download(id);
                 runOnUiThread(() -> {
                     if (!canApply(attempt, session)) return;
                     try { result.authorization.responseJson(System.currentTimeMillis()); }
                     catch (IllegalArgumentException error) { failed("授权已过期，请回到抓号器重新扫码。"); return; }
                     if (result.record.isExpired()) { failed("授权已过期，请回到抓号器重新扫码。"); return; }
                     if (!requests.accept(attempt, settings.snapshot().revision, result.authorization)) return;
-                    clearInput();
-                    screen.show("登录：" + result.record.label,
-                            "尾号 " + result.record.accountHint + "\n请核对账号，点击确认后返回游戏。");
+                    screen.show("登录：" + result.record.label, "尾号 " + result.record.accountHint + "\n请核对账号，点击确认后返回游戏。");
                     updateControls();
                 });
-            } catch (CloudException error) {
-                runOnUiThread(() -> {
-                    if (!canApply(attempt, session)) return;
-                    if (error.isAuthenticationRequired()) { settings.clearSession(); clearInput(); }
-                    failed(error.getMessage());
-                });
-            }
+            } catch (CloudException error) { cloudFailure(attempt, session, error); }
+        });
+    }
+
+    private void cloudFailure(long attempt, CloudSettings.Snapshot session, CloudException error) {
+        runOnUiThread(() -> {
+            // Gate before side effects: a stale cloud auth failure cannot clear a direct login.
+            if (!canApply(attempt, session)) return;
+            if (error.isAuthenticationRequired()) settings.clearSession();
+            failed(error.getMessage());
         });
     }
 
     private boolean canApply(long attempt, CloudSettings.Snapshot session) {
-        if (!foreground || isFinishing() || isDestroyed() || !requests.isCurrent(attempt, session.revision)) return false;
-        if (!settings.isCurrent(session)) { sessionChanged(); return false; }
-        if (!isTrustedRequest()) { failed("只接受火影忍者发起的 QQ 登录请求。"); return false; }
+        if (!allowed() || !requests.isCurrent(attempt, session == null ? null : session.revision)) return false;
+        if (session != null && !settings.isCurrent(session)) { sessionChanged(); return false; }
         return true;
     }
 
+    private boolean allowed() { return foreground && !isFinishing() && !isDestroyed() && isTrustedRequest(); }
     private boolean isTrustedRequest() {
         try {
             Intent request = getIntent();
             if (request == null) return false;
             Bundle parameters = request.getBundleExtra("key_params");
-            if (parameters == null) return false;
-            return RequestPolicy.accepts(getCallingPackage(), request.getStringExtra("key_action"),
-                    parameters.getString("client_id"));
+            return parameters != null && RequestPolicy.accepts(getCallingPackage(), request.getStringExtra("key_action"), parameters.getString("client_id"));
         } catch (RuntimeException error) { return false; }
     }
 
+    private String currentRevision() {
+        return requests.mode() == LoginRequestState.Mode.CLOUD ? settings.snapshot().revision : null;
+    }
+
     private void confirmLogin() {
-        if (!foreground || requests.isPending() || !isTrustedRequest()) return;
-        CloudSettings.Snapshot session = settings.snapshot();
-        Authorization authorization = requests.value(session.revision);
-        if (!session.isSignedIn() || authorization == null) { sessionChanged(); return; }
+        if (!allowed() || requests.isPending()) return;
+        GameAuthorization authorization = requests.value(currentRevision());
+        if (authorization == null) { showPrompt(); updateControls(); return; }
+        CloudSettings.Snapshot session = requests.mode() == LoginRequestState.Mode.CLOUD ? settings.snapshot() : null;
+        if (session != null && (!session.isSignedIn() || !settings.isCurrent(listSession))) { sessionChanged(); return; }
         try {
-            // Check the cloud authorization's original lifetime at the explicit user confirmation.
             String response = authorization.responseJson(System.currentTimeMillis());
-            if (!settings.isCurrent(session) || !isTrustedRequest()) { sessionChanged(); return; }
+            if (!isTrustedRequest() || (session != null && !settings.isCurrent(session))) { sessionChanged(); return; }
             Intent result = new Intent();
             result.putExtra("key_response", response);
             setResult(RESULT_OK, result);
             requests.stop();
             clearInput();
             finish();
-        } catch (IllegalArgumentException error) { failed("授权已过期，请回到抓号器重新扫码。"); }
+        } catch (IllegalArgumentException error) { failed(error.getMessage()); }
     }
 
-    private void showInputPrompt() {
-        if (!isTrustedRequest()) {
-            screen.show("已拒绝此次请求", "只接受火影忍者发起的 QQ 登录请求。请从游戏中选择 QQ 登录。");
-        } else if (!settings.snapshot().isSignedIn()) {
-            screen.show("未登录网站账号", "请点击“打开上号器”，在云端账号设置登录保存该授权的网站账号，再从游戏重新打开 QQ 登录。");
-        } else {
-            screen.show("请读取授权", "粘贴 token 或完整 QQ 回调地址后点击“读取授权”，核对账号尾号，再点击确认登录。");
-        }
+    private void showPrompt() {
+        if (!isTrustedRequest()) screen.show("已拒绝此次请求", "只接受火影忍者发起的 QQ 登录请求。请从游戏中选择 QQ 登录。");
+        else if (requests.mode() == LoginRequestState.Mode.DIRECT) screen.show("请粘贴完整 callback_url", "本地读取后核对 OpenID 尾号，再确认登录；无需登录网站账号。");
+        else if (!settings.snapshot().isSignedIn()) screen.show("未登录网站账号", "打开上号器，在云端账号设置登录后，重新从游戏打开 QQ 登录。");
+        else screen.show("请选择云端账号", "刷新列表并手动选择账号，再读取授权并确认登录。");
     }
 
     private void updateControls() {
-        CloudSettings.Snapshot session = settings.snapshot();
-        boolean allowed = foreground && session.isSignedIn() && isTrustedRequest();
-        tokenInput.setEnabled(allowed);
-        HuyUi.enabled(readButton, allowed && !requests.isPending());
-        HuyUi.enabled(confirmButton, allowed && !requests.isPending() && requests.value(session.revision) != null);
-    }
-
-    private void invalidateAuthorization() {
-        requests.invalidate();
-        updateControls();
+        boolean allowed = allowed();
+        boolean direct = requests.mode() == LoginRequestState.Mode.DIRECT;
+        boolean cloud = !direct && settings.snapshot().isSignedIn();
+        boolean pending = requests.isPending();
+        callbackInput.setEnabled(allowed && direct);
+        HuyUi.enabled(readButton, allowed && direct && !pending);
+        HuyUi.enabled(refreshButton, allowed && cloud && !pending);
+        HuyUi.enabled(downloadButton, allowed && cloud && !pending && selected != null && !selected.isExpired());
+        HuyUi.enabled(confirmButton, allowed && !pending && requests.value(currentRevision()) != null);
     }
 
     private void sessionChanged() {
-        invalidateAuthorization();
+        if (requests.mode() != LoginRequestState.Mode.CLOUD) return;
+        requests.websiteSessionChanged();
+        clearCloud();
         clearInput();
-        showInputPrompt();
-        if (settings.snapshot().isSignedIn()) {
-            screen.show("网站账号或所选账号已变化", "请重新粘贴授权并读取，或打开上号器重新选择账号。");
-        }
+        showPrompt();
+        updateControls();
     }
 
-    private void failed(String detail) {
-        invalidateAuthorization();
-        screen.show("暂时无法登录", detail);
-    }
-
-    private void clearInput() {
-        clearingInput = true;
-        try { tokenInput.setText(""); }
-        finally { clearingInput = false; }
-    }
-
-    private void cancelLogin() {
-        requests.stop();
-        clearInput();
-        setResult(RESULT_CANCELED);
-        finish();
-    }
-
+    private void failed(String detail) { requests.invalidate(); updateControls(); screen.show("暂时无法登录", detail); }
+    private void clearCloud() { selected = null; listSession = null; if (choices != null) choices.removeAllViews(); }
+    private void clearInput() { clearingInput = true; try { callbackInput.setText(""); } finally { clearingInput = false; } }
+    private void cancelLogin() { requests.stop(); clearInput(); setResult(RESULT_CANCELED); finish(); }
     @Override public void onBackPressed() { cancelLogin(); }
-
-    private void openHome() {
-        requests.stop();
-        clearInput();
-        setResult(RESULT_CANCELED);
-        startActivity(new Intent(this, MainActivity.class));
-        finish();
-    }
+    private void openHome() { requests.stop(); clearInput(); setResult(RESULT_CANCELED); startActivity(new Intent(this, MainActivity.class)); finish(); }
 
     @Override protected void onStop() {
         foreground = false;
         requests.stop();
         clearInput();
+        clearCloud();
         updateControls();
         settings.unregisterListener(sessionListener);
         super.onStop();
     }
-
-    @Override protected void onDestroy() {
-        requests.stop();
-        clearInput();
-        worker.shutdownNow();
-        super.onDestroy();
-    }
+    @Override protected void onDestroy() { requests.stop(); clearInput(); worker.shutdownNow(); super.onDestroy(); }
 }

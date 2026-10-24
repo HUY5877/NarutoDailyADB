@@ -19,6 +19,9 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import java.util.function.IntConsumer;
 
 /** Small native layout, shared by this app's two activities. */
 public final class HuyUi {
@@ -100,6 +103,17 @@ public final class HuyUi {
         }
 
         public Button button(String label, boolean primary, View.OnClickListener listener) {
+            return button(column, label, primary, listener);
+        }
+
+        public LinearLayout section() {
+            LinearLayout section = new LinearLayout(activity);
+            section.setOrientation(LinearLayout.VERTICAL);
+            column.addView(section, spacing(activity, 0, 0));
+            return section;
+        }
+
+        public Button button(LinearLayout parent, String label, boolean primary, View.OnClickListener listener) {
             Button button = new Button(activity);
             button.setText(label);
             button.setTextSize(16);
@@ -117,7 +131,7 @@ public final class HuyUi {
             button.setOnClickListener(listener);
             LinearLayout.LayoutParams parameters = spacing(activity, 0, 10);
             parameters.height = dp(activity, 44);
-            column.addView(button, parameters);
+            parent.addView(button, parameters);
             return button;
         }
 
@@ -148,10 +162,32 @@ public final class HuyUi {
         button.setAlpha(enabled ? 1f : 0.45f);
     }
 
-    public static EditText authorizationInput(Screen screen) {
+    public static RadioGroup selector(Screen screen, LinearLayout parent, String[] labels, int selected, IntConsumer changed) {
+        RadioGroup group = new RadioGroup(screen.activity);
+        group.setOrientation(LinearLayout.HORIZONTAL);
+        group.setSaveEnabled(false);
+        for (int i = 0; i < labels.length; i++) {
+            RadioButton option = new RadioButton(screen.activity);
+            option.setId(View.generateViewId());
+            option.setText(labels[i]);
+            option.setTextColor(TEXT);
+            option.setSaveEnabled(false);
+            group.addView(option, new RadioGroup.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            if (i == selected) group.check(option.getId());
+        }
+        group.setOnCheckedChangeListener((options, checked) -> {
+            for (int i = 0; i < options.getChildCount(); i++) {
+                if (options.getChildAt(i).getId() == checked) changed.accept(i);
+            }
+        });
+        parent.addView(group, spacing(screen.activity, 0, 12));
+        return group;
+    }
+
+    public static EditText authorizationInput(Screen screen, LinearLayout parent) {
         EditText input = new EditText(screen.activity);
-        input.setHint("粘贴 token 或完整 QQ 回调地址");
-        input.setContentDescription("QQ 授权 token 或完整回调地址");
+        input.setHint("粘贴完整 callback_url");
+        input.setContentDescription("QQ 授权完整 callback_url 回调地址");
         input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD
                 | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
@@ -159,7 +195,7 @@ public final class HuyUi {
         input.setSaveEnabled(false);
         input.setFreezesText(false);
         input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
-        screen.column.addView(input, new LinearLayout.LayoutParams(
+        parent.addView(input, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return input;
     }
