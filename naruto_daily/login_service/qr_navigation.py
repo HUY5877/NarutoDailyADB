@@ -66,6 +66,12 @@ class LoginDevice:
             ):
                 raise QRNavigationError("QQ main page opened instead of game authorization; login stopped")
 
+    def is_huy_login_activity(self) -> bool:
+        activity = self._run('shell', 'dumpsys', 'activity', 'activities').decode('utf-8', 'replace')
+        return any(re.search(r'(?<![\w.])com\.tencent\.tim/com\.tencent\.open\.agent\.AgentActivity(?=[\s}]|$)', line)
+                   for line in activity.splitlines()
+                   if 'mResumedActivity:' in line or 'topResumedActivity:' in line)
+
     def hierarchy(self) -> str:
         # Static remote command, private to this task's device; no credentials are logged.
         try:
@@ -219,6 +225,51 @@ def _wechat_qr_page(frame: np.ndarray, xml: str = '', game_package: str = 'com.t
                 or _match(frame, 'wechat_qr_instruction', (250, 1100, 830, 1360)))
 
 
+def wechat_qr_page(device: LoginDevice, frame: np.ndarray) -> bool:
+    """Identify the observed SDK page, independently of the requested channel."""
+    if frame.shape[:2] != (1920, 1080):
+        return False
+    package = getattr(device, 'game_package', 'com.tencent.KiHan')
+    return (_wechat_qr_page(frame, game_package=package)
+            or _wechat_qr_page(frame, device.hierarchy(), package))
+
+
+def qq_authorization_page(device: LoginDevice, frame: np.ndarray) -> bool:
+    """Recognize QQ authorization even when its QR is loading or has expired."""
+    if frame.shape[:2] != (1080, 1920):
+        return False
+    if (_match(frame, 'qr_heading', (650, 100, 1300, 370))
+            or (_match(frame, 'web_qr_heading', (480, 0, 1440, 220))
+                and _match(frame, 'web_qr_instruction', (480, 450, 1440, 820)))):
+        return True
+    action = choose_action(frame, '', getattr(device, 'login_type', DEFAULT_LOGIN_TYPE))
+    if action is not None and action.name in ('qq_android', 'qq_ios', 'wechat_android', 'wechat_ios',
+                                              'game_agreement', 'game_back'):
+        return False
+    nodes = _nodes(device.hierarchy())
+    package = getattr(device, 'game_package', 'com.tencent.KiHan')
+    texts = [''.join(node.get('text', '') + node.get('content-desc', '')
+                     for node in nodes if node.get('package') == owner)
+             for owner in ('com.tencent.mobileqq', package)]
+    texts = [re.sub(r'\s+', '', text) for text in texts]
+    return ('使用另一部手机QQ扫码' in texts[0]
+            or any('QQ授权登录' in text and '使用QQ手机版扫码授权登录' in text for text in texts))
+
+
+def cancel_wechat_qr(device: LoginDevice, frame: np.ndarray, *, clock=None, sleep=None) -> None:
+    """Cancel an already identified WeChat page and let its SDK callback settle."""
+    clock, sleep = clock or time.time, sleep or time.sleep
+    point = _match(frame, 'wechat_qr_cancel', (0, 36, 180, 111))
+    if not point:
+        raise QRNavigationError('WeChat QR cancellation control was not found')
+    if clock() >= device.deadline:
+        raise QRNavigationError('Login task deadline expired before WeChat cancellation')
+    logging.getLogger(__name__).info('识别到微信授权页，点击页面取消并等待授权请求结束')
+    # Android Back closes the Activity without completing the SDK cancellation.
+    device.tap(*point)
+    sleep(min(3, max(0, device.deadline - clock())))
+
+
 def choose_action(frame: np.ndarray, xml: str, login_type: str = DEFAULT_LOGIN_TYPE) -> LoginAction | None:
     login_type = parse_login_type(login_type)
     if frame.shape[:2] != (1080, 1920):
@@ -296,31 +347,125 @@ def find_startup_ad_close(frame: np.ndarray) -> LoginAction | None:
 
 def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1,
                    is_authorized: Callable[[], bool] | None = None,
-                   allow_startup_ads: bool = True) -> bytes | None:
+                   allow_startup_ads: bool = True,
+                   require_channel_selection: bool = False,
+                   wechat_cancelled_at: float | None = None) -> bytes | None:
     last_action, repeated = None, 0
     qr_wait_until: float | None = None
     channel_attempts = 0
     ad_observed, ad_clicks = False, 0
     login_type = parse_login_type(getattr(device, 'login_type', DEFAULT_LOGIN_TYPE))
+    expected_channel = {'android_qq': 'qq_android', 'ios_qq': 'qq_ios',
+                        'android_wechat': 'wechat_android', 'ios_wechat': 'wechat_ios'}[login_type]
+    channel_selected = not require_channel_selection
+    cancelled_pages: dict[str, float] = {}
+    if wechat_cancelled_at is not None:
+        cancelled_pages['wechat'] = wechat_cancelled_at
+    selector_wait_started_at = wechat_cancelled_at if require_channel_selection else None
+    qq_context = False
+    qq_back_count = 0
+    qq_steps = {'scan_login', 'add_account', 'other_login', 'switch_account'}
+    huy_activity = getattr(device, 'is_huy_login_activity', lambda: False)
+
+    def cancel_back(kind: str) -> None:
+        nonlocal qq_back_count, selector_wait_started_at
+        if selector_wait_started_at is None:
+            selector_wait_started_at = time.time()
+        if kind in cancelled_pages:
+            return
+        if time.time() >= device.deadline:
+            raise QRNavigationError('Login task deadline expired before authorization cancellation')
+        if kind.startswith('qq_'):
+            if qq_back_count >= 4:
+                raise QRNavigationError('QQ authorization did not return to the channel selector after 4 pages')
+            qq_back_count += 1
+        cancelled_pages[kind] = time.time()
+        logging.getLogger(__name__).info('识别到本次选择通道前恢复的授权页，取消并返回渠道选择：%s', kind)
+        device.back()
+
     while time.time() < device.deadline:
         if is_authorized is not None and is_authorized():
             return None
+        if (require_channel_selection and not channel_selected and selector_wait_started_at is not None
+                and time.time() - selector_wait_started_at >= 10):
+            raise QRNavigationError('Cancelled authorization did not return to the game channel selector')
         guard = getattr(device, "guard_authorization_surface", None)
         if guard is not None:
             guard()
+        if require_channel_selection and huy_activity():
+            if channel_selected and login_type.endswith('_qq'):
+                raise QRNavigationError('QQ 上号器已打开但当前使用原扫码流程，请检查两款辅助应用是否完整安装')
+            if is_authorized is not None and is_authorized():
+                return None
+            if channel_selected:
+                # TIM cannot be the requested WeChat authorization. Cancel the
+                # late restored QQ request, then establish WeChat again.
+                channel_selected = False
+                qr_wait_until = None
+                selector_wait_started_at = time.time()
+            cancel_back('tim')
+            time.sleep(min(max(0, poll_seconds), max(0, device.deadline-time.time())))
+            continue
         frame = device.screenshot()
         # Game pages are a SurfaceView; scoped UI text is a fallback for template changes.
         game_package = getattr(device, "game_package", "com.tencent.KiHan")
-        png = crop_authorization_qr(frame, "", game_package=game_package, login_type=login_type)
+        if (not channel_selected or login_type.endswith('_qq')) and wechat_qr_page(device, frame):
+            if require_channel_selection:
+                # Cancellation history prevents duplicate input across the
+                # task; the current return-to-selector wait has its own clock.
+                if channel_selected or selector_wait_started_at is None:
+                    selector_wait_started_at = time.time()
+                channel_selected = False
+            if wechat_cancelled_at is None:
+                if is_authorized is not None and is_authorized():
+                    return None
+                wechat_cancelled_at = time.time()
+                cancelled_pages['wechat'] = wechat_cancelled_at
+                cancel_wechat_qr(device, frame)
+                qr_wait_until = None
+            elif not require_channel_selection and time.time() - wechat_cancelled_at >= 10:
+                raise QRNavigationError('WeChat authorization did not close after cancellation')
+            time.sleep(min(max(0, poll_seconds), max(0, device.deadline-time.time())))
+            continue
+        if ((not channel_selected or require_channel_selection and login_type.endswith('_wechat'))
+                and qq_authorization_page(device, frame)):
+            qq_context = True
+            if is_authorized is not None and is_authorized():
+                return None
+            if require_channel_selection and channel_selected:
+                channel_selected = False
+                qr_wait_until = None
+                selector_wait_started_at = time.time()
+            cancel_back('qq_qr')
+            time.sleep(min(max(0, poll_seconds), max(0, device.deadline-time.time())))
+            continue
+        png = (crop_authorization_qr(frame, "", game_package=game_package, login_type=login_type)
+               if channel_selected else None)
         if png:
             return png
         action = None if qr_wait_until is not None else choose_action(frame, "", login_type)
         if action is None:
             xml = device.hierarchy()
-            png = crop_authorization_qr(frame, xml, game_package=game_package, login_type=login_type)
+            png = (crop_authorization_qr(frame, xml, game_package=game_package, login_type=login_type)
+                   if channel_selected else None)
             if png:
                 return png
             action = choose_action(frame, xml, login_type)
+        if not channel_selected and qq_context and action is None:
+            # The requested channel can be WeChat while the old native QQ
+            # request is still returning through its own account menus.
+            qq_action = choose_action(frame, xml, 'android_qq')
+            if qq_action is not None and qq_action.name in qq_steps:
+                action = qq_action
+        if not channel_selected and action is not None and action.name in qq_steps:
+            # Only a previously observed QQ authorization page establishes that
+            # these intermediary menus belong to the restored login request.
+            if qq_context:
+                if is_authorized is not None and is_authorized():
+                    return None
+                cancel_back('qq_' + action.name)
+            time.sleep(min(max(0, poll_seconds), max(0, device.deadline-time.time())))
+            continue
         ad_action = (find_startup_ad_close(frame)
                      if allow_startup_ads and qr_wait_until is None
                      and (action is None or action.name != 'game_wait') else None)
@@ -347,6 +492,10 @@ def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1,
         if ad_observed:
             logging.getLogger(__name__).info('启动广告关闭按钮复查未匹配，取消点击，按当前页面继续准备二维码')
         ad_observed = False
+        if require_channel_selection and action is not None and action.name == 'game_back':
+            # A positively identified restored Start Game screen is not a QR
+            # loading transition. Return and establish the requested channel.
+            qr_wait_until = None
         if qr_wait_until is not None and time.time() >= qr_wait_until:
             if (login_type.endswith('_wechat') and action is not None
                     and action.name in ('wechat_android', 'wechat_ios') and channel_attempts < 3):
@@ -361,13 +510,34 @@ def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1,
             # QQ can briefly show the previous page while requesting the code.
             # Never reopen the sheet or submit scan-login a second time.
             action = None
+        if (require_channel_selection and channel_selected and action is not None
+                and action.name == expected_channel
+                and not (login_type.endswith('_wechat') and qr_wait_until is None and channel_attempts < 3)):
+            # The selector may remain in screenshots briefly after the channel
+            # tap. QQ intermediate menus still run normally once it changes.
+            action = None
         if action:
             repeated = repeated + 1 if last_action == action.name else 1
             if repeated > 6:
                 raise QRNavigationError("Login page did not advance after repeated observations")
             if time.time() >= device.deadline:
                 break
+            if require_channel_selection and action.name == expected_channel and huy_activity():
+                # The helper can reopen between observing the game and tapping.
+                # A tap on that surface cannot establish this task's channel.
+                continue
+            if time.time() >= device.deadline:
+                break
             device.tap(action.x, action.y)
+            if require_channel_selection and action.name == 'game_back':
+                if channel_selected or selector_wait_started_at is None:
+                    selector_wait_started_at = time.time()
+                channel_selected = False
+            if action.name in ('qq_android', 'qq_ios', 'wechat_android', 'wechat_ios'):
+                if action.name == expected_channel:
+                    channel_selected = True
+                    selector_wait_started_at = None
+                logging.getLogger(__name__).info('已点击本次指定登录通道：%s', login_type)
             if action.name != 'game_wait':
                 allow_startup_ads = False
             if action.name in ('wechat_android', 'wechat_ios'):
@@ -405,35 +575,30 @@ def refresh_login_qr(device: LoginDevice, *, is_authorized: Callable[[], bool],
     # Cancellation is sent once and only on a recognized authorization page; never tap
     # an expired code, a remembered account's Agree button, or the game's Back.
     returned = False
+    wechat_cancelled_at = None
     login_type = parse_login_type(getattr(device, 'login_type', DEFAULT_LOGIN_TYPE))
     while time.time() < device.deadline:
         if is_authorized():
             return None
         frame = device.screenshot()
-        on_qr_page = authorization_page(frame)
-        if not on_qr_page and login_type.endswith('_wechat') and frame.shape[:2] == (1920, 1080):
-            on_qr_page = _wechat_qr_page(frame, device.hierarchy(), getattr(device, 'game_package', 'com.tencent.KiHan'))
+        on_wechat_page = wechat_qr_page(device, frame)
+        on_qr_page = on_wechat_page or authorization_page(frame)
         if on_qr_page:
             if not returned:
                 if is_authorized():
                     return None
-                if login_type.endswith('_wechat') and frame.shape[:2] == (1920, 1080):
-                    # Android Back closes this SDK Activity without completing
-                    # cancellation, leaving subsequent channel clicks ignored.
-                    point = _match(frame, 'wechat_qr_cancel', (0, 36, 180, 111))
-                    if not point:
-                        raise QRNavigationError('WeChat QR cancellation control was not found')
-                    device.tap(*point)
-                    # The selector appears before the SDK delivers its cancel
-                    # callback. Give it time to release the previous login request.
-                    time.sleep(min(3, max(0, device.deadline - time.time())))
+                if on_wechat_page:
+                    wechat_cancelled_at = time.time()
+                    cancel_wechat_qr(device, frame)
                 else:
                     device.back()
                 returned = True
         else:
             action = choose_action(frame, '', login_type)
             if action and action.name != 'game_back':
+                cancellation = ({'wechat_cancelled_at': wechat_cancelled_at}
+                                if wechat_cancelled_at is not None else {})
                 return fetch_login_qr(device, poll_seconds=poll_seconds, is_authorized=is_authorized,
-                                      allow_startup_ads=False)
+                                      allow_startup_ads=False, **cancellation)
         time.sleep(min(poll_seconds, max(0, device.deadline - time.time())))
     raise QRNavigationError('Login task deadline expired during QR refresh')

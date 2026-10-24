@@ -293,6 +293,203 @@ def test_injection_refuses_unselected_login_that_reopens_before_channel_tap(monk
     assert not device.taps
 
 
+@pytest.mark.parametrize('channel', ['android_qq', 'ios_qq'])
+@pytest.mark.parametrize('stuck', [False, True])
+def test_injection_cancels_old_wechat_before_selecting_current_qq(monkeypatch, channel, stuck):
+    from test_login_service_channels import login_frame, wechat_frame
+    capture = module()
+    boundary = SessionBoundary(capture)
+    session = boundary.setup(monkeypatch)
+    session.prepare()
+    events = []
+
+    class Device:
+        deadline = 200.
+        login_type = channel
+        cancelled_at = None
+        selected = False
+        def _run(self, *args):
+            return (b'mResumedActivity: com.tencent.tim/com.tencent.open.agent.AgentActivity'
+                    if self.selected else b'mResumedActivity: com.tencent.KiHan/.GameActivity')
+        def screenshot(self):
+            return wechat_frame() if self.cancelled_at is None or stuck else login_frame()
+        def hierarchy(self): return ''
+        def back(self): pytest.fail('WeChat requires its own Cancel control')
+        def tap(self, x, y):
+            if y < 111:
+                assert self.cancelled_at is None, 'Cancel must only be tapped once'
+                self.cancelled_at = boundary.clock[0]
+                events.append('wechat_cancel')
+            else:
+                assert boundary.clock[0] - self.cancelled_at >= 3
+                assert (1400 < x < 1850) if channel == 'android_qq' else (950 < x < 1400)
+                self.selected = True
+                events.append('requested_qq')
+
+    class Login:
+        def call(self, method, argument=None):
+            assert session.device.selected
+            events.append(method)
+            return {'captureId': session.current.capture_id,
+                    'state': 'submitted' if method == 'confirm' else 'ready'}
+
+    session.device, session.login = Device(), Login()
+    authorization = capture.CapturedAuthorization('auth://callback?access_token=private', 1792821600000)
+    if stuck:
+        with pytest.raises(capture.CaptureError):
+            session.inject(authorization)
+        assert events == ['wechat_cancel']
+        assert boundary.clock[0] <= 115
+    else:
+        session.inject(authorization)
+        assert events == ['wechat_cancel', 'requested_qq', 'inject', 'confirm']
+
+
+@pytest.mark.parametrize('channel', ['android_qq', 'ios_qq'])
+@pytest.mark.parametrize('stuck', [False, True])
+@pytest.mark.parametrize('native_layer', [False, True])
+def test_capture_leaves_old_plain_qq_qr_before_opening_huy_login(monkeypatch, channel, stuck, native_layer):
+    import numpy as np
+    from test_login_service_channels import login_frame
+    from test_login_service_web_qr import frame as qq_frame
+    capture = module()
+    boundary = SessionBoundary(capture)
+    session = boundary.setup(monkeypatch)
+    session.prepare()
+    events = []
+
+    class Device:
+        deadline = 200.
+        login_type = channel
+        backed = 0
+        selected = False
+        def _run(self, *args):
+            return (b'mResumedActivity: com.tencent.tim/com.tencent.open.agent.AgentActivity'
+                    if self.selected else b'mResumedActivity: com.tencent.KiHan/.GameActivity')
+        def screenshot(self):
+            if not self.backed or stuck:
+                return qq_frame()
+            if native_layer and self.backed == 1:
+                return np.full((1080, 1920, 3), 255, np.uint8)
+            return login_frame()
+        def hierarchy(self):
+            if native_layer and self.backed == 1 and not stuck:
+                return ('<hierarchy><node package="com.tencent.mobileqq" text="其他登录方式" '
+                        'bounds="[990,910][1240,1080]" /></hierarchy>')
+            return ''
+        def back(self):
+            assert self.backed < (2 if native_layer else 1)
+            events.append('old_qq_cancel' if self.backed == 0 else 'qq_layer_cancel')
+            self.backed += 1
+        def tap(self, x, y):
+            assert self.backed
+            assert (1400 < x < 1850) if channel == 'android_qq' else (950 < x < 1400)
+            self.selected = True
+            events.append('requested_qq')
+
+    class Login:
+        def call(self, method, argument=None):
+            assert session.device.selected
+            events.append(method)
+            return {'captureId': session.current.capture_id,
+                    'state': 'submitted' if method == 'confirm' else 'ready'}
+
+    session.device, session.login = Device(), Login()
+    authorization = capture.CapturedAuthorization('auth://callback?access_token=private', 1792821600000)
+    if stuck:
+        with pytest.raises(capture.CaptureError):
+            session.inject(authorization)
+        assert events == ['old_qq_cancel']
+        assert boundary.clock[0] <= 115
+    else:
+        session.inject(authorization)
+        assert events == ['old_qq_cancel'] + (['qq_layer_cancel'] if native_layer else []) + [
+            'requested_qq', 'inject', 'confirm']
+
+
+@pytest.mark.parametrize('channel', ['android_qq', 'ios_qq'])
+def test_capture_reselects_qq_if_restored_wechat_arrives_after_channel_tap(monkeypatch, channel):
+    from test_login_service_channels import login_frame, wechat_frame
+    capture = module()
+    boundary = SessionBoundary(capture)
+    session = boundary.setup(monkeypatch)
+    session.prepare()
+    events = []
+
+    class Device:
+        deadline = 140.
+        login_type = channel
+        taps = 0
+        cancelled_at = None
+        def _run(self, *args):
+            return (b'mResumedActivity: com.tencent.tim/com.tencent.open.agent.AgentActivity'
+                    if self.taps == 2 else b'mResumedActivity: com.tencent.KiHan/.GameActivity')
+        def screenshot(self):
+            return wechat_frame() if self.taps == 1 and self.cancelled_at is None else login_frame()
+        def hierarchy(self): return ''
+        def back(self): pytest.fail('Use WeChat cancellation')
+        def tap(self, x, y):
+            if y < 111:
+                assert self.cancelled_at is None
+                self.cancelled_at = boundary.clock[0]
+                events.append('cancel_wechat')
+            else:
+                if self.taps:
+                    assert boundary.clock[0] - self.cancelled_at >= 3
+                self.taps += 1
+                events.append('select_qq')
+
+    class Login:
+        def call(self, method, argument=None):
+            assert session.device.taps == 2
+            events.append(method)
+            return {'captureId': session.current.capture_id,
+                    'state': 'submitted' if method == 'confirm' else 'ready'}
+
+    session.device, session.login = Device(), Login()
+    session.inject(capture.CapturedAuthorization('auth://callback?access_token=private', 1792821600000))
+    assert events == ['select_qq', 'cancel_wechat', 'select_qq', 'inject', 'confirm']
+
+
+@pytest.mark.parametrize('channel', ['android_qq', 'ios_qq'])
+def test_capture_reselects_after_old_start_game_arrives_after_qq_tap(monkeypatch, channel):
+    from test_login_service_channels import login_frame
+    from test_login_service_qr_navigation import frame_with
+    capture = module()
+    boundary = SessionBoundary(capture)
+    session = boundary.setup(monkeypatch)
+    session.prepare()
+    game = frame_with('start_game', 780, 820)
+    back = frame_with('game_back', 1680, 30)
+    game[:170, 1650:1850] = back[:170, 1650:1850]
+    events = []
+
+    class Device:
+        deadline = 140.
+        login_type = channel
+        channel_taps = 0
+        returned = False
+        def _run(self, *args):
+            return (b'mResumedActivity: com.tencent.tim/com.tencent.open.agent.AgentActivity'
+                    if self.channel_taps == 2 else b'mResumedActivity: com.tencent.KiHan/.GameActivity')
+        def screenshot(self):
+            return game if self.channel_taps == 1 and not self.returned else login_frame()
+        def hierarchy(self): return ''
+        def back(self): pytest.fail('The game has its own identified Back control')
+        def tap(self, x, y):
+            if y < 170:
+                assert 1650 <= x < 1850 and not self.returned
+                self.returned = True
+                events.append('game_back')
+            else:
+                self.channel_taps += 1
+                events.append('select_qq')
+
+    session.device = Device()
+    session._open_login_channel()
+    assert events == ['select_qq', 'game_back', 'select_qq']
+
+
 def encoded_result(value):
     return ('Bundle[{result=' + base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip('=') + '}]').encode()
 
@@ -640,7 +837,8 @@ def test_worker_package_matrix_preserves_qr_daily_and_weekly_protocol(
             calls.append(mode)
             return 3
 
-    def fetch(device):
+    def fetch(device, *, require_channel_selection):
+        assert require_channel_selection is True
         calls.append('legacy_qr')
         return PNG
 

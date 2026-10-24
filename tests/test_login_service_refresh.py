@@ -34,6 +34,7 @@ def test_refresh_returns_once_from_either_qr_and_never_backs_from_login(monkeypa
     monkeypatch.setattr(navigation.time, 'time', lambda: 100)
     monkeypatch.setattr(navigation.time, 'sleep', lambda _: None)
     monkeypatch.setattr(navigation, 'authorization_page', lambda frame: frame.endswith('_qr'))
+    monkeypatch.setattr(navigation, 'wechat_qr_page', lambda *_: False)
     monkeypatch.setattr(navigation, 'choose_action', lambda *_: navigation.LoginAction('qq_android', 1605, 813))
     monkeypatch.setattr(navigation, 'fetch_login_qr', lambda *_, **kw: actions.append('fetch') or b'new qr')
     assert navigation.refresh_login_qr(device, is_authorized=lambda: False) == b'new qr'
@@ -46,6 +47,7 @@ def test_authorization_wins_before_refresh_or_immediately_before_back(monkeypatc
     device = SimpleNamespace(deadline=200, screenshot=lambda: 'qr', back=lambda: pytest.fail('must not cancel login'))
     monkeypatch.setattr(navigation.time, 'time', lambda: 100)
     monkeypatch.setattr(navigation, 'authorization_page', lambda _: True)
+    monkeypatch.setattr(navigation, 'wechat_qr_page', lambda *_: False)
     assert navigation.refresh_login_qr(device, is_authorized=lambda: next(observations)) is None
 
 

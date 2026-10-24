@@ -278,10 +278,14 @@ class QQCaptureSession:
         return any('com.tencent.tim/com.tencent.open.agent.AgentActivity' in line for line in resumed)
 
     def _open_login_channel(self):
-        from .qr_navigation import choose_action, find_startup_ad_close
+        from .qr_navigation import (QRNavigationError, cancel_wechat_qr, choose_action,
+                                    find_startup_ad_close, qq_authorization_page, wechat_qr_page)
         expected = {'android_qq': 'qq_android', 'ios_qq': 'qq_ios'}[self.device.login_type]
         selected_at = None
         cancelled_unselected = False
+        wechat_cancelled_at = None
+        qq_cancelled_at = None
+        qq_cancelled_layers = set()
         last_action, repeated, ad_observed, ad_clicks = None, 0, False, 0
         while True:
             self._remaining()
@@ -303,15 +307,62 @@ class QQCaptureSession:
                         raise CaptureError('取消提前打开的 QQ 授权页后未返回游戏')
                     self._pause()
                 continue
+            guard = getattr(self.device, 'guard_authorization_surface', None)
+            if guard is not None:
+                guard()
+            frame = self.device.screenshot()
+            if wechat_qr_page(self.device, frame):
+                if wechat_cancelled_at is None:
+                    wechat_cancelled_at = self._clock()
+                    try:
+                        cancel_wechat_qr(self.device, frame, clock=self._clock, sleep=self._sleep)
+                    except QRNavigationError as error:
+                        raise CaptureError(str(error)) from None
+                    # A delayed restored WeChat request can cover the game
+                    # after the QQ tap. Select QQ again only after cancelling it.
+                    selected_at = None
+                elif self._clock() - wechat_cancelled_at >= 10:
+                    raise CaptureError('取消微信授权页后未返回游戏，已停止自动上号')
+                self._pause()
+                continue
             if selected_at is not None:
+                restored_game = choose_action(frame, '', self.device.login_type)
+                if restored_game is not None and restored_game.name == 'game_back':
+                    self._remaining()
+                    if self._login_activity():
+                        continue
+                    self.device.tap(restored_game.x, restored_game.y)
+                    selected_at = None
+                    logging.getLogger(__name__).info('游戏恢复到开始游戏页，返回重新选择本次登录通道')
+                    self._pause()
+                    continue
                 if self._clock() - selected_at >= 30:
                     raise CaptureError('选择 QQ 通道后上号器未打开')
                 self._pause()
                 continue
-            frame = self.device.screenshot()
+            if qq_authorization_page(self.device, frame):
+                if qq_cancelled_at is None:
+                    self._remaining()
+                    logging.getLogger(__name__).info('识别到之前的 QQ 扫码授权页，返回游戏重新选择本次登录通道')
+                    self.device.back()
+                    qq_cancelled_at = self._clock()
+                elif self._clock() - qq_cancelled_at >= 10:
+                    raise CaptureError('取消 QQ 扫码授权页后未返回游戏，已停止自动上号')
+                self._pause()
+                continue
             action = choose_action(frame, '', self.device.login_type)
             if action is None:
                 action = choose_action(frame, self.device.hierarchy(), self.device.login_type)
+            if qq_cancelled_at is not None and (action is None or action.name in (
+                    'scan_login', 'add_account', 'other_login', 'switch_account')):
+                if self._clock() - qq_cancelled_at >= 10:
+                    raise CaptureError('取消 QQ 授权后仍未返回游戏渠道选择页')
+                if action is not None and action.name not in qq_cancelled_layers:
+                    self._remaining()
+                    self.device.back()
+                    qq_cancelled_layers.add(action.name)
+                self._pause()
+                continue
             ad = find_startup_ad_close(frame) if action is None or action.name != 'game_wait' else None
             if ad:
                 if ad_clicks >= 3:
@@ -339,6 +390,7 @@ class QQCaptureSession:
                 last_action = action.name
                 if action.name == expected:
                     selected_at = self._clock()
+                    logging.getLogger(__name__).info('已点击本次指定登录通道：%s', self.device.login_type)
             self._pause()
 
     def inject(self, authorization: CapturedAuthorization):

@@ -68,7 +68,8 @@ def test_worker_runs_ldplayer_and_qr_navigation_protocol(monkeypatch):
         def __init__(self, adb_path, serial, deadline, command_timeout=20, *, game_package, login_type):
             calls.append(("device", adb_path, serial, deadline, command_timeout, game_package, login_type))
 
-    def fetch(device):
+    def fetch(device, *, require_channel_selection):
+        assert require_channel_selection is True
         calls.append(("fetch", device.__class__.__name__))
         return PNG
 
@@ -126,7 +127,7 @@ def test_worker_passes_nonempty_pool_indices_and_allows_empty_template(monkeypat
     code, _ = invoke(
         monkeypatch,
         request(template="", poolIndices=[0, 2]),
-        (Manager, DriverError, Device, lambda device: PNG),
+        (Manager, DriverError, Device, lambda device, **kwargs: PNG),
     )
 
     assert code == 0
@@ -186,7 +187,7 @@ def test_worker_maps_each_operation_failure_without_exposing_credentials(monkeyp
     code, events = invoke(
         monkeypatch,
         request(),
-        (Manager, DriverError, Device, lambda device: PNG),
+        (Manager, DriverError, Device, lambda device, **kwargs: PNG),
     )
 
     assert code == 1
@@ -208,7 +209,7 @@ def test_timeout_and_invalid_qr_have_fixed_error_codes(monkeypatch):
             raise TimeoutError("private timeout detail")
 
     code, events = invoke(
-        monkeypatch, request(), (TimeoutManager, DriverError, object, lambda device: PNG)
+        monkeypatch, request(), (TimeoutManager, DriverError, object, lambda device, **kwargs: PNG)
     )
     assert code == 1
     assert events[-1] == {"type": "error", "code": "command_timeout"}
@@ -233,7 +234,7 @@ def test_timeout_and_invalid_qr_have_fixed_error_codes(monkeypatch):
             pass
 
     code, events = invoke(
-        monkeypatch, request(), (Manager, DriverError, Device, lambda device: b"not-png")
+        monkeypatch, request(), (Manager, DriverError, Device, lambda device, **kwargs: b"not-png")
     )
     assert code == 1
     assert events[-1] == {"type": "error", "code": "qr_not_found"}
@@ -259,7 +260,7 @@ def test_game_launch_driver_error_has_specific_safe_code(monkeypatch):
             raise DriverError("private game output")
 
     code, events = invoke(
-        monkeypatch, request(), (Manager, DriverError, object, lambda device: PNG)
+        monkeypatch, request(), (Manager, DriverError, object, lambda device, **kwargs: PNG)
     )
 
     assert code == 1
@@ -299,7 +300,8 @@ def daily_dependencies(calls):
             assert serial == "emulator-5570"
             assert game_package == "com.tencent.naruto"
 
-    def fetch(device):
+    def fetch(device, *, require_channel_selection):
+        assert require_channel_selection is True
         calls.append("qr")
         return PNG
 

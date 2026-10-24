@@ -249,7 +249,9 @@ def main(
             phase = "qr"
             _send(output_stream, {"type": "stage", "status": "preparing_qr"})
             device = LoginDevice(manager.adb_path, serial, deadline, command_timeout, game_package=package, login_type=login_type)
-            png = fetch_login_qr(device)
+            # Every new game launch must select this task's channel. A restored
+            # OAuth page cannot prove which Android/iOS channel created it.
+            png = fetch_login_qr(device, require_channel_selection=True)
         if (not isinstance(png, bytes) or not png.startswith(_PNG_SIGNATURE)
                 or len(png) > _MAX_PNG_BYTES):
             raise ValueError

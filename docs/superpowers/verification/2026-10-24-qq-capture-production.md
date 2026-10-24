@@ -2,7 +2,7 @@
 
 日期：2026-10-24。worker 基线为远端 main `b81bc2736bea7cd738f83ac594df257de91fcf4e`，提交分支为 `codex/qq-capture-login`。网站后端为 NarutoLoginClient `29eb8519e1e96c328b7e300bd6f04b600f0e5a13`。
 
-worker [合并请求 #23](https://github.com/HUY5877/NarutoDailyADB/pull/23) 已创建并保持草稿；实现和测试提交为 `aeb8925`，后续交付记录更新仅修改文档。
+worker [合并请求 #23](https://github.com/HUY5877/NarutoDailyADB/pull/23) 已创建并保持草稿；首次生产准备的实现和测试提交为 `aeb8925`。随后增加每次启动游戏重新选择渠道的修复，验证与云端故障对照见 [登录渠道恢复记录](2026-10-24-login-channel-reset.md)。
 
 ## 已完成的正式配置
 
@@ -18,7 +18,7 @@ worker [合并请求 #23](https://github.com/HUY5877/NarutoDailyADB/pull/23) 已
 | 场景 | 结果 |
 | --- | --- |
 | QQ 安卓/iOS 日常、周胜，两款应用都没有 | 原游戏扫码流程，不初始化新增抓号接口或数据库 |
-| 仅抓号器或仅上号器 | 同上 |
+| 仅抓号器或仅上号器 | 进入原扫码分支；若仅有上号器且游戏被它接管，明确提示检查安装，不能保证它能产生普通 QQ 二维码 |
 | 包查询失败、空输出或混合错误输出，任务仍有效 | 安全警告后原流程，不输出 ADB 原始内容 |
 | 两款应用均在且支持协议 1 | 本轮抓号、任务绑定上传、数据库消费、游戏通道上号 |
 | 双应用但配置、身份或 provider 不匹配 | 明确失败，不能把历史授权或其他任务授权当作本轮结果 |
@@ -30,7 +30,7 @@ worker [合并请求 #23](https://github.com/HUY5877/NarutoDailyADB/pull/23) 已
 ## 验证与审查
 
 - 后端：完整 323 项测试通过，TypeScript 类型检查、前端构建和服务端构建通过。两位独立审查员复核了事务、本人隔离、刷新/消费锁序、异常回滚、初始化失败重试以及微信和旧队列兼容。
-- worker：包检测与 worker 相关回归 245 项通过；另一位审查员独立运行抓号、刷新、ADB 和 worker 测试 234 项通过。最终固定实现完整运行 `python -m pytest -q --junitxml=.data/qq-capture-verification/final-worker-pytest.xml`，3692 项通过、2 项失败，耗时 297.17 秒。失败仅为下述 main 已有的两项导航异常类型用例；两个计时用例本轮通过。
+- worker 首次生产准备：包检测与 worker 相关回归 245 项通过；另一位审查员独立运行抓号、刷新、ADB 和 worker 测试 234 项通过。该轮固定实现完整运行 `python -m pytest -q --junitxml=.data/qq-capture-verification/final-worker-pytest.xml`，3692 项通过、2 项失败，耗时 297.17 秒。失败仅为下述 main 已有的两项导航异常类型用例；两个计时用例该轮通过。后续渠道恢复修改的最新结果以独立记录为准。
 - Android：16 个纯 Java 测试入口通过。当前未修改 APK，也未重新安装或卸载模拟器应用。
 - 全套首次运行 3629 通过、4 失败。两项导航测试期望 `AgentError` 而现有实现抛出 `MultimodalRequestError`；两项网络超时用例的 0.6 秒下界偶发得到 0.594 秒。四项均已在独立归档的原 main、同一 Python 环境下实际复现，相关测试和实现与本分支无差异。
 - `git diff --check` 通过；审查与测试产物不含生产凭据，临时完整测试日志保留在本机忽略的 `.data/qq-capture-verification/`。
