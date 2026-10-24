@@ -2,6 +2,8 @@
 
 功能分支：两个仓库的 `codex/qq-capture-login`，分别基于 NarutoDailyADB 的远端 main `b81bc27` 和 NarutoLoginClient 的远端 main `667382e`。
 
+功能提交已推送：执行端和 Android 为 `4f727bd`，网站为 `29eb851`。没有合并到 main。
+
 ## 本地验证
 
 - Python：最终固定源码运行 `pytest tests -q -k 'login_service or cloudflare_kv or environment'`，1206 项通过、2416 项非相关用例未选中。仅出现既有 Starlette/AnyIO 弃用提示。
