@@ -27,9 +27,29 @@ final class AuthorizationRules {
     }
 
     static AuthorizationRules fromCallback(String callback, long capturedAt, long now) {
-        if (callback == null || callback.length() > MAX_BYTES || capturedAt < 0 || now < capturedAt) {
-            throw invalid();
-        }
+        if (capturedAt < 0 || now < capturedAt) throw invalid();
+        Map<String, String> fields = callbackFields(callback);
+        long lifetimeStart = authorizationTime(fields, capturedAt);
+        final long expiresAt;
+        try { expiresAt = Math.addExact(lifetimeStart, Math.multiplyExact(positiveDecimal(fields.get("expires_in")), 1000L)); }
+        catch (ArithmeticException ignored) { throw invalid(); }
+        AuthorizationRules result = new AuthorizationRules(fields, capturedAt, expiresAt);
+        result.remainingSeconds(now);
+        return result;
+    }
+
+    /** Validate lookup syntax without treating paste time as capture time or computing a new expiry. */
+    static Map<String, String> lookupFields(String callback, long now) {
+        if (now < 0) throw invalid();
+        Map<String, String> fields = callbackFields(callback);
+        long timestamp = authorizationTime(fields, now);
+        // Reject non-representable durations just as capture validation does, without creating an expiry.
+        if (positiveDecimal(fields.get("expires_in")) > (Long.MAX_VALUE - timestamp) / 1000L) throw invalid();
+        return fields;
+    }
+
+    private static Map<String, String> callbackFields(String callback) {
+        if (callback == null || callback.length() > MAX_BYTES) throw invalid();
         for (int i = 0; i < callback.length(); i++) {
             char c = callback.charAt(i);
             if (c < 0x21 || c > 0x7e) throw invalid();
@@ -65,7 +85,11 @@ final class AuthorizationRules {
         if (fields.containsKey("appid") && !APP_ID.equals(fields.get("appid"))) throw invalid();
         if (fields.containsKey("app_id") && !APP_ID.equals(fields.get("app_id"))) throw invalid();
         long seconds = positiveDecimal(fields.get("expires_in"));
-        long lifetimeStart = capturedAt;
+        if (seconds > Long.MAX_VALUE / 1000L) throw invalid();
+        return fields;
+    }
+
+    private static long authorizationTime(Map<String, String> fields, long capturedAt) {
         if (fields.containsKey("auth_time")) {
             String authTime = fields.get("auth_time");
             if (!authTime.matches("[0-9]{10}|[0-9]{13}")) throw invalid();
@@ -73,14 +97,9 @@ final class AuthorizationRules {
             if (authTime.length() == 10) timestamp *= 1000L;
             // Both formats represent modern epoch dates; other widths are ambiguous.
             if (timestamp < 1000000000000L || timestamp > capturedAt) throw invalid();
-            lifetimeStart = timestamp;
+            return timestamp;
         }
-        final long expiresAt;
-        try { expiresAt = Math.addExact(lifetimeStart, Math.multiplyExact(seconds, 1000L)); }
-        catch (ArithmeticException ignored) { throw invalid(); }
-        AuthorizationRules result = new AuthorizationRules(fields, capturedAt, expiresAt);
-        result.remainingSeconds(now);
-        return result;
+        return capturedAt;
     }
 
     static long parseCapturedAt(String value) {

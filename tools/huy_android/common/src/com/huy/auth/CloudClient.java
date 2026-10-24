@@ -111,6 +111,17 @@ public final class CloudClient {
         catch (Exception error) { throw new CloudException("云端授权与输入不匹配或已过期，请重新扫码"); }
     }
 
+    /** Callback input is only a lookup and identity check; the cloud retains the original lifetime. */
+    public Download resolveInput(AuthorizationInput input) throws CloudException {
+        if (input == null) throw new CloudException("请先粘贴 token 或完整的 QQ 授权回调地址");
+        Download result = resolveToken(input.accessToken());
+        try {
+            input.validateResolved(result.authorization.accessToken(), result.authorization.openid(),
+                    result.authorization.expiresAtMs(), System.currentTimeMillis());
+            return result;
+        } catch (IllegalArgumentException error) { throw new CloudException(error.getMessage()); }
+    }
+
     public void delete(String id) throws CloudException {
         prepare();
         if (!CloudRules.recordId(id)) throw new CloudException("账号记录无效");

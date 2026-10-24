@@ -24,6 +24,14 @@ public final class CloudSettings {
 
     public boolean needsEndpointSignIn() { return preferences.getBoolean("endpoint_sign_in_required", false); }
 
+    public void registerListener(SharedPreferences.OnSharedPreferenceChangeListener listener) {
+        preferences.registerOnSharedPreferenceChangeListener(listener);
+    }
+
+    public void unregisterListener(SharedPreferences.OnSharedPreferenceChangeListener listener) {
+        preferences.unregisterOnSharedPreferenceChangeListener(listener);
+    }
+
     public Snapshot snapshot() {
         synchronized (CloudSettings.class) {
             return new Snapshot(preferences.getString("endpoint", DEFAULT_ENDPOINT),

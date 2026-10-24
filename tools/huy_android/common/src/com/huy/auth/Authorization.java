@@ -79,6 +79,8 @@ public final class Authorization {
 
     String accessToken() { return rules.fields().get("access_token"); }
 
+    String openid() { return rules.fields().get("openid"); }
+
     private static String string(Object value) {
         if (!(value instanceof String)) throw AuthorizationRules.invalid();
         return (String) value;

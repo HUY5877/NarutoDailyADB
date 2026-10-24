@@ -36,14 +36,18 @@ final class CloudRules {
 
     static String token(String value) {
         if (value == null) throw new IllegalArgumentException("请粘贴 16 至 256 位十六进制 token");
-        int start = 0, end = value.length();
-        while (start < end && whitespace(value.charAt(start))) start++;
-        while (end > start && whitespace(value.charAt(end - 1))) end--;
-        String result = value.substring(start, end);
+        String result = trimInputWhitespace(value);
         if (!result.matches("[0-9a-fA-F]{16,256}")) {
             throw new IllegalArgumentException("请粘贴 16 至 256 位十六进制 token");
         }
         return result;
+    }
+
+    static String trimInputWhitespace(String value) {
+        int start = 0, end = value.length();
+        while (start < end && whitespace(value.charAt(start))) start++;
+        while (end > start && whitespace(value.charAt(end - 1))) end--;
+        return value.substring(start, end);
     }
 
     private static boolean whitespace(char value) {

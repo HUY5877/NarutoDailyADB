@@ -3,15 +3,14 @@ package com.huy.authlogin;
 import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
-import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
+import com.huy.auth.AuthorizationInput;
 import com.huy.auth.CloudAccountActivity;
 import com.huy.auth.CloudClient;
 import com.huy.auth.CloudException;
@@ -43,19 +42,8 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         settings = new CloudSettings(this);
         screen = new HuyUi.Screen(this, "上号器", "粘贴 token，或选择一个已保存的 QQ 账号。");
-        tokenInput = new EditText(this);
-        tokenInput.setHint("粘贴 access_token");
-        tokenInput.setContentDescription("QQ 授权 token");
-        tokenInput.setSingleLine(true);
-        tokenInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD
-                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        tokenInput.setImeOptions(EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
-        tokenInput.setSaveEnabled(false);
-        tokenInput.setFreezesText(false);
-        tokenInput.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
-        screen.column.addView(tokenInput, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        tokenButton = screen.button("使用 token", true, view -> resolveToken());
+        tokenInput = HuyUi.authorizationInput(screen);
+        tokenButton = screen.button("读取授权", true, view -> resolveToken());
         choices = new RadioGroup(this);
         choices.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -64,7 +52,7 @@ public final class MainActivity extends Activity {
         refreshButton = screen.button("刷新账号列表", true, view -> refresh());
         gameButton = screen.button("打开游戏", false, view -> openGame());
         screen.button("云端账号设置", false, view -> startActivity(new Intent(this, CloudAccountActivity.class)));
-        screen.footnote("token 需已上传到当前网站账号。选择后打开游戏，点击 QQ 登录，再确认使用这个账号。");
+        screen.footnote("授权需已上传到当前网站账号。可粘贴 token 或完整 QQ 回调地址；选择后打开游戏，点击 QQ 登录并确认账号。");
     }
 
     @Override protected void onResume() { super.onResume(); foreground = true; refresh(); }
@@ -114,9 +102,9 @@ public final class MainActivity extends Activity {
 
     private void resolveToken() {
         if (busy || !foreground) return;
-        final String token;
-        try { token = CloudClient.validateToken(tokenInput.getText().toString()); }
-        catch (IllegalArgumentException error) { screen.show("token 无效", error.getMessage()); return; }
+        final AuthorizationInput input;
+        try { input = AuthorizationInput.parse(tokenInput.getText().toString(), System.currentTimeMillis()); }
+        catch (IllegalArgumentException error) { screen.show("授权输入无效", error.getMessage()); return; }
         final CloudSettings.Snapshot session = settings.snapshot();
         if (!session.isSignedIn()) { refresh(); return; }
         final int attempt = ++generation;
@@ -124,7 +112,7 @@ public final class MainActivity extends Activity {
         screen.busy("正在当前网站账号下查找授权。");
         worker.execute(() -> {
             try {
-                CloudClient.Download result = new CloudClient(session).resolveToken(token);
+                CloudClient.Download result = new CloudClient(session).resolveInput(input);
                 runOnUiThread(() -> {
                     if (!active(attempt)) return;
                     setBusy(false);
@@ -158,7 +146,7 @@ public final class MainActivity extends Activity {
                         tokenInput.setText("");
                     }
                     setBusy(false);
-                    screen.show("无法使用 token", error.getMessage());
+                    screen.show("无法读取授权", error.getMessage());
                 });
             }
         });
