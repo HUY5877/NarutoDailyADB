@@ -105,28 +105,11 @@ def test_consume_is_atomic_and_binds_every_identity_and_both_deadlines(monkeypat
     assert params == (TASK, USER, ATTEMPT, current.capture_id)
 
 
-def test_missing_round_never_yields_a_saved_authorization_and_cancel_is_fenced(monkeypatch):
+def test_missing_round_never_yields_a_saved_authorization(monkeypatch):
     boundary = DatabaseBoundary(rows=[(True,), None])
     client = store(monkeypatch, boundary)
     current = client.begin()
     assert client.consume(current) is None
-    client.cancel(current)
-    query, params = boundary.queries[-1]
-    assert 'callback_url = NULL' in query
-    assert params == (TASK, USER, ATTEMPT, current.capture_id)
-
-
-def test_parent_attempt_revocation_fences_owner_and_attempt_and_clears_callback(monkeypatch):
-    boundary = DatabaseBoundary()
-    client = store(monkeypatch, boundary)
-    client.cancel_attempt()
-    query, params = boundary.queries[-1]
-    assert params[:3] == (TASK, USER, ATTEMPT)
-    assert query.startswith('INSERT INTO naruto_login.qq_capture_requests')
-    assert 'ON CONFLICT (task_id, attempt_id) DO UPDATE' in query
-    assert 'WHERE request.owner_id = EXCLUDED.owner_id' in query
-    assert 'callback_url = NULL' in query
-    assert "ELSE 'cancelled' END" in query
 
 
 def test_database_failure_has_no_credential_or_callback_exception_chain(monkeypatch):
@@ -617,8 +600,6 @@ def test_worker_captures_before_opening_game_and_requires_game_authorization(mon
         def inject(self, authorization):
             assert authorization == 'authorization'
             calls.append('inject')
-        def close(self):
-            calls.append('capture_close')
     class Daily:
         def __init__(self, **kwargs):
             calls.append('daily_config')
@@ -636,9 +617,9 @@ def test_worker_captures_before_opening_game_and_requires_game_authorization(mon
     assert code == 0
     assert calls == ['allocate', 'start', 'daily_config', 'probe', 'capture_config', 'capture_qr',
                      'database_capture', 'reset_login', 'launch', 'inject', 'game_authorization',
-                     'finish_login', 'daily', 'capture_close']
+                     'finish_login', 'daily']
     assert [event['type'] for event in events if event['type'] != 'log'] == [
-        'stage', 'capture_started', 'stage', 'qr', 'authorized', 'logged_in', 'daily_completed']
+        'stage', 'stage', 'qr', 'authorized', 'logged_in', 'daily_completed']
 
 
 @pytest.mark.parametrize('channel', ['android_wechat', 'ios_wechat'])
@@ -816,8 +797,6 @@ def test_worker_package_matrix_preserves_qr_daily_and_weekly_protocol(
         def inject(self, authorization):
             assert authorization == 'current-authorization'
             calls.append('capture_inject')
-        def close(self):
-            calls.append('capture_close')
 
     def load_capture():
         assert uses_capture, 'Legacy login must not load capture configuration or dependencies'
@@ -855,8 +834,8 @@ def test_worker_package_matrix_preserves_qr_daily_and_weekly_protocol(
     assert code == 0
     protocol = [event for event in events if event['type'] != 'log']
     expected = [{'type': 'stage', 'status': 'starting_emulator'}]
-    expected += ([{'type': 'capture_started'}] if uses_capture
-                 else [{'type': 'stage', 'status': 'opening_game'}])
+    if not uses_capture:
+        expected += [{'type': 'stage', 'status': 'opening_game'}]
     expected += [{'type': 'stage', 'status': 'preparing_qr'},
                  {'type': 'qr', 'png': base64.b64encode(PNG).decode()}]
     if mode != 'qr_only':
@@ -869,8 +848,6 @@ def test_worker_package_matrix_preserves_qr_daily_and_weekly_protocol(
                       if uses_capture else ['game', 'legacy_qr'])
     if mode != 'qr_only':
         expected_calls += ['game_authorized', 'login_finished', mode]
-    if uses_capture:
-        expected_calls += ['capture_close']
     assert calls == expected_calls
     assert len(probes) == int(probes_apps)
 
@@ -900,8 +877,6 @@ class SessionBoundary:
             def consume(self, current):
                 boundary.events.append(('consume', current.capture_id))
                 return capture.CapturedAuthorization('auth://callback?access_token=private', 1792821600000)
-            def cancel(self, current):
-                boundary.events.append(('cancel_db', current.capture_id))
         class Provider:
             def __init__(self, device, authority):
                 self.kind = 'capture' if authority == 'com.huy.authcapture.automation' else 'login'
@@ -943,8 +918,6 @@ def test_refresh_rotates_database_round_before_app_and_before_consumption(monkey
     assert ('consume', second.capture_id) in boundary.events
     assert published[0] == {'type': 'refreshing', 'requestId': request_id}
     assert published[1]['type'] == 'qr' and published[1]['requestId'] == request_id
-    session.close()
-    assert ('cancel_db', second.capture_id) in boundary.events
 
 
 @pytest.mark.parametrize('missing', ['user_id', 'attempt_id', 'database_url', 'api_base', 'non_https_port'])
@@ -978,7 +951,7 @@ def test_old_provider_version_is_a_configuration_error_before_database_io(monkey
                                 database_url=DATABASE, api_base='https://example.test')
 
 
-def test_capture_wait_keeps_original_deadline_and_cleanup_fences_last_round(monkeypatch):
+def test_capture_wait_keeps_original_deadline(monkeypatch):
     capture = module()
     boundary = SessionBoundary(capture)
     session = boundary.setup(monkeypatch)
@@ -988,10 +961,8 @@ def test_capture_wait_keeps_original_deadline_and_cleanup_fences_last_round(monk
     boundary.clock[0] = 199.8
     with pytest.raises(TimeoutError):
         session.wait(publish=lambda _: pytest.fail('No refresh requested'))
-    session.close()
     assert len(consumed) == 1
     assert boundary.clock[0] == 200.
-    assert ('cancel_db', session.current.capture_id) in boundary.events
 
 
 def test_capture_qr_rejects_a_different_round_without_exporting_pixels(monkeypatch):
@@ -1064,7 +1035,6 @@ def test_refresh_accepted_after_capture_consumption_finishes_through_real_redis_
                 assert final['status'] == 'failed'
                 assert not final.get('loginAuthorized')
                 assert record.daily_status == 'failed'
-            capture.close()
         finally:
             if not work.done():
                 work.cancel()
@@ -1074,31 +1044,36 @@ def test_refresh_accepted_after_capture_consumption_finishes_through_real_redis_
 
 
 @pytest.mark.parametrize('helper,interruption', [(True, 'admin'), (True, 'cancel'), (True, 'buffered'),
-                                                (True, 'database_failure'), (False, 'admin')])
-def test_parent_revokes_only_selected_capture_attempt_after_force_kill(monkeypatch, tmp_path, caplog, helper, interruption):
+    (True, 'timeout'), (True, 'shutdown'), (True, 'success'), (True, 'failure'),
+    (False, 'admin'), (False, 'success')])
+def test_parent_retains_capture_attempt_on_every_child_exit(monkeypatch, tmp_path, helper, interruption):
     import asyncio
     import sys
     from test_login_service_worker import worker, fake_server, MemoryStorage, task_body, enqueue
-    from test_login_service_daily_runtime import CHILD_PROGRAM, RecordingPool, emit, gate, eventually
+    from test_login_service_daily_runtime import (CHILD_PROGRAM, RecordingPool, emit, gate, eventually,
+                                                 QR, AUTHORIZED, LOGGED_IN, COMPLETED)
     async def scenario():
         runtime = worker(fake_server(), MemoryStorage(), emulator_driver='ldplayer',
             database_url=DATABASE, ldplayer_console_path=tmp_path / 'console.exe',
             ldplayer_pool_indices=(0,), ldplayer_state_dir=tmp_path / 'state')
         client = runtime._redis_queue._client
-        body = task_body()
+        body = task_body(ttl=1 if interruption == 'timeout' else 60)
         await enqueue(client, runtime, body, session_fields={'userId': USER})
         record = await runtime._redis_queue.pop()
         runtime._tasks[record.id] = record
         runtime._manager = RecordingPool(record.id)
-        boundary = DatabaseBoundary(failure=interruption == 'database_failure')
+        boundary = DatabaseBoundary()
         monkeypatch.setattr(module().psycopg, 'connect', boundary.connect)
         started = emit({'type': 'capture_started'}) if helper else emit({'type': 'stage', 'status': 'opening_game'})
+        ending = ([emit(QR), emit(AUTHORIZED), emit(LOGGED_IN), emit(COMPLETED)] if interruption == 'success'
+                  else [emit({'type': 'error', 'code': 'login_failed'})] if interruption == 'failure'
+                  else [gate(tmp_path / 'never')])
         message = {'captureUserId': USER, 'captureAttemptId': record.attempt_id,
-                   'plan': [started, emit({'type': 'stage', 'status': 'preparing_qr'}), gate(tmp_path / 'never')]}
+                   'plan': [started, emit({'type': 'stage', 'status': 'preparing_qr'}), *ending]}
         program = CHILD_PROGRAM
         if interruption == 'buffered':
             # The parent is handling the prior stage while the child flushes its
-            # private marker. Cancellation must inspect this unread pipe data.
+            # legacy marker. Cancellation must not drain it to revoke anything.
             marker = tmp_path / 'marker-flushed'
             message['marker'] = str(marker)
             program = '''
@@ -1117,25 +1092,31 @@ time.sleep(60)
             monkeypatch.setattr(runtime, '_set_status', blocked_status)
         work = asyncio.create_task(runtime._run_child(record, [sys.executable, '-u', '-c', program], message, daily=True))
         try:
-            if interruption == 'buffered':
-                await eventually(lambda: record.status == 'opening_game' and marker.exists() or work.done())
-            else:
-                await eventually(lambda: record.status == 'preparing_qr' or work.done())
-            assert not work.done(), 'Private capture marker must be accepted without public state mutation'
-            if interruption == 'admin':
-                runtime._on_run_interrupted(record.id, record.attempt_id)
-            else:
-                work.cancel()
-            results = await asyncio.gather(work, return_exceptions=True)
+            if interruption not in ('success', 'failure', 'timeout'):
+                if interruption == 'buffered':
+                    await eventually(lambda: record.status == 'opening_game' and marker.exists() or work.done())
+                else:
+                    await eventually(lambda: record.status == 'preparing_qr' or work.done())
+                assert not work.done(), 'Private capture marker must be accepted without public state mutation'
+                if interruption == 'admin':
+                    runtime._on_run_interrupted(record.id, record.attempt_id)
+                elif interruption == 'shutdown':
+                    runtime._workers = [work]
+                    await asyncio.wait_for(runtime.stop(), 3)
+                else:
+                    work.cancel()
+            results = await asyncio.wait_for(asyncio.gather(work, return_exceptions=True), 3)
             assert runtime._children[record.id].poll() is not None
-            assert len(boundary.queries) == (1 if helper and interruption != 'database_failure' else 0)
-            if interruption == 'database_failure':
+            assert boundary.connections == [] and boundary.queries == []
+            if interruption in ('cancel', 'buffered'):
                 assert isinstance(results[0], asyncio.CancelledError)
-                assert '撤销暂不可用' in caplog.text
-                assert 'private' not in caplog.text and 'secret' not in caplog.text and 'access_token' not in caplog.text
-            elif helper:
-                assert boundary.queries[0][1][:3] == (record.id, USER, record.attempt_id)
-                assert 'callback_url = NULL' in boundary.queries[0][0]
+            elif interruption == 'success':
+                assert results == [b'\x89PNG\r\n\x1a\nfixture']
+                assert record.daily_status == 'completed'
+            elif interruption == 'failure':
+                assert getattr(results[0], 'code', None) == 'login_failed'
+            elif interruption == 'timeout':
+                assert isinstance(results[0], TimeoutError)
         finally:
             if not work.done():
                 work.cancel()

@@ -4,6 +4,8 @@
 
 本记录为初次交付时的验证：执行端和 Android 为 `4f727bd`，网站为 `29eb851`，当时均未合并到 main。后续正式配置、网站发布和 worker 合并请求的验证见同目录 `2026-10-24-qq-capture-production.md`。
 
+2026-10-25 需求调整：用户取消任务结束时的抓号清理。下文涉及结束撤销、消费后清除 URL 的结果仅记录当时行为，不再作为现行验收要求；现行要求为退出时保留已上传 URL，且抓号实现诊断不向网站用户返回。
+
 ## 本地验证
 
 - Python：最终固定源码运行 `pytest tests -q -k 'login_service or cloudflare_kv or environment'`，1206 项通过、2416 项非相关用例未选中。仅出现既有 Starlette/AnyIO 弃用提示。

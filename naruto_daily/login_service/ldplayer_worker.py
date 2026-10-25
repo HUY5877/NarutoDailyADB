@@ -286,9 +286,6 @@ def main(
                 attempt_id=message.get('captureAttemptId'), database_url=os.environ.get('DATABASE_URL'),
                 api_base=os.environ.get('QQ_CAPTURE_API_BASE'), clock=clock,
             )
-            # Flush before the first database write. The parent can revoke this
-            # execution even if Windows terminates us without running finally.
-            _send(output_stream, {'type': 'capture_started'})
             phase = 'qr'
             _send(output_stream, {'type': 'stage', 'status': 'preparing_qr'})
             png = capture_session.prepare()
@@ -397,11 +394,6 @@ def main(
             pass
         return 1
     finally:
-        if capture_session is not None:
-            try:
-                capture_session.close()
-            except Exception:
-                _capture_logger.warning('QQ 抓号轮次清理暂未完成；本轮仍受原截止时间限制')
         if refresh_requests is not None:
             refresh_requests.close()
         log_context.close()

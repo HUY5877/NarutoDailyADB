@@ -55,13 +55,13 @@ class CaptureStore:
         self._database_url = database_url
         self.attempt_id, self.login_type = attempt_id, login_type
 
-    def _query(self, query: str, params: tuple, *, returning=True):
+    def _query(self, query: str, params: tuple):
         try:
             with psycopg.connect(self._database_url, connect_timeout=5,
                                  options='-c statement_timeout=5000 -c lock_timeout=5000') as connection:
                 with connection.cursor() as cursor:
                     cursor.execute(query, params)
-                    return cursor.fetchone() if returning else None
+                    return cursor.fetchone()
         except Exception:
             raise CaptureError('无法读取或更新本次 QQ 抓号授权') from None
 
@@ -104,30 +104,6 @@ class CaptureStore:
                 or not isinstance(row[1], datetime) or row[1].tzinfo is None):
             raise CaptureError('QQ 抓号授权内容无效')
         return CapturedAuthorization(row[0], int(row[1].timestamp() * 1000))
-
-    def cancel(self, current: CaptureRound) -> None:
-        self._query('''
-            UPDATE naruto_login.qq_capture_requests
-            SET status = CASE WHEN status = 'consumed' THEN status ELSE 'cancelled' END,
-                callback_url = NULL, updated_at = now()
-            WHERE task_id = %s AND owner_id = %s AND attempt_id = %s AND capture_id = %s
-        ''', (self.task_id, self.user_id, self.attempt_id, current.capture_id), returning=False)
-
-    def cancel_attempt(self) -> None:
-        """Parent fallback after OS termination, scoped to its trusted execution."""
-        # Inserting a tombstone also fences a first begin whose transaction is
-        # still committing when the OS kills its client. A plain UPDATE could
-        # miss that invisible insert and leave a newly committed pending round.
-        self._query('''
-            INSERT INTO naruto_login.qq_capture_requests AS request
-                (task_id, owner_id, attempt_id, capture_id, capture_token_hash, login_type, expires_at, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'cancelled')
-            ON CONFLICT (task_id, attempt_id) DO UPDATE
-            SET status = CASE WHEN request.status = 'consumed' THEN request.status ELSE 'cancelled' END,
-                callback_url = NULL, updated_at = now()
-            WHERE request.owner_id = EXCLUDED.owner_id
-        ''', (self.task_id, self.user_id, self.attempt_id, str(uuid4()), '0' * 64,
-              self.login_type, self.expires_at), returning=False)
 
 
 def login_callback_url(callback_url: str, captured_at_epoch_ms: int) -> str:
@@ -414,16 +390,3 @@ class QQCaptureSession:
                 return
             self._pause()
             state = self.login.call('status', self.current.capture_id)
-
-    def close(self):
-        if self.current is None:
-            return
-        # Cleanup operations are individually fenced. Failure of one must not
-        # suppress the database revocation or target another execution's row.
-        for operation in (lambda: self.store.cancel(self.current),
-                          lambda: self.capture.call('cancel', self.current.capture_id),
-                          lambda: self.login.call('cancel', self.current.capture_id)):
-            try:
-                operation()
-            except Exception:
-                logger.warning('本轮 QQ 抓号状态清理暂不可用，将按原有效期失效')
