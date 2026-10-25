@@ -32,6 +32,72 @@ _SECRET_FIELD = re.compile(
     r"[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&}\]\)]+)"
 )
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_CAPTURE_MODULES = (
+    'naruto_daily.login_service.qq_capture',
+    'naruto_daily.login_service.capture_apks',
+)
+_CAPTURE_OPERATIONS = {
+    'naruto_daily.login_service.ldplayer_worker': {'_capture_apps_ready'},
+    'naruto_daily.login_service.ldplayer': {
+        'capture_apps_installed', '_capture_serial', '_capture_packages',
+        'missing_capture_apps', 'verify_capture_instance', 'install_missing_app',
+    },
+}
+_WORKER_MODULE_PATH = Path(__file__).with_name('ldplayer_worker.py').resolve()
+_CAPTURE_DIAGNOSTIC = re.compile(
+    r'抓号|扫号器|上号|辅助(?:应用|软件|工具|apk)|自动补装|授权交接|授权回调|授权注入|注入授权|回调地址|本轮授权|授权轮次'
+    r'|QQ自动化|QQ[_-]?(?:CAPTURE|AUTOMATION|APK)|capture[_-]?(?:apps?|applications?|package|marker|round|provider|callback)'
+    r'|Capture(?:ConfigurationError|Error|Store|Round|Session)|ApkDownloadError|capture_apks'
+    r'|helper(?:app(?:lication)?s?|installation)|missinghelpersafterinstall'
+    r'|apk(?:download|cache|sha256|https|request|content|server|configuration|package)'
+    r'|com\.huy\.auth(?:capture|login)|com\.tencent\.tim|huy(?:capture|login|automation)'
+    r'|call[_-]?back[_-]?url'
+    r'|游戏恢复到开始游戏页，返回重新选择本次登录通道'
+    r'|识别到之前的QQ扫码授权页，返回游戏重新选择本次登录通道'
+    r'|已点击本次指定登录通道[：:](?:android_qq|ios_qq)',
+    re.IGNORECASE,
+)
+
+
+def is_private_capture_message(message: str) -> bool:
+    """Recognize legacy capture diagnostics before truncation or public storage."""
+    return _CAPTURE_DIAGNOSTIC.search(''.join(message.split())) is not None
+
+
+def _is_capture_source(module: str, function: str = '', filename: str = '') -> bool:
+    if module == '__main__' and filename and Path(filename).resolve() == _WORKER_MODULE_PATH:
+        module = 'naruto_daily.login_service.ldplayer_worker'
+    return (any(module == name or module.startswith(name + '.') for name in _CAPTURE_MODULES)
+            or function in _CAPTURE_OPERATIONS.get(module, ()))
+
+
+def _is_capture_exception(error: BaseException | None) -> bool:
+    # The top-level worker logger loses its module of origin. Inspect the full
+    # chain and traceback before producing the short public exception summary.
+    pending = [error] if error is not None else []
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if any(_is_capture_source(kind.__module__) for kind in type(current).__mro__):
+            return True
+        try:
+            if is_private_capture_message(str(current)):
+                return True
+        except Exception:
+            pass
+        frame = current.__traceback__
+        while frame is not None:
+            if _is_capture_source(frame.tb_frame.f_globals.get('__name__', ''),
+                                  frame.tb_frame.f_code.co_name, frame.tb_frame.f_code.co_filename):
+                return True
+            frame = frame.tb_next
+        # Suppressed context is still evidence that this is an internal capture
+        # failure; it is never copied into a public summary.
+        pending.extend(cause for cause in (current.__cause__, current.__context__) if cause is not None)
+    return False
 
 
 def model_log_secrets() -> tuple[str, ...]:
@@ -200,10 +266,13 @@ class ProtocolLogHandler(logging.Handler):
             # Keep earlier keys protected too if configuration changes in-process.
             secrets = (*self._secrets, *model_log_secrets())
             error = record.exc_info[1] if record.exc_info else None
-            if is_model_api_failure(error):
+            raw_message = record.getMessage()
+            if (_is_capture_source(record.name, record.funcName, record.pathname)
+                    or is_private_capture_message(raw_message)
+                    or _is_capture_exception(error) or is_model_api_failure(error)):
                 return
             message = sanitize_log_message(
-                record.getMessage(),
+                raw_message,
                 secrets=secrets,
                 max_length=200 if error is not None else MAX_LOG_MESSAGE_LENGTH,
             )

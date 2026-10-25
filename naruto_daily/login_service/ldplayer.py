@@ -678,7 +678,8 @@ class LDPlayerManager:
                 # Discovery is optional; ownership and serial checks above are not.
                 # A failed probe must not give an expired task a legacy login attempt.
                 self._remaining(deadline)
-                logging.getLogger(__name__).warning('暂时无法检测 QQ 辅助应用，将继续原扫码登录流程')
+                logging.getLogger(__name__).warning('暂时无法检测 QQ 辅助应用，将继续原扫码登录流程',
+                                                    extra={'backend_only': True})
                 return False
             self._remaining(deadline)
             return {'com.huy.authcapture', 'com.tencent.tim'} <= packages

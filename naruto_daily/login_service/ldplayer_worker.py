@@ -28,6 +28,10 @@ _MAX_INPUT_BYTES = 16_384
 _MAX_PNG_BYTES = 700_000
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _OUTPUT_LOCK = threading.RLock()
+# A fixed namespace keeps diagnostics routed when the child runs as __main__.
+_capture_logger = logging.LoggerAdapter(
+    logging.getLogger('naruto_daily.login_service.ldplayer_worker'), {'backend_only': True},
+)
 
 
 def _load_dependencies():
@@ -71,7 +75,7 @@ def _capture_apps_ready(manager, instance, deadline: float, state_dir: Path,
             if package not in missing:
                 continue
             step = f'下载{name}'
-            logging.getLogger(__name__).info('当前雷电实例缺少%s，正在下载并安装', name)
+            _capture_logger.info('当前雷电实例缺少%s，正在下载并安装', name)
             apk = download_apk(downloads[package], state_dir / 'apk-cache', deadline)
             if clock() >= deadline:
                 raise TimeoutError
@@ -82,7 +86,7 @@ def _capture_apps_ready(manager, instance, deadline: float, state_dir: Path,
             raise RuntimeError('Missing helpers after install')
         if clock() >= deadline:
             raise TimeoutError
-        logging.getLogger(__name__).info('抓号器和上号器已准备完成')
+        _capture_logger.info('抓号器和上号器已准备完成')
         return True
     except LDPlayerOwnershipError:
         raise
@@ -92,7 +96,7 @@ def _capture_apps_ready(manager, instance, deadline: float, state_dir: Path,
         # A download can outlive an instance reassignment. Fallback is safe
         # only while the same task still owns the same live emulator.
         manager.verify_capture_instance(instance, deadline)
-        logging.getLogger(__name__).warning('辅助应用自动补装失败（%s），继续尝试原 QQ 扫码流程', step)
+        _capture_logger.warning('辅助应用自动补装失败（%s），继续尝试原 QQ 扫码流程', step)
         return False
 
 
@@ -397,7 +401,7 @@ def main(
             try:
                 capture_session.close()
             except Exception:
-                logging.getLogger(__name__).warning('QQ 抓号轮次清理暂未完成；本轮仍受原截止时间限制')
+                _capture_logger.warning('QQ 抓号轮次清理暂未完成；本轮仍受原截止时间限制')
         if refresh_requests is not None:
             refresh_requests.close()
         log_context.close()

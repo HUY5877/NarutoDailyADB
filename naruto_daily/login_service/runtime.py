@@ -22,6 +22,7 @@ from naruto_daily.common.environment import model_environment_for_child
 
 from .config import ServiceConfig
 from .ldplayer import LDPlayerError, LDPlayerPoolFull
+from .log_events import is_private_capture_message
 from .models import HttpError, ISO_PATTERN, TaskRecord, UUID_PATTERN, equal_secret, parse_submission
 from .queue import MockRedisQueue, RedisQueueError, RedisTaskQueue, SAFE_DRIVER_ERRORS, SAFE_TASK_ERROR
 from .run_logs import RedisRunReporter, TERMINAL as RUN_TERMINAL_STATUSES
@@ -349,7 +350,8 @@ class LoginRuntime:
                 except Exception:
                     # Signing errors may contain credentials; keep the legacy
                     # startup path available without logging exception contents.
-                    logger.warning('Task %s: 辅助应用下载地址暂不可用，继续原有应用检测和扫码流程', record.id)
+                    logger.warning('Task %s: 辅助应用下载地址暂不可用，继续原有应用检测和扫码流程', record.id,
+                                   extra={'backend_only': True})
                 # Signing yields to cancellation/shutdown. Do not launch work
                 # that became inactive while its private requests were prepared.
                 self._check_interrupted(record)
@@ -539,7 +541,8 @@ class LoginRuntime:
                             unread = await asyncio.to_thread(child.stdout.read, 1_000_001)
                             capture_started |= self._contains_capture_start(unread)
                     except (OSError, ValueError):
-                        logger.warning('Task %s: capture marker drain unavailable', record.id)
+                        logger.warning('Task %s: capture marker drain unavailable', record.id,
+                                       extra={'backend_only': True})
                     if capture_started:
                         await self._revoke_capture_attempt(record, capture_owner)
                 if stderr_task is not None:
@@ -577,7 +580,8 @@ class LoginRuntime:
                                  deadline=record.expires_at_ms / 1000)
             await asyncio.to_thread(store.cancel_attempt)
         except Exception:
-            logger.warning('Task %s: QQ 抓号轮次撤销暂不可用；按原有效期失效', record.id)
+            logger.warning('Task %s: QQ 抓号轮次撤销暂不可用；按原有效期失效', record.id,
+                           extra={'backend_only': True})
 
     async def _relay_child_stderr(self, record: TaskRecord, stream) -> None:
         """Show full diagnostics locally without publishing them to Redis."""
@@ -626,6 +630,10 @@ class LoginRuntime:
             type(index) is not int or type(total) is not int or not 0 <= index <= total <= 100_000
         ):
             raise ValueError("Invalid task log progress")
+        # Older children may lack source routing. Block capture diagnostics
+        # before any public milestone, Redis refresh, or SLS publication.
+        if event.get('backend_only') is True or is_private_capture_message(message):
+            return
         milestone = event.get('secretRealmCompletedAt')
         if 'secretRealmCompletedAt' in event:
             if (not isinstance(milestone, str) or milestone != timestamp
@@ -678,7 +686,8 @@ class LoginRuntime:
                 # Missing identity fails capture configuration there; legacy QQ
                 # remains usable when its optional identity lookup is unavailable.
                 user_id = ''
-                logger.warning('Task %s: QQ capture identity temporarily unavailable', record.id)
+                logger.warning('Task %s: QQ capture identity temporarily unavailable', record.id,
+                               extra={'backend_only': True})
             if user_id:
                 message['captureUserId'] = user_id
                 message['captureAttemptId'] = record.attempt_id

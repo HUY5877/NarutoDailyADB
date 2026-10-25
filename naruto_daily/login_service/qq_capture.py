@@ -17,6 +17,9 @@ from uuid import UUID, uuid4
 import psycopg
 
 
+logger = logging.LoggerAdapter(logging.getLogger(__name__), {'backend_only': True})
+
+
 class CaptureError(RuntimeError):
     """Safe error that never includes database, provider or authorization data."""
 
@@ -296,7 +299,7 @@ class QQCaptureSession:
                     raise CaptureError('QQ 上号器再次提前打开，无法确认本次游戏通道')
                 # The game can restore its last QQ channel on startup. Cancel
                 # that request before selecting this task's Android/iOS channel.
-                logging.getLogger(__name__).info('QQ 上号器提前打开，返回游戏重新选择本次登录通道')
+                logger.info('QQ 上号器提前打开，返回游戏重新选择本次登录通道')
                 self._remaining()
                 self.device.back()
                 cancelled_unselected = True
@@ -333,7 +336,7 @@ class QQCaptureSession:
                         continue
                     self.device.tap(restored_game.x, restored_game.y)
                     selected_at = None
-                    logging.getLogger(__name__).info('游戏恢复到开始游戏页，返回重新选择本次登录通道')
+                    logger.info('游戏恢复到开始游戏页，返回重新选择本次登录通道')
                     self._pause()
                     continue
                 if self._clock() - selected_at >= 30:
@@ -343,7 +346,7 @@ class QQCaptureSession:
             if qq_authorization_page(self.device, frame):
                 if qq_cancelled_at is None:
                     self._remaining()
-                    logging.getLogger(__name__).info('识别到之前的 QQ 扫码授权页，返回游戏重新选择本次登录通道')
+                    logger.info('识别到之前的 QQ 扫码授权页，返回游戏重新选择本次登录通道')
                     self.device.back()
                     qq_cancelled_at = self._clock()
                 elif self._clock() - qq_cancelled_at >= 10:
@@ -390,7 +393,7 @@ class QQCaptureSession:
                 last_action = action.name
                 if action.name == expected:
                     selected_at = self._clock()
-                    logging.getLogger(__name__).info('已点击本次指定登录通道：%s', self.device.login_type)
+                    logger.info('已点击本次指定登录通道：%s', self.device.login_type)
             self._pause()
 
     def inject(self, authorization: CapturedAuthorization):
@@ -423,4 +426,4 @@ class QQCaptureSession:
             try:
                 operation()
             except Exception:
-                logging.getLogger(__name__).warning('本轮 QQ 抓号状态清理暂不可用，将按原有效期失效')
+                logger.warning('本轮 QQ 抓号状态清理暂不可用，将按原有效期失效')
