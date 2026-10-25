@@ -22,6 +22,7 @@ from naruto_daily.common.environment import model_environment_for_child
 
 from .config import ServiceConfig
 from .ldplayer import LDPlayerError, LDPlayerPoolFull
+from .log_events import is_private_capture_message
 from .models import HttpError, ISO_PATTERN, TaskRecord, UUID_PATTERN, equal_secret, parse_submission
 from .queue import MockRedisQueue, RedisQueueError, RedisTaskQueue, SAFE_DRIVER_ERRORS, SAFE_TASK_ERROR
 from .run_logs import RedisRunReporter, TERMINAL as RUN_TERMINAL_STATUSES
@@ -349,7 +350,8 @@ class LoginRuntime:
                 except Exception:
                     # Signing errors may contain credentials; keep the legacy
                     # startup path available without logging exception contents.
-                    logger.warning('Task %s: 辅助应用下载地址暂不可用，继续原有应用检测和扫码流程', record.id)
+                    logger.warning('Task %s: 辅助应用下载地址暂不可用，继续原有应用检测和扫码流程', record.id,
+                                   extra={'backend_only': True})
                 # Signing yields to cancellation/shutdown. Do not launch work
                 # that became inactive while its private requests were prepared.
                 self._check_interrupted(record)
@@ -382,20 +384,12 @@ class LoginRuntime:
                 and record.attempt_id and message.get('captureAttemptId') == record.attempt_id):
             capture_owner = None
         capture_started = False
-        read_task = None
         try:
             child.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
             child.stdin.close()
             async with asyncio.timeout(max(0.001, record.expires_at_ms / 1000 - time.time())) as timeout:
                 while True:
-                    if capture_owner is not None:
-                        # Preserve the in-flight read on cancellation, so its
-                        # private capture marker cannot be lost before cleanup.
-                        read_task = asyncio.create_task(asyncio.to_thread(child.stdout.readline, 1_000_001))
-                        line = await asyncio.shield(read_task)
-                        read_task = None
-                    else:
-                        line = await asyncio.to_thread(child.stdout.readline, 1_000_001)
+                    line = await asyncio.to_thread(child.stdout.readline, 1_000_001)
                     if not line:
                         self._check_interrupted(record)
                         break
@@ -404,17 +398,16 @@ class LoginRuntime:
                     event = json.loads(line)
                     if not isinstance(event, dict):
                         raise ValueError("Invalid emulator output")
-                    if event == {'type': 'capture_started'}:
-                        if capture_owner is None or capture_started or png is not None:
-                            raise ValueError('Unexpected QQ capture start')
-                        capture_started = True
-                        self._check_interrupted(record)
-                        if self._stopping:
-                            raise _WorkerStopping
-                        continue
                     self._check_interrupted(record)
                     if self._stopping:
                         raise _WorkerStopping
+                    if event == {'type': 'capture_started'}:
+                        # Keep older children's protocol fences, without public
+                        # progress or task-end revocation side effects.
+                        if capture_owner is None or capture_started or png is not None:
+                            raise ValueError('Unexpected QQ capture start')
+                        capture_started = True
+                        continue
                     if daily and event.get("type") == "log":
                         self._accept_log(record, event)
                     elif event.get("type") == "stage" and event.get("status") in (
@@ -528,20 +521,6 @@ class LoginRuntime:
             self._kill(child)
             try:
                 await asyncio.to_thread(child.wait)
-                if capture_owner is not None:
-                    try:
-                        if read_task is not None:
-                            unread = await read_task
-                            capture_started |= self._contains_capture_start(unread)
-                        if not capture_started:
-                            # The process has exited. Drain only bounded buffered
-                            # protocol output, never publish it or execute events.
-                            unread = await asyncio.to_thread(child.stdout.read, 1_000_001)
-                            capture_started |= self._contains_capture_start(unread)
-                    except (OSError, ValueError):
-                        logger.warning('Task %s: capture marker drain unavailable', record.id)
-                    if capture_started:
-                        await self._revoke_capture_attempt(record, capture_owner)
                 if stderr_task is not None:
                     # The child has closed its writer; drain buffered diagnostics
                     # before closing our pipe, but do not hold shutdown indefinitely.
@@ -557,27 +536,6 @@ class LoginRuntime:
                 child.stdout.close()
                 if stderr is not None:
                     stderr.close()
-
-    @staticmethod
-    def _contains_capture_start(raw) -> bool:
-        for line in raw.splitlines():
-            try:
-                if json.loads(line) == {'type': 'capture_started'}:
-                    return True
-            except (ValueError, TypeError):
-                pass
-        return False
-
-    async def _revoke_capture_attempt(self, record: TaskRecord, user_id: str) -> None:
-        """OS kills bypass child finally; the parent revokes only its execution."""
-        try:
-            from .qq_capture import CaptureStore
-            store = CaptureStore(self.config.database_url, user_id=user_id, task_id=record.id,
-                                 attempt_id=record.attempt_id, login_type=record.login_type,
-                                 deadline=record.expires_at_ms / 1000)
-            await asyncio.to_thread(store.cancel_attempt)
-        except Exception:
-            logger.warning('Task %s: QQ 抓号轮次撤销暂不可用；按原有效期失效', record.id)
 
     async def _relay_child_stderr(self, record: TaskRecord, stream) -> None:
         """Show full diagnostics locally without publishing them to Redis."""
@@ -626,6 +584,10 @@ class LoginRuntime:
             type(index) is not int or type(total) is not int or not 0 <= index <= total <= 100_000
         ):
             raise ValueError("Invalid task log progress")
+        # Older children may lack source routing. Block capture diagnostics
+        # before any public milestone, Redis refresh, or SLS publication.
+        if event.get('backend_only') is True or is_private_capture_message(message):
+            return
         milestone = event.get('secretRealmCompletedAt')
         if 'secretRealmCompletedAt' in event:
             if (not isinstance(milestone, str) or milestone != timestamp
@@ -678,7 +640,8 @@ class LoginRuntime:
                 # Missing identity fails capture configuration there; legacy QQ
                 # remains usable when its optional identity lookup is unavailable.
                 user_id = ''
-                logger.warning('Task %s: QQ capture identity temporarily unavailable', record.id)
+                logger.warning('Task %s: QQ capture identity temporarily unavailable', record.id,
+                               extra={'backend_only': True})
             if user_id:
                 message['captureUserId'] = user_id
                 message['captureAttemptId'] = record.attempt_id

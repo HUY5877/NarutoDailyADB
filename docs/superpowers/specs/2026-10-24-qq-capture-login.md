@@ -9,10 +9,11 @@
 - 上号器无需网站登录即可接收完整 callback_url。脚本读取本次任务对应的数据库结果，在游戏拉起的可信授权页面填入 URL 并确认；仍需等待游戏出现原有登录完成证据。
 - 上号器登录网站账号后可以查看自己的扫码历史。自动登录不依赖历史查询，不增加 QQ token 补全接口。
 - 网站刷新二维码沿用现有 requestId/ACK 协议，换轮不延长原任务期限。自动抓号时本地刷新按钮提示从网页刷新，网页刷新调用与普通刷新相同的内部刷新流程。
+- 2026-10-25 用户要求取消任务结束时的抓号清理：完成、失败、超时和停止都不清空交付记录 URL，不调用应用取消，也不由父进程补做数据库撤销。保留上传、消费、刷新换轮和原有到期校验。抓号相关实现诊断不得进入网站用户日志、进度提示或失败详情，历史日志同样过滤。
 
 ## 跨组件协议
 
-数据库 `naruto_login.qq_capture_requests` 以 `(task_id, attempt_id)` 为主键，每个 attempt 只保留当前 capture_id；包含 owner_id、capture_token_hash、login_type、expires_at、status、callback_url、captured_at、authorization_expires_at、authorization_hash、created_at、updated_at。所有写入、轮询、消费、取消匹配 owner/task/attempt/capture。上传与换轮通过同行事务锁串行化。旧 attempt 不得覆盖新 attempt。
+数据库 `naruto_login.qq_capture_requests` 以 `(task_id, attempt_id)` 为主键，每个 attempt 只保留当前 capture_id；包含 owner_id、capture_token_hash、login_type、expires_at、status、callback_url、captured_at、authorization_expires_at、authorization_hash、created_at、updated_at。所有写入、轮询、消费匹配 owner/task/attempt/capture。上传与换轮通过同行事务锁串行化。旧 attempt 不得覆盖新 attempt。
 
 抓号上传：`POST /api/qq-captures`，无需网站 cookie，但必须提交 `{userId, taskId, attemptId, captureId, captureToken, authorization:{schema_version:1,app_id:"1104307008",captured_at_epoch_ms,callback_url}}`。网站校验本次能力凭证、QQ 类型、截止时间及 URL，事务内保存本人历史并完成任务。重复同内容上传幂等，不同内容冲突。凭证是 32 字节随机值的小写十六进制字符串，数据库只保存 SHA-256；attemptId 为 32 位小写十六进制，captureId 为 UUID。
 
