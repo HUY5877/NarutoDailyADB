@@ -173,6 +173,7 @@ return 1
 """
 
 _ACK_REFRESH_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
+if session.scanCaptured == true then return 0 end
 if session.qrRevision == ARGV[6] then return 1 end
 if session.status ~= 'preparing_qr' and session.status ~= 'qr_ready' then return 0 end
 if session.loginAuthorized == true or session.refreshRequestId ~= ARGV[6] then return 0 end
@@ -183,6 +184,16 @@ if not okCommand or command.taskId ~= session.id or command.requestId ~= ARGV[6]
 session.qrRevision = ARGV[6]
 session.refreshRequestId = nil
 session.status = 'qr_ready'
+redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+redis.call('DEL', KEYS[2])
+return 1
+"""
+
+_SCAN_CAPTURED_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
+if session.status ~= 'preparing_qr' and session.status ~= 'qr_ready' then return 0 end
+session.scanCaptured = true
+session.status = 'qr_ready'
+session.refreshRequestId = nil
 redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
 redis.call('DEL', KEYS[2])
 return 1
@@ -492,6 +503,12 @@ return session.userId
 
     async def mark_authorized(self, record: TaskRecord) -> bool:
         return bool(await self._call('eval', _AUTHORIZE_SCRIPT, 2, self._session_key(record),
+                                    f'{self.config.redis_queue_key}:refresh:{record.id}',
+                                    *self._session_args(record), record.attempt_id or ''))
+
+    async def mark_scan_captured(self, record: TaskRecord) -> bool:
+        """Close QR refresh after capture, without claiming that game login succeeded."""
+        return bool(await self._call('eval', _SCAN_CAPTURED_SCRIPT, 2, self._session_key(record),
                                     f'{self.config.redis_queue_key}:refresh:{record.id}',
                                     *self._session_args(record), record.attempt_id or ''))
 

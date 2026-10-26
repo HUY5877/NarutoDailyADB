@@ -84,7 +84,7 @@ def test_begin_round_stores_only_token_hash_and_refresh_requires_previous_round(
     query, params = boundary.queries[1]
     assert first.capture_id in params and second.capture_id in params
     assert 'capture_id = %s' in query and 'attempt_id = %s' in query and 'owner_id = %s' in query
-    assert "status IN ('pending', 'completed')" in query
+    assert "AND status = 'pending'" in query
     assert all(options['connect_timeout'] <= 5 and 'statement_timeout=5000' in options['options']
                for _, options in boundary.connections)
 
@@ -619,7 +619,7 @@ def test_worker_captures_before_opening_game_and_requires_game_authorization(mon
                      'database_capture', 'reset_login', 'launch', 'inject', 'game_authorization',
                      'finish_login', 'daily']
     assert [event['type'] for event in events if event['type'] != 'log'] == [
-        'stage', 'stage', 'qr', 'authorized', 'logged_in', 'daily_completed']
+        'stage', 'stage', 'qr', 'scan_captured', 'authorized', 'logged_in', 'daily_completed']
 
 
 @pytest.mark.parametrize('channel', ['android_wechat', 'ios_wechat'])
@@ -838,6 +838,8 @@ def test_worker_package_matrix_preserves_qr_daily_and_weekly_protocol(
         expected += [{'type': 'stage', 'status': 'opening_game'}]
     expected += [{'type': 'stage', 'status': 'preparing_qr'},
                  {'type': 'qr', 'png': base64.b64encode(PNG).decode()}]
+    if uses_capture:
+        expected += [{'type': 'scan_captured'}]
     if mode != 'qr_only':
         expected += [{'type': 'authorized', 'executionDeadline': 1_800_000_600.0}, {'type': 'logged_in'}]
         if mode == 'arena_weekly':
@@ -899,11 +901,18 @@ class SessionBoundary:
             sleep=lambda seconds: self.clock.__setitem__(0, self.clock[0] + seconds))
 
 
-def test_refresh_rotates_database_round_before_app_and_before_consumption(monkeypatch):
+def test_refresh_rotates_pending_database_round_before_app_and_new_consumption(monkeypatch):
     capture = module()
     boundary = SessionBoundary(capture)
     session = boundary.setup(monkeypatch)
     session.prepare()
+    original_consume = session.store.consume
+    def consume(current):
+        if current == boundary.rounds[0]:
+            boundary.events.append(('consume', current.capture_id))
+            return None
+        return original_consume(current)
+    session.store.consume = consume
     request_id = '33333333-3333-4333-8333-333333333333'
     class Refresh:
         def poll(self):
@@ -912,7 +921,7 @@ def test_refresh_rotates_database_round_before_app_and_before_consumption(monkey
     authorization = session.wait(refresh_requests=Refresh(), publish=published.append)
     assert authorization.callback_url.startswith('auth://')
     first, second = boundary.rounds
-    assert ('consume', first.capture_id) not in boundary.events
+    assert boundary.events.index(('consume', first.capture_id)) < boundary.events.index(('begin', first.capture_id))
     assert boundary.events.index(('begin', first.capture_id)) < next(
         i for i, event in enumerate(boundary.events) if event[:2] == ('capture', 'refresh'))
     assert ('consume', second.capture_id) in boundary.events

@@ -191,6 +191,97 @@ def test_claim_starts_fixed_occupancy_and_refresh_ack_is_scoped_idempotent():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('phase', ['preparing_qr', 'qr_ready'])
+def test_scan_capture_cancels_only_its_refresh_without_authorizing_or_extending_login(phase):
+    async def scenario():
+        client = fake_client()
+        try:
+            queue = RedisTaskQueue(config(), client=client)
+            body = task_body(ttl=30) | {'loginTimeoutSeconds': 600}
+            session = session_body(body) | {'userId': str(uuid4())}
+            prefix = config().redis_queue_key
+            active = f"{prefix}:users:{session['userId']}:active"
+            await client.set(active, body['id'], px=30000)
+            key, _ = await enqueue(client, body, session=session, ttl=30000)
+            record = await queue.pop()
+            request_id = str(uuid4())
+            refresh = f'{prefix}:refresh:{record.id}'
+            other_refresh = f'{prefix}:refresh:{uuid4()}'
+            saved = json.loads(await client.get(key))
+            saved.update(status=phase, refreshRequestId=request_id)
+            await client.set(key, json.dumps(saved), keepttl=True)
+            await client.set(refresh, json.dumps({'taskId': record.id, 'requestId': request_id}), ex=600)
+            await client.set(other_refresh, 'another task', ex=600)
+            session_ttl, active_ttl = await client.pttl(key), await client.pttl(active)
+            assert await queue.mark_scan_captured(record)
+            assert await queue.mark_scan_captured(record), 'lost acknowledgement can be retried'
+            captured = json.loads(await client.get(key))
+            assert captured['scanCaptured'] is True and captured['status'] == 'qr_ready'
+            assert 'refreshRequestId' not in captured and 'loginAuthorized' not in captured
+            for field in ['tokenHash', 'createdAt', 'expiresAt', 'loginStartedAt', 'loginExpiresAt', 'attemptId']:
+                assert captured[field] == saved[field]
+            assert 0 < await client.pttl(key) <= session_ttl
+            assert 0 < await client.pttl(active) <= active_ttl
+            assert await client.get(active) == record.id
+            assert await client.get(refresh) is None
+            assert await client.get(other_refresh) == 'another task'
+            assert not await queue.complete_refresh(record, request_id)
+            assert record.authorized_at is None and record.execution_deadline is None
+        finally:
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('damage', [
+    'missing', 'no_ttl', 'expired', 'owner', 'attempt', 'identity', 'queued', 'failed', 'expired_status',
+])
+def test_scan_capture_does_not_restore_or_modify_ineligible_sessions(damage):
+    async def scenario():
+        client = fake_client()
+        try:
+            queue = RedisTaskQueue(config(), client=client)
+            key, _ = await enqueue(client, task_body())
+            record = await queue.pop()
+            assert await queue.set_status(record, 'qr_ready')
+            saved = json.loads(await client.get(key))
+            if damage == 'owner': saved['workerId'] = 'new-owner'
+            if damage == 'attempt': saved['attemptId'] = str(uuid4())
+            if damage == 'identity': saved['createdAt'] = 'different-envelope'
+            if damage in {'queued', 'failed'}: saved['status'] = damage
+            if damage == 'expired_status': saved['status'] = 'expired'
+            await client.set(key, json.dumps(saved), keepttl=True)
+            if damage == 'missing': await client.delete(key)
+            if damage == 'no_ttl': await client.persist(key)
+            if damage == 'expired': record.expires_at_ms = 1
+            refresh = f'{config().redis_queue_key}:refresh:{record.id}'
+            await client.set(refresh, 'existing command', ex=60)
+            before = await client.get(key)
+            assert not await queue.mark_scan_captured(record)
+            assert await client.get(key) == before
+            assert await client.get(refresh) == 'existing command'
+        finally:
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+def test_refresh_ack_does_not_reaccept_a_previous_revision_after_scan_capture():
+    async def scenario():
+        client = fake_client()
+        try:
+            queue = RedisTaskQueue(config(), client=client)
+            key, _ = await enqueue(client, task_body())
+            record = await queue.pop()
+            revision = str(uuid4())
+            saved = json.loads(await client.get(key))
+            saved.update(status='qr_ready', qrRevision=revision, scanCaptured=True)
+            await client.set(key, json.dumps(saved), keepttl=True)
+            assert not await queue.complete_refresh(record, revision)
+            assert json.loads(await client.get(key)) == saved
+        finally:
+            await client.aclose()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("changes", [
     {"version": 2}, {"version": True}, {"version": 1.0}, {"version": "1"},
     {"id": "../bad"}, {"id": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"},

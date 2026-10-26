@@ -170,13 +170,15 @@ class RedisRunReporter:
             "startedAt": None, "finishedAt": None,
         })
         username_changed = bool(record.username) and state.get("username") != record.username
+        scan_captured_changed = record.scan_captured_at is not None and 'scanCapturedAt' not in state
         if record.username:
             state["username"] = record.username
         if status is not None:
             if status not in STAGE_MESSAGES:
                 return
             if (previous and previous["status"] == status and message is None
-                    and error_code == previous.get("errorCode") and not username_changed):
+                    and error_code == previous.get("errorCode") and not username_changed
+                    and not scan_captured_changed):
                 return
             state["status"] = status
             state["finishedAt"] = now if status in TERMINAL else None
@@ -190,6 +192,8 @@ class RedisRunReporter:
             state.setdefault('secretRealmCompletedAt', record.secret_realm_completed_at)
         if record.authorized_at is not None:
             state["authorizedAt"] = iso_time(record.authorized_at)
+        if record.scan_captured_at is not None:
+            state.setdefault('scanCapturedAt', iso_time(record.scan_captured_at))
         if error_code is not None:
             state["errorCode"] = error_code
         if action_index is not None and action_total is not None:

@@ -28,6 +28,10 @@ class CaptureConfigurationError(CaptureError):
     """Both apps exist but their task-scoped automation is unavailable."""
 
 
+class CaptureRefreshConflict(CaptureError):
+    """The old round is no longer pending; consume it before assuming failure."""
+
+
 @dataclass(frozen=True)
 class CaptureRound:
     capture_id: str
@@ -79,15 +83,18 @@ class CaptureStore:
                   self.login_type, self.expires_at))
         else:
             # This takes the same row lock as the website upload transaction.
+            # A completed upload wins the race and must never be reset.
             row = self._query('''
                 UPDATE naruto_login.qq_capture_requests SET capture_id = %s, capture_token_hash = %s,
                     status = 'pending', callback_url = NULL, captured_at = NULL,
                     authorization_expires_at = NULL, authorization_hash = NULL, updated_at = now()
                 WHERE task_id = %s AND owner_id = %s AND attempt_id = %s AND capture_id = %s
-                    AND status IN ('pending', 'completed') AND expires_at > clock_timestamp()
+                    AND status = 'pending' AND expires_at > clock_timestamp()
                 RETURNING capture_id
             ''', (current.capture_id, token_hash, self.task_id, self.user_id, self.attempt_id, previous.capture_id))
         if row is None:
+            if previous is not None:
+                raise CaptureRefreshConflict('QQ 抓号轮次已结束或失效，无法刷新')
             raise CaptureError('QQ 抓号轮次已失效，请重新申请任务')
         return current
 
@@ -212,9 +219,11 @@ class QQCaptureSession:
             raise CaptureError('QQ 抓号器已离开本次授权轮次')
         return state
 
-    def prepare(self, *, refresh=False) -> bytes:
+    def prepare(self, *, refresh=False, on_refresh_started=None) -> bytes:
         self._remaining()
         self.current = self.store.begin(previous=self.current) if refresh else self.store.begin()
+        if refresh and on_refresh_started is not None:
+            on_refresh_started()
         context = {
             'userId': self.store.user_id, 'taskId': self.store.task_id, 'attemptId': self.store.attempt_id,
             'captureId': self.current.capture_id, 'captureToken': self.current.token,
@@ -233,16 +242,26 @@ class QQCaptureSession:
     def wait(self, *, refresh_requests=None, publish) -> CapturedAuthorization:
         while True:
             self._remaining()
-            # A refresh already accepted by this worker invalidates the old
-            # capability before consuming any completed upload for that round.
-            request_id = refresh_requests.poll() if refresh_requests is not None else None
-            if request_id is not None:
-                publish({'type': 'refreshing', 'requestId': request_id})
-                png = self.prepare(refresh=True)
-                publish({'type': 'qr', 'requestId': request_id, 'png': base64.b64encode(png).decode('ascii')})
             authorization = self.store.consume(self.current)
             if authorization is not None:
                 return authorization
+            request_id = refresh_requests.poll() if refresh_requests is not None else None
+            if request_id is not None:
+                try:
+                    png = self.prepare(refresh=True, on_refresh_started=lambda:
+                        publish({'type': 'refreshing', 'requestId': request_id}))
+                except CaptureRefreshConflict:
+                    # Upload may commit after the empty consume above. The
+                    # pending-only UPDATE preserves it and leaves current intact.
+                    self._remaining()
+                    authorization = self.store.consume(self.current)
+                    if authorization is not None:
+                        return authorization
+                    # Expired, foreign or otherwise invalid rounds are not a
+                    # successful scan, and retrying them cannot make progress.
+                    raise
+                publish({'type': 'qr', 'requestId': request_id, 'png': base64.b64encode(png).decode('ascii')})
+                continue
             self._capture_status()
             self._pause()
 
