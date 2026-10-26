@@ -69,6 +69,7 @@ class TaskRecord:
     login_type: str = DEFAULT_LOGIN_TYPE
     _qr_notifications: set[str] = field(default_factory=set, repr=False, compare=False)
     username: str | None = field(default=None, repr=False, compare=False)
+    _notification_user_id: str | None = field(default=None, repr=False, compare=False)
     _username_lookup_task: Task[str] | None = field(default=None, repr=False, compare=False)
     _terminal_notification_scheduled: bool = field(default=False, repr=False, compare=False)
     attempt_id: str | None = field(default=None, repr=False, compare=False)

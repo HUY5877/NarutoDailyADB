@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from http.client import HTTPException
+import html
 from itertools import count
 import json
 import math
+import re
 from time import monotonic, time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from .run_logs import SAFE_RUN_ERRORS
+from .qq_bindings import OPENID_PATTERN
 from .user_options import MainTask
 
 
@@ -31,6 +34,16 @@ def _notification_name(user_name: str) -> str:
         for character in (user_name or "")
     )
     return " ".join(printable_name.split())[:80] or "未提供姓名"
+
+
+def _validate_member(member_openid: str) -> None:
+    if not isinstance(member_openid, str) or member_openid and not OPENID_PATTERN.fullmatch(member_openid):
+        raise QQNotifyError('Invalid QQ notification member')
+
+
+def _markdown_text(content: str) -> str:
+    # Nicknames remain literal text; only our own generated tag may mention users.
+    return re.sub(r'([\\`*_{}\[\]()#+\-.!|~])', r'\\\1', html.escape(content, quote=False))
 
 
 def _post_json(url: str, payload: dict, *, token: str = "") -> dict:
@@ -143,8 +156,9 @@ class QQGroupNotifier:
 
     async def notify_qr_ready(
         self, task_id: str, user_name: str, *, refreshed: bool = False,
-        expires_at_ms: float | None = None,
+        expires_at_ms: float | None = None, member_openid: str = '',
     ) -> None:
+        _validate_member(member_openid)
         token = await self._access_token()
         if expires_at_ms is not None and time() * 1000 >= expires_at_ms:
             raise QQNotifyError('QR code expired before notification')
@@ -155,16 +169,19 @@ class QQGroupNotifier:
         )
         await self._send_message(
             content,
-            token=token,
+            token=token, member_openid=member_openid,
         )
 
     async def notify_task_finished(
         self, task_id: str, user_name: str, *, status: str,
         error_code: str | None = None, secret_realm_completed: bool = False,
+        member_openid: str = '',
         main_task: MainTask = 'daily',
     ) -> None:
         if status not in {"completed", "failed", "expired"}:
             return
+
+        _validate_member(member_openid)
 
         name = _notification_name(user_name)
         if status == "completed":
@@ -185,18 +202,22 @@ class QQGroupNotifier:
         token = await self._access_token()
         await self._send_message(
             f"{name}，{result}",
-            token=token,
+            token=token, member_openid=member_openid,
         )
 
-    async def _send_message(self, content: str, *, token: str) -> None:
+    async def _send_message(self, content: str, *, token: str, member_openid: str = '') -> None:
+        payload = {'msg_seq': next(self._message_sequences)}
+        if member_openid:
+            payload.update({
+                'msg_type': 2,
+                'markdown': {'content': f'<qqbot-at-user id="{member_openid}" /> {_markdown_text(content)}'},
+            })
+        else:
+            payload.update({'msg_type': 0, 'content': content})
         await asyncio.to_thread(
             _post_json,
             self._message_url,
-            {
-                "msg_type": 0,
-                "content": content,
-                "msg_seq": next(self._message_sequences),
-            },
+            payload,
             token=token,
         )
 

@@ -36,7 +36,7 @@ CLOUDFLARE_KV_NAMESPACE_ID_TEST=your-hyrz-test-namespace-id
 | `PORT` | 网站本机端口；两个 namespace 分开配置，必填 |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` | worker DeepSeek 生成渠道，key 留空禁用；启用时模型名必填 |
 | `JEV_API_KEY` / `JEV_MODEL` | worker JEV 选择判断渠道；JEV 场景需要有效 key/model |
-| `QQ_BOT_APP_ID` / `QQ_BOT_APP_SECRET` / `QQ_BOT_GROUP_OPENID` | worker 主动通知；三项同时填写或全部留空，测试环境当前全部留空 |
+| `QQ_BOT_APP_ID` / `QQ_BOT_APP_SECRET` / `QQ_BOT_GROUP_OPENID` | 网站绑定回调与 worker 主动通知共用；三项同时填写或全部留空，启用前在测试 namespace 填写测试机器人和目标群 |
 | `QQ_BOT_ORIGINAL_GROUP_OPENID` | 保留的机器人原群标识；不代替运行时 `QQ_BOT_GROUP_OPENID` |
 
 可选扩展也使用普通变量名，例如 `OSS_STS_TOKEN`、`ALLOWED_ORIGINS`。测试网站若改用 `local` 存储，须在 `hyrz-test` 显式配置独立的 `LOCAL_OBJECTS_DIR`，不可复用正式目录。鱼玩按原约定在 worker 本地 `.env` 配置 `YUWAN_API_KEY` 和 `YUWAN_MODEL`，启用时两项须成对填写；修改后重启，任务子进程继承父进程解析结果。QQ 通知使用测试 namespace 的普通 `QQ_BOT_*` 和 `DATABASE_URL`，不再单列本地测试专用变量。

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from .storage import ObjectStorage
     from .qq_notify import QQGroupNotifier
     from .user_names import UserNameResolver
+    from .qq_bindings import QQBindingResolver
 
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ class LoginRuntime:
         run_reporter: RedisRunReporter | None = None,
         qq_notifier: QQGroupNotifier | None = None,
         user_name_resolver: UserNameResolver | None = None,
+        qq_binding_resolver: QQBindingResolver | None = None,
     ) -> None:
         if storage is None:
             from .storage import create_storage
@@ -80,6 +82,7 @@ class LoginRuntime:
         self.storage = storage
         self._qq_notifier = qq_notifier
         self._user_name_resolver = user_name_resolver
+        self._qq_binding_resolver = qq_binding_resolver
         if self._qq_notifier is None and config.qq_bot_app_id:
             from .qq_notify import QQGroupNotifier
             self._qq_notifier = QQGroupNotifier(
@@ -88,6 +91,11 @@ class LoginRuntime:
         if self._user_name_resolver is None and config.database_url:
             from .user_names import UserNameResolver
             self._user_name_resolver = UserNameResolver(config.database_url)
+        if self._qq_binding_resolver is None and config.qq_bot_app_id and config.database_url:
+            from .qq_bindings import QQBindingResolver
+            self._qq_binding_resolver = QQBindingResolver(
+                config.database_url, config.qq_bot_app_id, config.qq_bot_group_openid,
+            )
         self._notification_tasks: set[asyncio.Task[None]] = set()
         self._interruption_tasks: set[asyncio.Task[None]] = set()
         self._tasks: dict[str, TaskRecord] = {}
@@ -702,7 +710,19 @@ class LoginRuntime:
         if not user_name:
             raise ValueError('Username is unavailable')
         record.username = user_name
+        record._notification_user_id = user_id
         return user_name
+
+    async def _notification_member(self, record: TaskRecord) -> str:
+        if self._qq_binding_resolver is None or not record._notification_user_id:
+            return ''
+        try:
+            # Query again for each message so unbinding takes effect even during a run.
+            return await self._qq_binding_resolver.resolve(record._notification_user_id)
+        except Exception as error:
+            logger.warning('QQ binding lookup failed for task %s (%s)', record.id, type(error).__name__,
+                           extra={'backend_only': True})
+            return ''
 
     async def _prepare_notification_username(self, record: TaskRecord) -> None:
         # Resolve before the login session expires. The same name is passed
@@ -731,9 +751,11 @@ class LoginRuntime:
         try:
             if not record.username:
                 raise ValueError('Username is unavailable')
+            member = await self._notification_member(record)
             await self._qq_notifier.notify_task_finished(
                 record.id, record.username, status=status, error_code=error_code,
                 secret_realm_completed=record.secret_realm_completed_at is not None,
+                **({'member_openid': member} if member else {}),
                 main_task=record.user_options.get('mainTask', 'daily'),
             )
             logger.info('QQ task notification sent for task %s (%s)', record.id, status,
@@ -750,12 +772,14 @@ class LoginRuntime:
             if not user_id:
                 raise ValueError('Task identity is unavailable')
             user_name = await self._notification_username(record)
+            member = await self._notification_member(record)
             if record.status != 'qr_ready' or record.expires_at_ms <= time.time() * 1000:
                 return
             if await self._redis_queue.notification_user_id(record) != user_id:
                 return
             await self._qq_notifier.notify_qr_ready(record.id, user_name, refreshed=refreshed,
-                                                   expires_at_ms=record.expires_at_ms)
+                                                   expires_at_ms=record.expires_at_ms,
+                                                   **({'member_openid': member} if member else {}))
             logger.info('QQ QR notification sent for task %s', record.id, extra={'backend_only': True})
         except Exception as error:
             # Third-party exception messages can contain credentials or database URLs.
