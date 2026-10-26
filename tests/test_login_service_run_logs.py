@@ -134,6 +134,39 @@ def test_direct_publication_does_not_wait_for_redis_and_coalesces_summaries():
     asyncio.run(scenario())
 
 
+def test_run_keeps_scan_capture_time_separate_from_game_authorization():
+    async def scenario():
+        client, cfg = fake_client(), config()
+        queue = RedisTaskQueue(cfg, client=client)
+        record = await claim(client, queue)
+        reporter = make_reporter(cfg, queue)
+        reporter.start()
+        try:
+            reporter.emit(record, status='opening_game')
+            await drain(reporter)
+            run_key, _, _ = keys(cfg, record)
+            assert 'scanCapturedAt' not in json.loads(await client.get(run_key))
+            record.scan_captured_at = 1_800_000_000.0
+            reporter.emit(record, status='opening_game')
+            await drain(reporter)
+            captured = json.loads(await client.get(run_key))
+            assert captured['scanCapturedAt'] == '2027-01-15T08:00:00.000Z'
+            assert captured['status'] == 'opening_game'
+            assert 'authorizedAt' not in captured and captured['startedAt'] is None
+            record.authorized_at = 1_800_000_005.0
+            reporter.emit(record, status='finishing_login')
+            reporter.emit(record, status='failed', error_code='login_finish_failed')
+            await drain(reporter)
+            finished = json.loads(await client.get(run_key))
+            assert finished['scanCapturedAt'] == '2027-01-15T08:00:00.000Z'
+            assert finished['authorizedAt'] == '2027-01-15T08:00:05.000Z'
+            assert finished['status'] == 'failed'
+        finally:
+            await reporter.close()
+            await client.aclose()
+    asyncio.run(scenario())
+
+
 def test_disabled_logs_do_not_create_or_refresh_a_legacy_redis_stream():
     async def scenario():
         client, cfg = fake_client(), config()

@@ -329,6 +329,7 @@ def main(
                 authorization = capture_session.wait(
                     refresh_requests=refresh_requests, publish=lambda event: _send(output_stream, event),
                 )
+                _send(output_stream, {'type': 'scan_captured'})
                 # Receiving a database row is not game authorization. The same
                 # instance must return to the game through the selected channel.
                 capture_session.prepare_login()

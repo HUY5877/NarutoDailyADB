@@ -114,7 +114,7 @@ def test_real_capture_session_preserves_database_and_apps_when_worker_finishes(m
     assert not any(event['type'] == 'capture_started' for event in events)
     if outcome == 'success':
         assert [event['type'] for event in events if event['type'] != 'log'] == [
-            'stage', 'stage', 'qr', 'authorized', 'logged_in', 'daily_completed']
+            'stage', 'stage', 'qr', 'scan_captured', 'authorized', 'logged_in', 'daily_completed']
     else:
         assert events[-1] == {'type': 'error', 'code': {
             'qr_failure': 'qr_not_found', 'login_timeout': 'login_timeout',
