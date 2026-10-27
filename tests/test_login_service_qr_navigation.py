@@ -1,5 +1,6 @@
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 import time
 
 import cv2
@@ -187,3 +188,89 @@ def test_adb_commands_target_only_given_serial_and_hide_errors(monkeypatch):
     assert "private-data" not in str(error.value)
     assert commands[0][0][1:3] == ["-s", "emulator-5560"]
     assert 0 < commands[0][1]["timeout"] <= 5
+
+
+def scripted_screenshot_device(monkeypatch, responses, *, budget=10):
+    from naruto_daily.login_service import qr_navigation
+
+    state = SimpleNamespace(now=100.0, captures_at=[], sleeps=[])
+
+    def sleep(seconds):
+        state.sleeps.append(seconds)
+        state.now += seconds
+
+    monkeypatch.setattr(qr_navigation, "time", SimpleNamespace(time=lambda: state.now, sleep=sleep))
+    device = LoginDevice(Path("offline-adb.exe"), "emulator-5554", state.now + budget)
+    responses = iter(responses)
+
+    def run(*arguments):
+        assert arguments == ("exec-out", "screencap", "-p")
+        state.captures_at.append(state.now)
+        result = next(responses)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(device, "_run", run)
+    return device, state
+
+
+@pytest.mark.parametrize("empty_count,shape", [
+    (0, (1080, 1920)), (1, (1080, 1920)), (2, (1920, 1080)),
+])
+def test_login_screenshot_recovers_empty_frames_and_preserves_pixels(monkeypatch, empty_count, shape):
+    expected = np.full((*shape, 3), (12, 34, 56), dtype=np.uint8)
+    encoded, png = cv2.imencode(".png", expected)
+    assert encoded
+    device, state = scripted_screenshot_device(monkeypatch, [b""] * empty_count + [png.tobytes()])
+
+    assert np.array_equal(device.screenshot(), expected)
+    assert len(state.captures_at) == empty_count + 1
+    assert state.sleeps == [0.5] * empty_count
+    assert device.deadline == 110.0
+
+
+def test_login_screenshot_stops_after_three_empty_frames(monkeypatch):
+    device, state = scripted_screenshot_device(monkeypatch, [b""] * 3)
+
+    with pytest.raises(QRNavigationError, match="empty"):
+        device.screenshot()
+
+    assert state.captures_at == [100.0, 100.5, 101.0]
+    assert state.sleeps == [0.5, 0.5]
+    assert device.deadline == 110.0
+
+
+@pytest.mark.parametrize("budget,captures_at,sleeps", [
+    (0.25, [100.0], [0.25]),
+    (0.75, [100.0, 100.5], [0.5, 0.25]),
+])
+def test_empty_screenshot_retry_stops_at_original_deadline(monkeypatch, budget, captures_at, sleeps):
+    device, state = scripted_screenshot_device(monkeypatch, [b""] * 3, budget=budget)
+    deadline = device.deadline
+
+    with pytest.raises(QRNavigationError, match="deadline"):
+        device.screenshot()
+
+    assert state.captures_at == captures_at
+    assert state.sleeps == sleeps
+    assert state.now == deadline
+    assert device.deadline == deadline
+
+
+@pytest.mark.parametrize("failure", ["bad_image", "wrong_size", "adb_error"])
+def test_login_screenshot_does_not_retry_nonempty_invalid_images_or_adb_errors(monkeypatch, failure):
+    result = b"not a PNG image"
+    if failure == "wrong_size":
+        encoded, png = cv2.imencode(".png", np.zeros((720, 1280, 3), dtype=np.uint8))
+        assert encoded
+        result = png.tobytes()
+    elif failure == "adb_error":
+        result = QRNavigationError("ADB operation failed or timed out")
+    device, state = scripted_screenshot_device(monkeypatch, [result])
+
+    with pytest.raises(QRNavigationError, match="ADB" if failure == "adb_error" else "1920x1080"):
+        device.screenshot()
+
+    assert state.captures_at == [100.0]
+    assert state.sleeps == []
