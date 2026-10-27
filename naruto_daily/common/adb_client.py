@@ -7,7 +7,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
-from .execution import check_execution, current_execution, DailyDeadlineExceeded
+from .execution import (
+    DailyDeadlineExceeded, PhaseDeadlineExceeded, check_execution, current_execution, current_phase_execution,
+)
 from .input_logging import log_adb_input
 
 
@@ -24,6 +26,16 @@ class CommandResult:
 
 CommandRunner = Callable[[Sequence[str]], CommandResult]
 BinaryRunner = Callable[[Sequence[str]], tuple[int, bytes, bytes]]
+
+
+def _check_command_deadline(returncode: int) -> None:
+    try:
+        check_execution()
+    except PhaseDeadlineExceeded:
+        # Preserve a known ADB failure for the caller instead of treating it
+        # as a recoverable phase timeout. The daily deadline still propagates.
+        if returncode == 0:
+            raise
 
 
 def _run_subprocess(command: Sequence[str]) -> CommandResult:
@@ -43,8 +55,13 @@ def _bounded_subprocess(command: Sequence[str], **kwargs):
     try:
         result = subprocess.run(command, capture_output=True, timeout=budget.remaining(), **kwargs)
     except subprocess.TimeoutExpired as exc:
-        raise DailyDeadlineExceeded("执行总时限已到，已终止 ADB 命令") from exc
-    budget.remaining()
+        if current_phase_execution() is None:
+            raise DailyDeadlineExceeded("执行总时限已到，已终止 ADB 命令") from exc
+        try:
+            budget.raise_deadline_exceeded("执行时限已到，已终止 ADB 命令")
+        except TimeoutError as deadline_error:
+            raise deadline_error from exc
+    _check_command_deadline(result.returncode)
     return result
 
 
@@ -69,7 +86,7 @@ class AdbClient:
         command.extend(arguments)
         with log_adb_input(self.serial, arguments):
             result = self._run_command(command)
-            check_execution()
+            _check_command_deadline(result.returncode)
             if result.returncode != 0:
                 detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
                 raise AdbError(f"ADB 命令执行失败：{detail}")
@@ -123,7 +140,7 @@ class AdbClient:
         for attempt in range(3):
             check_execution()
             returncode, stdout, stderr = self._run_binary(command)
-            check_execution()
+            _check_command_deadline(returncode)
             if returncode != 0:
                 detail = stderr.decode("utf-8", errors="replace").strip() or f"退出码 {returncode}"
                 raise AdbError(f"ADB 截图失败：{detail}")

@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from naruto_daily.common.adb_client import AdbClient, CommandResult
-from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
+from naruto_daily.common.execution import DailyDeadlineExceeded, current_phase_execution, execution_scope
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import find_template_in_png
 from naruto_daily.battle import run_duel_battle
@@ -120,12 +120,27 @@ class DailySession:
         return remaining
 
     def _run(self, command: Sequence[str], *, text: bool):
-        timeout = min(self._command_timeout, self._remaining())
+        daily_remaining = self._remaining()
+        budget = current_phase_execution()
+        budget_remaining = budget.remaining() if budget is not None else daily_remaining
+        timeout = min(self._command_timeout, daily_remaining, budget_remaining)
         kwargs = dict(capture_output=True, timeout=timeout,
                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
         if text:
             kwargs.update(text=True, encoding="utf-8", errors="replace")
-        result = self._run_subprocess(command, **kwargs)
+        try:
+            result = self._run_subprocess(command, **kwargs)
+        except subprocess.TimeoutExpired as exc:
+            if budget is None:
+                raise
+            self._remaining()
+            if budget is not None:
+                budget.remaining()
+                if budget_remaining <= timeout:
+                    budget.raise_deadline_exceeded("执行时限已到，已终止 ADB 命令")
+            if daily_remaining <= timeout:
+                raise DailyDeadlineExceeded("日常任务已超过截止时间") from exc
+            raise
         self._remaining()
         return result
 

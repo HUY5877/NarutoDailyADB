@@ -32,6 +32,9 @@ def test_real_screens_follow_abundance_from_main_page_through_result_and_back(mo
     from naruto_daily.abundance import handler
     from naruto_daily.battle import run_battle_without_first_skill
     now = [0.0]
+    phase_scope = handler.execution_phase_scope
+    monkeypatch.setattr(handler, 'execution_phase_scope',
+                        lambda seconds, **kw: phase_scope(seconds, clock=lambda: now[0], **kw))
     monkeypatch.setattr(handler, 'run_battle_without_first_skill',
                         lambda *a, **kw: run_battle_without_first_skill(*a, **kw, clock=lambda: now[0]))
     settings = load_settings(ROOT / 'config.example.json')
@@ -138,6 +141,9 @@ def test_completed_page_stops_battle_locally_and_returns_home(
         'completed': 'abundance_completed.png', 'home': 'main_page_reward_dot.png',
     }.items()}
     now, model_calls = [0.0], []
+    phase_scope = handler.execution_phase_scope
+    monkeypatch.setattr(handler, 'execution_phase_scope',
+                        lambda seconds, **kw: phase_scope(seconds, clock=lambda: now[0], **kw))
 
     class Model:
         def __init__(self, *args, **kwargs):

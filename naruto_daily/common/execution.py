@@ -1,4 +1,4 @@
-"""One absolute deadline shared by login cleanup, daily actions and retries."""
+"""One daily deadline, with optional tighter limits for recoverable phases."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import logging
 import time
-from typing import Callable, Iterator, TypeVar
+from typing import Callable, Iterator, NoReturn, TypeVar
 
 
 DAILY_TIMEOUT_SECONDS = 50 * 60
@@ -19,6 +19,10 @@ class DailyDeadlineExceeded(TimeoutError):
     """The shared execution deadline has expired; no further input is allowed."""
 
 
+class PhaseDeadlineExceeded(DailyDeadlineExceeded):
+    """Only the current phase has expired; its caller may recover afterward."""
+
+
 @dataclass(frozen=True)
 class ExecutionBudget:
     deadline: float
@@ -28,12 +32,34 @@ class ExecutionBudget:
     def remaining(self) -> float:
         remaining = self.deadline - self.clock()
         if remaining <= 0:
-            raise DailyDeadlineExceeded("执行总时限已到，停止全部操作（日常总时限最多 50 分钟）")
+            self.raise_deadline_exceeded()
         return remaining
+
+    def raise_deadline_exceeded(self, message: str | None = None) -> NoReturn:
+        raise DailyDeadlineExceeded(message or "执行总时限已到，停止全部操作（日常总时限最多 50 分钟）")
 
     def sleep(self, seconds: float) -> None:
         self.sleep_impl(min(max(0.0, seconds), self.remaining()))
         self.remaining()
+
+
+@dataclass(frozen=True)
+class _PhaseExecutionBudget(ExecutionBudget):
+    parent: ExecutionBudget | None = None
+
+    def remaining(self) -> float:
+        if self.parent is not None:
+            self.parent.remaining()
+        return super().remaining()
+
+    def raise_deadline_exceeded(self, message: str | None = None) -> NoReturn:
+        if self.parent is not None:
+            self.parent.remaining()
+            # A bounded operation can time out just before the injected clock
+            # advances. Classify by the effective deadline even in that case.
+            if self.parent.deadline <= self.deadline:
+                self.parent.raise_deadline_exceeded(message)
+        raise PhaseDeadlineExceeded(message or "本阶段执行时限已到，停止本阶段操作")
 
 
 _execution: ContextVar[ExecutionBudget | None] = ContextVar("daily_execution", default=None)
@@ -41,6 +67,11 @@ _execution: ContextVar[ExecutionBudget | None] = ContextVar("daily_execution", d
 
 def current_execution() -> ExecutionBudget | None:
     return _execution.get()
+
+
+def current_phase_execution() -> ExecutionBudget | None:
+    budget = current_execution()
+    return budget if isinstance(budget, _PhaseExecutionBudget) else None
 
 
 @contextmanager
@@ -51,6 +82,29 @@ def execution_scope(
     existing = current_execution()
     # A nested phase must never restart or extend the enclosing deadline.
     budget = existing if existing is not None else ExecutionBudget(deadline, clock, sleep)
+    token = _execution.set(budget)
+    try:
+        budget.remaining()
+        yield budget
+        budget.remaining()
+    finally:
+        _execution.reset(token)
+
+
+@contextmanager
+def execution_phase_scope(
+    seconds: float, *, clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Iterator[ExecutionBudget]:
+    """Temporarily tighten the active budget without replacing its deadline."""
+    parent = current_execution()
+    if parent is not None:
+        parent.remaining()
+        clock, sleep = parent.clock, parent.sleep_impl
+    deadline = clock() + float(seconds)
+    if parent is not None:
+        deadline = min(deadline, parent.deadline)
+    budget = _PhaseExecutionBudget(deadline, clock, sleep, parent)
     token = _execution.set(budget)
     try:
         budget.remaining()
