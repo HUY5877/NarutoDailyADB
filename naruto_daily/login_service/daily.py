@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from naruto_daily.common.adb_client import AdbClient, CommandResult
-from naruto_daily.common.execution import DailyDeadlineExceeded, current_execution, execution_scope
+from naruto_daily.common.execution import DailyDeadlineExceeded, current_phase_execution, execution_scope
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import find_template_in_png
 from naruto_daily.battle import run_duel_battle
@@ -121,7 +121,7 @@ class DailySession:
 
     def _run(self, command: Sequence[str], *, text: bool):
         daily_remaining = self._remaining()
-        budget = current_execution()
+        budget = current_phase_execution()
         budget_remaining = budget.remaining() if budget is not None else daily_remaining
         timeout = min(self._command_timeout, daily_remaining, budget_remaining)
         kwargs = dict(capture_output=True, timeout=timeout,
@@ -131,6 +131,8 @@ class DailySession:
         try:
             result = self._run_subprocess(command, **kwargs)
         except subprocess.TimeoutExpired as exc:
+            if budget is None:
+                raise
             self._remaining()
             if budget is not None:
                 budget.remaining()

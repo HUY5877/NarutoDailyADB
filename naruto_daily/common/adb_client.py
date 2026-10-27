@@ -7,7 +7,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
-from .execution import check_execution, current_execution, PhaseDeadlineExceeded
+from .execution import (
+    DailyDeadlineExceeded, PhaseDeadlineExceeded, check_execution, current_execution, current_phase_execution,
+)
 from .input_logging import log_adb_input
 
 
@@ -53,6 +55,8 @@ def _bounded_subprocess(command: Sequence[str], **kwargs):
     try:
         result = subprocess.run(command, capture_output=True, timeout=budget.remaining(), **kwargs)
     except subprocess.TimeoutExpired as exc:
+        if current_phase_execution() is None:
+            raise DailyDeadlineExceeded("执行总时限已到，已终止 ADB 命令") from exc
         try:
             budget.raise_deadline_exceeded("执行时限已到，已终止 ADB 命令")
         except TimeoutError as deadline_error:

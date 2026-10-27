@@ -69,6 +69,11 @@ def current_execution() -> ExecutionBudget | None:
     return _execution.get()
 
 
+def current_phase_execution() -> ExecutionBudget | None:
+    budget = current_execution()
+    return budget if isinstance(budget, _PhaseExecutionBudget) else None
+
+
 @contextmanager
 def execution_scope(
     deadline: float, *, clock: Callable[[], float] = time.monotonic,

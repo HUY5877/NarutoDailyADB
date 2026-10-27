@@ -1,4 +1,5 @@
 import subprocess
+from contextlib import nullcontext
 
 import pytest
 
@@ -91,3 +92,24 @@ def test_service_late_result_preserves_explicit_adb_failure(tmp_path, operation,
                 clock.sleep(175)
                 operate(session.client, operation)
         assert type(caught.value) is expected_type
+
+
+@pytest.mark.parametrize('operation', ['tap', 'screenshot'])
+@pytest.mark.parametrize('daily_scope', [False, True])
+def test_service_timeout_outside_abundance_keeps_original_exception(tmp_path, operation, daily_scope):
+    session, clock, _ = session_for(tmp_path)
+    deadline = clock() + 2
+    session._set_deadline(deadline)
+    original_error = subprocess.TimeoutExpired('offline-adb', 2)
+
+    def run(command, **kwargs):
+        assert kwargs['timeout'] == 2
+        clock.sleep(2)
+        raise original_error
+
+    session._run_subprocess = run
+    scope = execution_scope(deadline, clock=clock, sleep=clock.sleep) if daily_scope else nullcontext()
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        with scope:
+            operate(session.client, operation)
+    assert caught.value is original_error

@@ -541,7 +541,7 @@ def test_adb_cannot_continue_past_whole_task_deadline(tmp_path):
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
     session._run_subprocess = slow_command
-    with pytest.raises(DailyDeadlineExceeded):
+    with pytest.raises(subprocess.TimeoutExpired):
         session.run_daily(clock() + 2)
     assert len(reached) == 1
 
