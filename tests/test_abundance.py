@@ -13,6 +13,9 @@ def battle_clock(monkeypatch):
     from naruto_daily.abundance import handler
     from naruto_daily.battle import run_battle_without_first_skill
     # 这些流程测试用注入的 sleep 推进时间；实际 ADB 耗时在战斗模块测试中覆盖。
+    phase_scope = handler.execution_phase_scope
+    monkeypatch.setattr(handler, 'execution_phase_scope',
+                        lambda seconds, **kw: phase_scope(seconds, clock=lambda: 0, **kw))
     monkeypatch.setattr(handler, 'run_battle_without_first_skill',
                         lambda *a, **kw: run_battle_without_first_skill(*a, **kw, clock=lambda: 0))
 

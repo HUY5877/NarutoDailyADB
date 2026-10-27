@@ -8,7 +8,9 @@ from typing import Callable
 
 from naruto_daily.battle import BattleSummary, run_battle_without_first_skill
 from naruto_daily.common.recognition import ImageRecognition
-from naruto_daily.common.execution import retry_observation, stage_timeout
+from naruto_daily.common.execution import (
+    PhaseDeadlineExceeded, check_execution, execution_phase_scope, retry_observation, stage_timeout,
+)
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal.prompt_jev import ABUNDANCE_AFTER_BATTLE
@@ -24,6 +26,7 @@ COMPLETED_TARGET = {
     'left': 700, 'top': 730, 'right': 1220, 'bottom': 870,
     'threshold': 0.9,
 }
+ABUNDANCE_BATTLE_SECONDS = 180
 
 
 def _click_confirmed(client, images: ImageRecognition, target: dict, timeout: float, pre_wait: float,
@@ -142,7 +145,7 @@ def finish_abundance_result(
 def handle_abundance(
     client, action: dict, *, template_matcher: Callable = find_template_in_png,
     asset_root: Path = Path('.'), sleep: Callable[[float], None] = time.sleep,
-) -> BattleSummary:
+) -> BattleSummary | None:
     images = ImageRecognition(client, template_matcher, asset_root, sleep)
     _click_confirmed(client, images, action['challenge_button'], float(action['timeout_seconds']),
                      float(action.get('pre_click_wait_seconds', 1)))
@@ -151,8 +154,15 @@ def handle_abundance(
     model = (MultimodalClient(action["multimodal"], asset_root=asset_root)
              if action.get("multimodal") else None)
     battle = dict(action['battle'], end_targets=[COMPLETED_TARGET, *action['battle']['end_targets']])
-    summary = run_battle_without_first_skill(client, battle, template_matcher=template_matcher,
-                                             asset_root=asset_root, sleep=sleep, model=model)
+    try:
+        with execution_phase_scope(ABUNDANCE_BATTLE_SECONDS, sleep=sleep):
+            summary = run_battle_without_first_skill(client, battle, template_matcher=template_matcher,
+                                                     asset_root=asset_root, sleep=sleep, model=model)
+    except PhaseDeadlineExceeded:
+        # All battle inputs have stopped before returning to the daily budget.
+        check_execution()
+        LOGGER.warning('丰饶之间战斗已达到 3 分钟，停止战斗并跳过结算；执行后续回主界面动作，再继续其他任务')
+        return None
     if summary.end_target == COMPLETED_TARGET['name']:
         LOGGER.info('已通过本地模板确认丰饶之间今日已完成挑战，跳过结算关闭，交给后续动作返回主界面')
         return summary

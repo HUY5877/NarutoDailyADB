@@ -13,7 +13,9 @@ from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
-from naruto_daily.common.execution import current_execution, retry_observation, stage_timeout
+from naruto_daily.common.execution import (
+    DailyDeadlineExceeded, PhaseDeadlineExceeded, current_execution, retry_observation, stage_timeout,
+)
 from naruto_daily.multimodal.client import MultimodalClient
 from naruto_daily.multimodal.diagnostics import model_request_context
 from naruto_daily.multimodal.prompt_jev import BATTLE_COMPLETION
@@ -181,7 +183,22 @@ def run_battle(
             batch_started = elapsed()
             if _tap_batch is None:
                 pending = [pool.submit(copy_context().run, tap_button, button) for button in buttons]
-                taps += sum(future.result() for future in pending)
+                errors = []
+                for future in pending:
+                    try:
+                        taps += future.result()
+                    except Exception as error:
+                        errors.append(error)
+                if errors:
+                    # Drain every input first. A recoverable phase timeout must
+                    # not conceal a daily timeout or a concurrent device error.
+                    daily_error = next((error for error in errors
+                                        if isinstance(error, DailyDeadlineExceeded)
+                                        and not isinstance(error, PhaseDeadlineExceeded)), None)
+                    if daily_error is not None:
+                        raise daily_error
+                    raise next((error for error in errors
+                                if not isinstance(error, PhaseDeadlineExceeded)), errors[0])
             else:
                 # 高速通道整轮按下、抬起并确认后返回，不留后台触摸越过截图检查。
                 if _tap_batch(lambda: remaining() > 0 and elapsed() < next_check):
