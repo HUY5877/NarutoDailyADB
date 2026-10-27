@@ -51,10 +51,28 @@ class LoginDevice:
         return result.stdout
 
     def screenshot(self) -> np.ndarray:
-        image = cv2.imdecode(np.frombuffer(self._run("exec-out", "screencap", "-p"), np.uint8), 1)
-        if image is None or image.shape[:2] not in ((1080, 1920), (1920, 1080)):
-            raise QRNavigationError("Login requires a 1920x1080 or 1080x1920 Android screenshot")
-        return image
+        # Returning from an authorization activity can briefly yield no pixels.
+        # Retry only empty captures, within the original login deadline.
+        for attempt in range(3):
+            if time.time() >= self.deadline:
+                raise QRNavigationError("Login task deadline expired")
+            png = self._run("exec-out", "screencap", "-p")
+            if png:
+                image = cv2.imdecode(np.frombuffer(png, np.uint8), 1)
+                if image is None or image.shape[:2] not in ((1080, 1920), (1920, 1080)):
+                    raise QRNavigationError("Login requires a 1920x1080 or 1080x1920 Android screenshot")
+                return image
+            if attempt < 2:
+                remaining = self.deadline - time.time()
+                if remaining <= 0:
+                    raise QRNavigationError("Login task deadline expired")
+                delay = min(0.5, remaining)
+                logging.getLogger(__name__).warning(
+                    "登录截图暂时为空，%.2f 秒后重取（第 %d 次重试）", delay, attempt + 1,
+                    extra={"backend_only": True},
+                )
+                time.sleep(delay)
+        raise QRNavigationError("Login screenshot returned empty data after 3 attempts")
 
     def guard_authorization_surface(self) -> None:
         activity = self._run("shell", "dumpsys", "activity", "activities").decode("utf-8", "replace")
