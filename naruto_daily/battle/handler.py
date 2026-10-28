@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from naruto_daily.common.recognition import ImageRecognition
+from naruto_daily.common.adb_client import AdbServerConnectionError
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.execution import (
     DailyDeadlineExceeded, PhaseDeadlineExceeded, current_execution, current_phase_execution,
@@ -52,6 +53,7 @@ def run_battle(
     before_attack: Callable[[bytes], BattleSummary | None] | None = None,
     prefer_fast_taps: bool = False,
     _tap_batch: Callable[[Callable[[], bool]], bool] | None = None,
+    _recover_adb_server: bool = False,
 ) -> BattleSummary:
     if (isinstance(check_interval_seconds, bool) or not isinstance(check_interval_seconds, (int, float))
             or not math.isfinite(check_interval_seconds) or check_interval_seconds <= 0):
@@ -87,7 +89,8 @@ def run_battle(
         if remaining() <= 0:
             return 0
         LOGGER.debug('战斗点击：%s，坐标：(%d, %d)', button['name'], button['x'], button['y'])
-        client.tap(button['x'], button['y'])
+        tap = getattr(client, 'battle_tap', client.tap) if _recover_adb_server else client.tap
+        tap(button['x'], button['y'])
         return 1
 
     targets = battle['end_targets']
@@ -184,7 +187,7 @@ def run_battle(
             batch_started = elapsed()
             if _tap_batch is None:
                 pending = [pool.submit(copy_context().run, tap_button, button) for button in buttons]
-                if current_phase_execution() is None:
+                if current_phase_execution() is None and not _recover_adb_server:
                     taps += sum(future.result() for future in pending)
                 else:
                     errors = []
@@ -194,6 +197,9 @@ def run_battle(
                         except Exception as error:
                             errors.append(error)
                     if errors:
+                        if current_phase_execution() is None and not any(
+                                isinstance(error, AdbServerConnectionError) for error in errors):
+                            raise errors[0]
                         # Drain every input first. A recoverable phase timeout must
                         # not conceal a daily timeout or a concurrent device error.
                         daily_error = next((error for error in errors
@@ -201,8 +207,23 @@ def run_battle(
                                             and not isinstance(error, PhaseDeadlineExceeded)), None)
                         if daily_error is not None:
                             raise daily_error
-                        raise next((error for error in errors
-                                    if not isinstance(error, PhaseDeadlineExceeded)), errors[0])
+                        ordinary_error = next((error for error in errors
+                                               if not isinstance(error, (PhaseDeadlineExceeded,
+                                                                         AdbServerConnectionError))), None)
+                        if ordinary_error is not None:
+                            raise ordinary_error
+                        phase_error = next((error for error in errors
+                                            if isinstance(error, PhaseDeadlineExceeded)), None)
+                        if phase_error is not None:
+                            raise phase_error
+                        ensure_server = getattr(client, 'ensure_battle_adb_server', None)
+                        if not _recover_adb_server or not callable(ensure_server):
+                            raise errors[0]
+                        if remaining() <= 0:
+                            break
+                        ensure_server()
+                        if remaining() <= 0:
+                            break
             else:
                 # 高速通道整轮按下、抬起并确认后返回，不留后台触摸越过截图检查。
                 if _tap_batch(lambda: remaining() > 0 and elapsed() < next_check):
@@ -246,7 +267,7 @@ def run_battle_without_first_skill(
     ])
     return run_battle(client, filtered_battle, template_matcher=template_matcher,
                       asset_root=asset_root, sleep=sleep, clock=clock, model=model,
-                      check_interval_seconds=check_interval_seconds)
+                      check_interval_seconds=check_interval_seconds, _recover_adb_server=True)
 
 
 def run_duel_battle(
