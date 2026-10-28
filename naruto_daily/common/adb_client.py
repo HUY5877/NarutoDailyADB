@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import socket
 import subprocess
 import time
 from dataclasses import dataclass
@@ -11,10 +12,21 @@ from .execution import (
     DailyDeadlineExceeded, PhaseDeadlineExceeded, check_execution, current_execution, current_phase_execution,
 )
 from .input_logging import log_adb_input
+from .adb_server_lock import battle_server_lock
 
 
 class AdbError(RuntimeError):
     """ADB 命令失败或返回内容无法使用。"""
+
+
+class AdbServerConnectionError(AdbError):
+    """战斗命令未连接到主机 ADB 服务，可以在本批输入结束后检查服务。"""
+
+
+_SERVER_CONNECTION_ERRORS = (
+    'cannot connect to daemon', 'cannot start server on remote host',
+    'could not read ok from adb server', 'failed to start daemon', "adb server didn't ack",
+)
 
 
 @dataclass(frozen=True)
@@ -78,9 +90,12 @@ class AdbClient:
         self._run_command = run_command
         self._run_binary = run_binary
 
-    def _command(self, *arguments: str, use_serial: bool = True) -> CommandResult:
+    def _command(self, *arguments: str, use_serial: bool = True,
+                 server_host: str | None = None) -> CommandResult:
         check_execution()
         command = [str(self.adb_path)]
+        if server_host is not None:
+            command.extend(['-H', server_host, '-P', '5037'])
         if use_serial and self.serial:
             command.extend(["-s", self.serial])
         command.extend(arguments)
@@ -89,6 +104,9 @@ class AdbClient:
             _check_command_deadline(result.returncode)
             if result.returncode != 0:
                 detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+                if server_host == '127.0.0.1' and any(
+                        message in detail.lower() for message in _SERVER_CONNECTION_ERRORS):
+                    raise AdbServerConnectionError(f"ADB 战斗连接失败：{detail}")
                 raise AdbError(f"ADB 命令执行失败：{detail}")
         return result
 
@@ -112,6 +130,30 @@ class AdbClient:
 
     def tap(self, x: int, y: int) -> None:
         self._command("shell", "input", "tap", str(x), str(y))
+
+    def battle_tap(self, x: int, y: int) -> None:
+        # A numeric -H makes adb return on connection failure instead of
+        # launching a second local server. Plain tap keeps its original path.
+        self._command('shell', 'input', 'tap', str(x), str(y), server_host='127.0.0.1')
+
+    def ensure_battle_adb_server(self) -> None:
+        """只检查一次服务；能连接则复用，不能连接才显式启动，不重放点击。"""
+        check_execution()
+        budget = current_execution()
+        with battle_server_lock():
+            check_execution()
+            timeout = min(1.0, budget.remaining()) if budget else 1.0
+            try:
+                connection = socket.create_connection(('127.0.0.1', 5037), timeout=timeout)
+            except OSError:
+                check_execution()
+                logging.getLogger(__name__).warning('丰饶战斗的 ADB 5037 无法连接，启动一次服务')
+                self._command('start-server', use_serial=False, server_host='localhost')
+            else:
+                connection.close()
+                check_execution()
+                logging.getLogger(__name__).warning('ADB 5037 仍可连接，跳过本批失败点击，继续下一批')
+            check_execution()
 
     def battle_taps(self, points):
         """按调用方的战斗坐标创建高速通道，不支持时返回普通点击回退标记。"""

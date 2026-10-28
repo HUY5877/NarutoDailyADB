@@ -101,6 +101,10 @@ class Device(AdbClient):
         assert self.frames[next(reversed(self.frames))] == expected
         self.state = next_state
 
+    def battle_tap(self, x, y):
+        # 设备夹具复用原有普通点击仿真；命令的 -H 参数由 ADB 单元测试覆盖。
+        self.tap(x, y)
+
     def matcher(self, png, path, roi, threshold):
         targets = {
             'challenge': {'abundance_challenge': CHALLENGE},
