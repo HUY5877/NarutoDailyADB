@@ -79,17 +79,19 @@ def test_bound_notifications_use_real_markdown_mention(monkeypatch, kind):
     payload = request_json(transport.requests[-1][0])
     assert payload['msg_type'] == 2
     assert payload['markdown']['content'].startswith(f'<qqbot-at-user id="{MEMBER}" /> ')
-    assert '小鸣人' in payload['markdown']['content']
+    assert '小鸣人' not in payload['markdown']['content']
+    assert not payload['markdown']['content'].split(' /> ', 1)[1].startswith('，')
     assert 'content' not in payload and 'msg_id' not in payload and 'event_id' not in payload
 
 
-def test_bound_nickname_cannot_inject_tags_or_markdown_links(monkeypatch):
+def test_bound_nickname_is_omitted_and_cannot_inject_tags_or_markdown_links(monkeypatch):
     transport = QQTransport(token_response(), {'id': 'message'})
     _, notifier = make_notifier(monkeypatch, transport)
     name = '<qqbot-at-everyone /> [管理员](https://example.invalid) **提示**'
     asyncio.run(notifier.notify_qr_ready(TASK_ID, name, member_openid=MEMBER))
     content = request_json(transport.requests[-1][0])['markdown']['content']
     assert content.count('<qqbot-') == 1
+    assert '管理员' not in content
     assert '[管理员](' not in content and '**提示**' not in content
 
 
@@ -131,6 +133,7 @@ def test_runtime_rereads_binding_after_session_expires_and_honors_unbind(monkeyp
             assert bindings.requested == [user_id]
             first = request_json(transport.requests[-1][0])
             assert first['markdown']['content'].startswith(f'<qqbot-at-user id="{MEMBER}" />')
+            assert '雪花' not in first['markdown']['content']
             await runtime._redis_queue._client.delete(runtime._redis_queue._session_key(record))
             bindings.member = final_member
             record.daily_started_at = 1.0
@@ -141,9 +144,11 @@ def test_runtime_rereads_binding_after_session_expires_and_honors_unbind(monkeyp
                 assert final['msg_type'] == 2
                 assert final['markdown']['content'].startswith(f'<qqbot-at-user id="{MEMBER}" />')
                 assert expected in final['markdown']['content']
+                assert '雪花' not in final['markdown']['content']
             else:
                 assert final['msg_type'] == 0 and 'markdown' not in final
                 assert expected in final['content']
+                assert final['content'].startswith('雪花，')
         finally:
             await runtime.stop()
     asyncio.run(scenario())

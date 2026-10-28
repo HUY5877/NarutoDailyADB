@@ -42,7 +42,7 @@ def _validate_member(member_openid: str) -> None:
 
 
 def _markdown_text(content: str) -> str:
-    # Nicknames remain literal text; only our own generated tag may mention users.
+    # Message text stays literal; only our own generated tag may mention users.
     return re.sub(r'([\\`*_{}\[\]()#+\-.!|~])', r'\\\1', html.escape(content, quote=False))
 
 
@@ -162,10 +162,10 @@ class QQGroupNotifier:
         token = await self._access_token()
         if expires_at_ms is not None and time() * 1000 >= expires_at_ms:
             raise QQNotifyError('QR code expired before notification')
-        name = _notification_name(user_name)
+        prefix = '' if member_openid else f'{_notification_name(user_name)}，'
         content = (
-            f"{name}，二维码已经刷新啦！快打开登录页面扫新的码吧～"
-            if refreshed else f"{name}，你的二维码准备好啦！快打开登录页面扫码吧～"
+            f"{prefix}二维码已经刷新啦！快打开登录页面扫新的码吧～"
+            if refreshed else f"{prefix}你的二维码准备好啦！快打开登录页面扫码吧～"
         )
         await self._send_message(
             content,
@@ -183,7 +183,7 @@ class QQGroupNotifier:
 
         _validate_member(member_openid)
 
-        name = _notification_name(user_name)
+        prefix = '' if member_openid else f'{_notification_name(user_name)}，'
         if status == "completed":
             result = ("决斗场周胜任务结束啦！辛苦啦～" if main_task == 'arena_weekly'
                       else "日常任务全部搞定啦！辛苦啦～")
@@ -201,7 +201,7 @@ class QQGroupNotifier:
 
         token = await self._access_token()
         await self._send_message(
-            f"{name}，{result}",
+            f"{prefix}{result}",
             token=token, member_openid=member_openid,
         )
 
