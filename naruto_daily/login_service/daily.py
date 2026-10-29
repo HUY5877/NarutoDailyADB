@@ -59,9 +59,11 @@ class DailySession:
             raise ValueError("ADB 命令超时必须是有限正数")
         self.config_path = Path(config_path).resolve()
         self.asset_root = self.config_path.parent
-        self.settings = load_settings(self.config_path, skip_account_login=True)
+        self.settings = load_settings(self.config_path)
         self.user_options = parse_user_options({} if user_options is None else user_options)
         self._login_actions = deepcopy(self.settings.tasks["login"])
+        if not self._login_actions or self._login_actions[0]['type'] != 'required_template_tap':
+            raise ConfigError('扫码登录必须以 required_template_tap 配置开始游戏按钮')
         selected_settings = self.settings
         skipped_tasks = {}
         weekly = self.user_options.get('mainTask') == 'arena_weekly'
@@ -174,10 +176,7 @@ class DailySession:
             self._authorized = False
             self._logged_in = False
             self._set_deadline(deadline)
-            if not self._login_actions or self._login_actions[0]["type"] != "finish_login_authorization":
-                raise ConfigError("扫码登录必须先确认授权并开始游戏")
-            action = self._login_actions[0]
-            target = action["start_game"]
+            target = self._login_actions[0]
             images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
             LOGGER.info("等待手机扫码确认；识别到开始游戏按钮才结束二维码等待")
             def observed():
@@ -215,14 +214,8 @@ class DailySession:
             self._logged_in = False
             self._set_deadline(deadline)
             actions = deepcopy(self._login_actions)
-            start = actions[0]
-            # 扫码收尾只点击开始游戏；保存账号登录继续使用原授权流程。
-            actions[0] = {
-                **start["start_game"], "type": "required_template_tap",
-                "timeout_seconds": self._remaining(), "poll_seconds": start["poll_seconds"],
-                "pre_click_wait_seconds": start.get("pre_click_wait_seconds", 3),
-                "post_click_wait_seconds": start.get("post_click_wait_seconds", 3),
-            }
+            # 开始游戏与后续清理共用扫码后的日常总截止时间。
+            actions[0]['timeout_seconds'] = self._remaining()
             LOGGER.info("开始扫码登录收尾，执行登录收尾动作；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
             self._runner().run(actions)
             LOGGER.info("登录收尾动作已完成，额外复核主界面；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))

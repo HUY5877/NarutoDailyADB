@@ -38,6 +38,10 @@ class Scenario:
 
 
 def install(monkeypatch, scenario):
+    monkeypatch.setattr('naruto_daily.runner.handle_free_recruit',
+                        lambda device, action, **kwargs: device.tap(10, 10))
+    monkeypatch.setattr('naruto_daily.runner.handle_coin_fortune',
+                        lambda device, action, **kwargs: device.tap(999, 999))
     monkeypatch.setattr(handler, 'MultimodalClient', lambda *a, **kw: object())
 
     def tickets(*args, **kwargs):
@@ -78,7 +82,7 @@ def test_once_with_no_tickets_normally_finishes_the_whole_daily(monkeypatch, cou
     with forward_task_logs(events.append):
         summary = ActionRunner(scenario, template_matcher=matcher, sleep=lambda _: None,
                                user_options={'secretRealmMode': 'once'}).run([
-            {'type': 'tap', 'x': 10, 'y': 10}, secret_action(), {'type': 'tap', 'x': 999, 'y': 999},
+            {'type': 'handle_free_recruit'}, secret_action(), {'type': 'handle_coin_fortune'},
         ])
     assert summary.action_count == 2
     assert scenario.events.count(('tickets',)) == len(counts)
@@ -102,7 +106,7 @@ def test_once_success_finishes_all_actions_after_return_to_room(monkeypatch, opt
     with forward_task_logs(events.append):
         result = ActionRunner(scenario, template_matcher=matcher, sleep=lambda _: None,
                               user_options=options).run([
-            {'type': 'tap', 'x': 10, 'y': 10}, secret_action(), {'type': 'tap', 'x': 999, 'y': 999},
+            {'type': 'handle_free_recruit'}, secret_action(), {'type': 'handle_coin_fortune'},
         ])
     assert result.action_count == 2
     assert scenario.frame == ROOM
@@ -208,12 +212,16 @@ def test_daily_session_passes_once_option_and_keeps_equipment_choice(monkeypatch
         change=lambda payload: payload['tasks'].update(secret_realm=[deepcopy(config)]),
     )
     session.client = scenario
-    session._template_matcher = matcher
+    daily_matcher = session._template_matcher
+    session._template_matcher = lambda frame, path, roi, threshold: (
+        daily_matcher(frame, path, roi, threshold) if path.stem.startswith('daily_')
+        else matcher(frame, path, roi, threshold)
+    )
     session._logged_in = True
     assert session.run_daily(clock() + 300) == len(session._daily_actions)
     assert session._runner().user_options == options
     assert scenario.events.count(('tap', 1787, 920)) == 1
     assert scenario.events.count(('tickets',)) == 2
-    equipment_x = session.settings.tasks['equipment_upgrade'][0]['x']
+    equipment_x = session.settings.tasks['equipment_upgrade'][0]['left']
     assert (('tap', equipment_x, 0) in scenario.events) is equipment
     assert scenario.frame == ROOM

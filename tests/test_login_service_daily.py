@@ -29,11 +29,21 @@ class Clock:
         self.now += seconds
 
 
+def daily_action(index):
+    return {
+        'type': 'required_template_tap', 'name': f'日常动作{index}',
+        'template': f'assets/daily_{index}.png',
+        'left': index, 'top': 0, 'right': index + 1, 'bottom': 1, 'threshold': .9,
+        'timeout_seconds': 1, 'poll_seconds': .2,
+        'pre_click_wait_seconds': 0, 'post_click_wait_seconds': 0,
+    }
+
+
 def config_file(tmp_path, *, change=None):
     original = json.loads((PROJECT_ROOT / "config.example.json").read_text(encoding="utf-8"))
     payload = {
         "adb_path": "old-adb.exe", "serial": "old-device", "screen": original["screen"],
-        "tasks": {name: [{"type": "tap", "x": index, "y": 0}]
+        "tasks": {name: [daily_action(index)]
                   for index, name in enumerate(TASK_ORDER) if name != "login"},
     }
     payload["tasks"]["login"] = deepcopy(original["tasks"]["login"])
@@ -69,6 +79,8 @@ def session_for(tmp_path, *, change=None, matcher=None, subprocess_runner=None, 
             return (900, 900), 1.0
         if path.name in {"main_reward_label.png", "main_reward_label_red_dot.png"}:
             return (1800, 500), 1.0
+        if path.stem.startswith('daily_'):
+            return (int(path.stem.removeprefix('daily_')), 0), 1.0
         return None, 0.0
 
     session = DailySession(config_file(tmp_path, change=change), Path("current-adb.exe"),
@@ -79,27 +91,26 @@ def session_for(tmp_path, *, change=None, matcher=None, subprocess_runner=None, 
     return session, clock, calls
 
 
-def test_scan_settings_drop_saved_account_before_environment_resolution(tmp_path, monkeypatch):
-    monkeypatch.delenv("LOGIN_ACCOUNT_NAME")
+def test_scan_settings_need_no_saved_account_environment(tmp_path, monkeypatch):
+    monkeypatch.delenv("LOGIN_ACCOUNT_NAME", raising=False)
     path = config_file(tmp_path)
-    settings = load_settings(path, skip_account_login=True)
+    settings = load_settings(path)
     assert [action["type"] for action in settings.tasks["login"]] == [
-        "finish_login_authorization", "wait", "popup_cleanup", "return_to_main",
+        "required_template_tap", "wait", "popup_cleanup", "return_to_main",
     ]
-    with pytest.raises(ConfigError, match="LOGIN_ACCOUNT_NAME"):
-        load_settings(path)
+    assert settings.tasks['login'][0]['template'] == 'assets/start_game_button.png'
 
 
-@pytest.mark.parametrize("login", [[], [{"type": "wait", "seconds": 1}], None])
+@pytest.mark.parametrize("login", [[], [{"type": "wait", "seconds": 1}]])
 def test_scan_settings_require_explicit_authorization_handoff(tmp_path, login):
     path = config_file(tmp_path, change=lambda p: p["tasks"].update(login=login))
     with pytest.raises(ConfigError, match="扫码登录"):
-        load_settings(path, skip_account_login=True)
+        DailySession(path, Path('adb.exe'), 'emulator-5580', 20)
 
 
 def test_daily_session_checks_only_retained_templates(tmp_path):
     path = config_file(tmp_path)
-    (tmp_path / "assets/qq_account_picker_marker.png").unlink()
+    assert not (tmp_path / "assets/qq_account_picker_marker.png").exists()
     DailySession(path, Path("adb.exe"), "emulator-5580", 20)
     (tmp_path / "assets/start_game_button.png").unlink()
     with pytest.raises(ConfigError, match="start_game_button"):
@@ -133,7 +144,7 @@ def test_scan_and_daily_reuse_one_serial_and_complete_existing_all_order(tmp_pat
 def test_equipment_option_changes_only_equipment_route_and_keeps_other_daily_actions(tmp_path, enabled, mode):
     # Multiple actions represent equipment menu navigation, material processing
     # and returning to the main screen. Disabling must remove the whole route.
-    equipment_actions = [{"type": "tap", "x": 100 + index, "y": 0} for index in range(3)]
+    equipment_actions = [daily_action(100 + index) for index in range(3)]
     options = {"equipmentStamina": enabled, 'secretRealmMode': mode}
     session, clock, calls = session_for(
         tmp_path, change=lambda p: p["tasks"].update(equipment_upgrade=equipment_actions),
@@ -151,15 +162,16 @@ def test_equipment_option_changes_only_equipment_route_and_keeps_other_daily_act
     ]
     assert session.run_daily(clock() + 300) == len(expected_actions)
     daily_taps = [command[-2:] for command, _ in calls[login_calls:] if "tap" in command]
-    assert daily_taps == [[str(action["x"]), str(action["y"])] for action in expected_actions]
+    assert daily_taps == [[str(action["left"]), str(action["top"])] for action in expected_actions]
     assert session.settings.tasks["equipment_upgrade"] == equipment_actions
 
 
 def test_disabled_equipment_route_does_not_require_its_templates(tmp_path):
     def change(payload):
         payload["tasks"]["equipment_upgrade"] = [{
-            "type": "optional_template_tap", "template": "assets/equipment_only.png",
+            "type": "required_template_tap", "name": "装备入口", "template": "assets/equipment_only.png",
             "left": 0, "top": 0, "right": 100, "bottom": 100, "threshold": .9,
+            "timeout_seconds": 1, "poll_seconds": .2,
         }]
 
     path = config_file(tmp_path, change=change)
@@ -178,7 +190,7 @@ def test_local_secret_session_runs_only_shared_secret_route_after_scan(tmp_path,
         for name in ("secret_realm_farm", "secret_realm"):
             payload['tasks'][name] = deepcopy(original['tasks'][name])
 
-    monkeypatch.delenv("LOGIN_ACCOUNT_NAME")
+    monkeypatch.delenv("LOGIN_ACCOUNT_NAME", raising=False)
     session, clock, calls = session_for(tmp_path, change=change, task_name="secret_realm_farm")
     session.wait_for_login(clock() + 300)
     actions_run = []
@@ -246,7 +258,7 @@ def test_empty_adb_frame_waits_for_real_start_game_marker_without_replaying_logi
     session, clock, _ = session_for(
         tmp_path, matcher=find_template_in_png, subprocess_runner=run,
     )
-    target = session._login_actions[0]['start_game']
+    target = session._login_actions[0]
     template_path = PROJECT_ROOT / target['template']
     (tmp_path / target['template']).write_bytes(template_path.read_bytes())
     loading = np.zeros((1080, 1920, 3), np.uint8)
@@ -280,7 +292,7 @@ def test_portrait_qr_waits_for_landscape_authorization_and_keeps_refresh_respons
         return find_template_in_png(*args)
 
     session, clock, calls = session_for(tmp_path, matcher=match)
-    target = session._login_actions[0]['start_game']
+    target = session._login_actions[0]
     template_path = PROJECT_ROOT / target['template']
     (tmp_path / target['template']).write_bytes(template_path.read_bytes())
     portrait = np.full((1920, 1080, 3), 255, np.uint8)
@@ -486,6 +498,8 @@ def test_login_wait_extends_past_old_40_second_authorization_timeout(tmp_path):
             return (900, 900), 1.0
         if path.name == "main_reward_label.png" and now >= 160:
             return (1800, 500), 1.0
+        if path.stem.startswith('daily_'):
+            return (int(path.stem.removeprefix('daily_')), 0), 1.0
         return None, 0.0
 
     session, clock, calls = session_for(tmp_path, matcher=match)

@@ -8,91 +8,18 @@
   "tasks": {
     "login": [
       {
-        "type": "tap",
-        "x": 158,
-        "y": 924
-      },
-      {
-        "type": "wait",
-        "seconds": 1
-      },
-      {
         "type": "required_template_tap",
-        "name": "与安卓QQ好友玩按钮",
-        "template": "assets/qq_android_button.png",
-        "left": 1350,
-        "top": 720,
-        "right": 1850,
-        "bottom": 900,
+        "name": "开始游戏按钮",
+        "template": "assets/start_game_button.png",
+        "left": 650,
+        "top": 780,
+        "right": 1270,
+        "bottom": 1020,
         "threshold": 0.85,
-        "timeout_seconds": 20,
+        "timeout_seconds": 40,
         "poll_seconds": 1,
         "pre_click_wait_seconds": 3,
         "post_click_wait_seconds": 3
-      },
-      {
-        "type": "authorize_account",
-        "account_name": "${LOGIN_ACCOUNT_NAME}",
-        "timeout_seconds": 40,
-        "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
-        "picker_marker": {
-          "name": "选择要登录的账号",
-          "template": "assets/qq_account_picker_marker.png",
-          "left": 0,
-          "top": 650,
-          "right": 500,
-          "bottom": 850,
-          "threshold": 0.95
-        },
-        "switch_account": {
-          "name": "切换账号",
-          "template": "assets/qq_account_switch_account.png",
-          "left": 800,
-          "top": 885,
-          "right": 1150,
-          "bottom": 960,
-          "threshold": 0.95
-        },
-        "agree_button": {
-          "name": "指定账号授权同意按钮",
-          "template": "assets/qq_account_agree_button.png",
-          "left": 700,
-          "top": 750,
-          "right": 1220,
-          "bottom": 885,
-          "threshold": 0.95
-        },
-        "multimodal": {
-          "timeout_seconds": 30,
-          "max_calls": 6
-        }
-      },
-      {
-        "type": "finish_login_authorization",
-        "timeout_seconds": 40,
-        "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
-        "second_authorization": {
-          "name": "第二次授权同意按钮",
-          "template": "assets/qq_agree_game_info.png",
-          "left": 700,
-          "top": 700,
-          "right": 1220,
-          "bottom": 930,
-          "threshold": 0.85
-        },
-        "start_game": {
-          "name": "开始游戏按钮",
-          "template": "assets/start_game_button.png",
-          "left": 650,
-          "top": 780,
-          "right": 1270,
-          "bottom": 1020,
-          "threshold": 0.85
-        }
       },
       {
         "type": "wait",

@@ -11,7 +11,7 @@ from naruto_daily.login_service.daily import DailySession
 from naruto_daily.login_service.log_events import forward_task_logs
 from naruto_daily.runner import ActionRunner
 from naruto_daily.tasks import TASK_ORDER
-from test_login_service_daily import config_file, session_for
+from test_login_service_daily import config_file, daily_action, session_for
 
 
 def test_direct_runner_skip_never_enters_or_handles_secret_and_continues_later_actions(monkeypatch):
@@ -32,20 +32,21 @@ def test_direct_runner_skip_never_enters_or_handles_secret_and_continues_later_a
 
     monkeypatch.setattr(runner, 'enter_secret_realm', forbidden)
     monkeypatch.setattr(runner, 'handle_secret_realm', forbidden)
-    device, events = Device(), []
+    device, events, waits = Device(), [], []
     with forward_task_logs(events.append):
-        summary = ActionRunner(device, user_options={'secretRealmMode': 'skip'}).run([
-            {'type': 'tap', 'x': 1, 'y': 1}, {'type': 'enter_secret_realm'},
-            {'type': 'handle_secret_realm'}, {'type': 'tap', 'x': 2, 'y': 2},
+        summary = ActionRunner(device, sleep=waits.append, user_options={'secretRealmMode': 'skip'}).run([
+            {'type': 'wait', 'seconds': 1}, {'type': 'enter_secret_realm'},
+            {'type': 'handle_secret_realm'}, {'type': 'wait', 'seconds': 2},
         ])
-    assert device.taps == [(1, 1), (2, 2)]
+    assert waits == [1.0, 2.0]
+    assert device.taps == []
     assert summary.action_count == 4
     assert not any('secretRealmCompletedAt' in event for event in events)
 
 
 @pytest.mark.parametrize('equipment', [True, False])
 def test_skip_session_removes_every_secret_action_without_changing_other_groups(tmp_path, equipment):
-    secret_actions = [{'type': 'tap', 'x': 900 + index, 'y': 0} for index in range(3)]
+    secret_actions = [daily_action(900 + index) for index in range(3)]
     options = {'equipmentStamina': equipment, 'secretRealmMode': 'skip'}
     session, clock, calls = session_for(
         tmp_path, user_options=options,
@@ -63,15 +64,16 @@ def test_skip_session_removes_every_secret_action_without_changing_other_groups(
     with forward_task_logs(events.append):
         assert session.run_daily(clock() + 300) == len(expected)
     taps = [command[-2:] for command, _ in calls[login_calls:] if 'tap' in command]
-    assert taps == [[str(action['x']), str(action['y'])] for action in expected]
+    assert taps == [[str(action['left']), str(action['top'])] for action in expected]
     assert not any('secretRealmCompletedAt' in event for event in events)
 
 
 def test_skipped_secret_templates_are_not_required(tmp_path):
     def change(payload):
         payload['tasks']['secret_realm'] = [{
-            'type': 'optional_template_tap', 'template': 'assets/secret_only.png',
+            'type': 'required_template_tap', 'name': '秘境入口', 'template': 'assets/secret_only.png',
             'left': 0, 'top': 0, 'right': 100, 'bottom': 100, 'threshold': .9,
+            'timeout_seconds': 1, 'poll_seconds': .2,
         }]
 
     path = config_file(tmp_path, change=change)
@@ -107,7 +109,7 @@ def test_direct_runner_mode_is_passed_to_existing_secret_handler(monkeypatch, mo
     captured = []
     monkeypatch.setattr(runner, 'handle_secret_realm', lambda *a, **kw: captured.append(kw))
     summary = ActionRunner(object(), user_options={'secretRealmMode': mode}).run([
-        {'type': 'handle_secret_realm'}, {'type': 'tap', 'x': 1, 'y': 1},
+        {'type': 'handle_secret_realm'}, {'type': 'wait', 'seconds': 99},
     ])
     assert summary.action_count == 1
     assert len(captured) == 1

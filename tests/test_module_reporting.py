@@ -33,7 +33,7 @@ def test_secret_modules_are_exempt_but_nested_return_is_reported(monkeypatch):
     monkeypatch.setattr(runner, 'handle_secret_realm', lambda *args, **kwargs: None)
     with reporting.module_reporting(events.append):
         ActionRunner(RecordingClient()).run([
-            {'type': 'enter_secret_realm'}, {'type': 'handle_secret_realm'}, {'type': 'back'},
+            {'type': 'enter_secret_realm'}, {'type': 'handle_secret_realm'}, {'type': 'wait', 'seconds': 0},
         ])
     assert events == [
         {'type': 'module', 'state': 'started', 'name': 'return_to_main'},
@@ -47,7 +47,7 @@ def test_module_end_is_reported_on_failure_and_reporting_is_task_scoped():
         with pytest.raises(RuntimeError, match='module failed'):
             with reporting.module_scope('handle_free_recruit'):
                 raise RuntimeError('module failed')
-    with reporting.module_scope('back'):
+    with reporting.module_scope('wait'):
         pass
     assert [event['state'] for event in events] == ['started', 'finished']
 
@@ -85,10 +85,13 @@ def test_reporting_failure_and_dry_run_do_not_change_execution():
         raise OSError('pipe unavailable')
 
     client = RecordingClient()
+    waits = []
     with reporting.module_reporting(broken):
-        assert ActionRunner(client).run([{'type': 'back'}]).action_count == 1
-    assert client.calls == [('back',)]
+        assert ActionRunner(client, sleep=waits.append).run([{'type': 'wait', 'seconds': 2}]).action_count == 1
+    assert waits == [2.0]
+    assert client.calls == []
     events = []
     with reporting.module_reporting(events.append):
-        ActionRunner(client, dry_run=True).run([{'type': 'back'}])
+        ActionRunner(client, sleep=waits.append, dry_run=True).run([{'type': 'wait', 'seconds': 2}])
     assert events == []
+    assert waits == [2.0]

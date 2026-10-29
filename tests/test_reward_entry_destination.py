@@ -28,9 +28,11 @@ def run_entry(monkeypatch, after_click):
         return rewards if after_click(len(frames)) else main
 
     client = SimpleNamespace(screenshot=screenshot, tap=lambda *xy: taps.append(xy))
+    monkeypatch.setattr('naruto_daily.runner.handle_free_recruit',
+                        lambda device, action, **kwargs: device.tap(100, 200))
     entry = json.loads((ROOT / 'config.example.json').read_text(encoding='utf-8'))['tasks']['recruit'][1]
     runner = ActionRunner(client, asset_root=ROOT, sleep=delays.append)
-    return runner, [entry, dict(type='tap', x=100, y=200)], taps, frames, delays
+    return runner, [entry, dict(type='handle_free_recruit')], taps, frames, delays
 
 
 def test_does_not_advance_when_entry_click_never_opens_reward_cards(monkeypatch):

@@ -133,7 +133,7 @@ def test_takeout_missing_claim_state_cannot_be_treated_as_finished():
 
 def test_free_text_numbers_and_coordinate_prompts_keep_the_generation_path():
     for prompt in (
-        prompts.ACCOUNT_NICKNAME, prompts.FREE_RECRUIT, prompts.SECRET_REALM_TICKETS,
+        prompts.FREE_RECRUIT, prompts.SECRET_REALM_TICKETS,
         prompts.SECRET_BATTLE_REALM, prompts.SURVIVAL_RESET_COUNT,
         prompts.EQUIPMENT, prompts.EQUIPMENT_STAMINA, prompts.EQUIPMENT_SWEEP_RESULT,
     ):

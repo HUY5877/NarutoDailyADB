@@ -139,7 +139,7 @@ def recovery_actions(scene):
         type='return_to_main', max_rounds=5, idle_rounds=2, poll_seconds=1,
         pre_click_wait_seconds=1, post_click_wait_seconds=1,
         main_page_marker=target('home'), close_target=target('close'),
-    ), dict(type='tap', x=NEXT_POINT[0], y=NEXT_POINT[1])]
+    ), dict(type='handle_free_recruit')]
 
 
 def observe_recovery(monkeypatch, scene):
@@ -152,6 +152,8 @@ def observe_recovery(monkeypatch, scene):
         # 回主实现沿用原模块；这里只核对一次调用、预算恢复和下一动作。
 
     monkeypatch.setattr(runner, 'return_to_main', return_home)
+    monkeypatch.setattr(runner, 'handle_free_recruit',
+                        lambda device, action, **kwargs: device.tap(*NEXT_POINT))
     return budgets
 
 

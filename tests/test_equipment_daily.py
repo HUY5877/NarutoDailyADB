@@ -615,8 +615,9 @@ def test_new_modules_dispatch_and_continue_to_next_task(monkeypatch, name):
     import naruto_daily.runner as runner
     seen = []
     monkeypatch.setattr(runner, 'handle_' + name, lambda *a, **kw: seen.append(name))
+    monkeypatch.setattr(runner, 'handle_free_recruit', lambda device, action, **kwargs: device.tap(1, 2))
     client = Client()
-    runner.ActionRunner(client).run([dict(type='handle_' + name), dict(type='tap', x=1, y=2)])
+    runner.ActionRunner(client).run([dict(type='handle_' + name), dict(type='handle_free_recruit')])
     assert seen == [name]
     assert client.taps == [(1, 2)]
 

@@ -267,7 +267,7 @@ def test_action_runner_reports_progress_without_changing_actions():
     events = []
     with forward_task_logs(events.append):
         summary = ActionRunner(object(), dry_run=True).run([
-            {"type": "tap", "x": 100, "y": 200},
+            {"type": "return_to_main"},
             {"type": "wait", "seconds": 1},
         ])
     assert summary.action_count == 2
@@ -334,7 +334,7 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
             from naruto_daily.runner import ActionRunner
 
             assert json.loads(output.getvalue().splitlines()[-1])["type"] == "logged_in"
-            ActionRunner(object(), dry_run=True).run([{"type": "back"}])
+            ActionRunner(object(), dry_run=True).run([{"type": "wait", "seconds": 1}])
             return 1
 
     monkeypatch.setattr(ldplayer_worker, "_load_dependencies", load_dependencies)
@@ -365,7 +365,7 @@ def test_worker_forwards_logs_throughout_lifecycle_and_keeps_prints_off_protocol
     assert "legacy dependency print" in terminal and "legacy allocate print" in terminal
     assert "INFO import dependencies" in terminal
     assert "INFO fetch qr" in terminal and "INFO finish login" in terminal
-    assert "INFO 动作 1/1：返回" in terminal
+    assert "INFO 动作 1/1：等待" in terminal
 
 
 def test_log_and_stage_events_share_an_atomic_output_writer():
