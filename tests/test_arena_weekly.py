@@ -65,6 +65,25 @@ def test_weekly_runs_only_its_entry_then_repeats_duel_for_forty_minutes(tmp_path
     assert current_execution() is None
 
 
+def test_weekly_battle_is_one_monitored_module_for_the_whole_forty_minutes(tmp_path, monkeypatch):
+    from naruto_daily.common.module_reporting import module_reporting
+    session, clock, _ = weekly_session(tmp_path)
+    session._logged_in = True
+    events = []
+
+    def battle(*args, **kwargs):
+        assert events[-1]['name'] == 'arena_weekly'
+        assert events[-1]['state'] == 'started'
+        clock.sleep(600)
+        check_execution()
+
+    monkeypatch.setattr(daily, 'run_duel_battle', battle)
+    with module_reporting(events.append):
+        session.run_daily(clock() + 60)
+    weekly = [event for event in events if event['name'] == 'arena_weekly']
+    assert [event['state'] for event in weekly] == ['started', 'finished']
+
+
 @pytest.mark.parametrize('error', [AdbError('input failed'), RuntimeError('failed'), DailyDeadlineExceeded('early'),
                                   TimeoutError('early'), subprocess.TimeoutExpired('adb', 20)])
 def test_weekly_does_not_hide_errors_before_its_deadline(tmp_path, monkeypatch, error):

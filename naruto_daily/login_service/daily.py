@@ -16,6 +16,7 @@ import numpy as np
 
 from naruto_daily.common.adb_client import AdbClient, CommandResult
 from naruto_daily.common.execution import DailyDeadlineExceeded, current_phase_execution, execution_scope
+from naruto_daily.common.module_reporting import module_scope
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import find_template_in_png
 from naruto_daily.battle import run_duel_battle
@@ -226,7 +227,8 @@ class DailySession:
             self._runner().run(actions)
             LOGGER.info("登录收尾动作已完成，额外复核主界面；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
             images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
-            images.wait_for(self._main_marker, timeout_seconds=self._remaining(), poll_seconds=1)
+            with module_scope('return_to_main'):
+                images.wait_for(self._main_marker, timeout_seconds=self._remaining(), poll_seconds=1)
             self._remaining()
             self._logged_in = True
 
@@ -253,7 +255,9 @@ class DailySession:
         LOGGER.info('开始决斗场周胜战斗，从本次模块调用起计时 40 分钟，到时结束执行进程')
         battle = dict(timeout_seconds=ARENA_WEEKLY_SECONDS, tap_interval_seconds=0, end_targets=[])
         try:
-            with execution_scope(battle_deadline, clock=self._clock, sleep=self._sleep_impl):
+            with module_scope('arena_weekly'), execution_scope(
+                battle_deadline, clock=self._clock, sleep=self._sleep_impl,
+            ):
                 while True:
                     run_duel_battle(self.client, battle, template_matcher=self._match,
                                     asset_root=self.asset_root, sleep=self._sleep, clock=self._clock)

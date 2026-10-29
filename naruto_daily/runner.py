@@ -8,6 +8,7 @@ from typing import Callable, Sequence
 
 from naruto_daily.common.adb_client import AdbClient
 from naruto_daily.common.execution import action_with_execution_budget, check_execution, execution_sleep
+from naruto_daily.common.module_reporting import module_scope
 from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.reward_button_cache import reward_button_cache_scope
 from naruto_daily.common.visual import VisualError, find_template_in_png
@@ -117,138 +118,139 @@ class ActionRunner:
                 LOGGER.info("已完成任务后未紧跟对应处理动作，不继续保留跳过标记")
                 skip_action_type = None
                 completed_card_name = ""
-            if action_type == "tap":
-                LOGGER.info("点击坐标：(%d, %d)", action["x"], action["y"])
-                self.client.tap(action["x"], action["y"])
-            elif action_type == "swipe":
-                self.client.swipe(action["x1"], action["y1"], action["x2"], action["y2"], action["duration_ms"])
-            elif action_type == "back":
-                LOGGER.info("发送安卓返回键")
-                self.client.back()
-            elif action_type == "wait":
-                LOGGER.info("等待 %.2f 秒", float(action["seconds"]))
-                self.sleep(float(action["seconds"]))
-            elif action_type == "optional_template_tap":
-                center, score = images.find(action)
-                LOGGER.info("模板相似度：%.3f，阈值：%.3f", score, float(action["threshold"]))
-                if center is None:
-                    LOGGER.info("未发现领取按钮，跳过")
-                else:
-                    LOGGER.info("发现领取按钮，点击坐标：(%d, %d)", center[0], center[1])
-                    self.client.tap(*center)
-            elif action_type == "popup_cleanup":
-                cleanup_popups(
-                    self.client,
-                    action,
-                    template_matcher=self.template_matcher,
-                    asset_root=self.asset_root,
-                    sleep=self.sleep,
-                )
-            elif action_type == "return_to_main":
-                return_to_main(
-                    self.client,
-                    action,
-                    template_matcher=self.template_matcher,
-                    asset_root=self.asset_root,
-                    sleep=self.sleep,
-                )
-            elif action_type in {"required_template_tap", "main_menu_tap"}:
-                required_template_tap(self.client, action, template_matcher=self.template_matcher,
+            with module_scope(action_type):
+                if action_type == "tap":
+                    LOGGER.info("点击坐标：(%d, %d)", action["x"], action["y"])
+                    self.client.tap(action["x"], action["y"])
+                elif action_type == "swipe":
+                    self.client.swipe(action["x1"], action["y1"], action["x2"], action["y2"], action["duration_ms"])
+                elif action_type == "back":
+                    LOGGER.info("发送安卓返回键")
+                    self.client.back()
+                elif action_type == "wait":
+                    LOGGER.info("等待 %.2f 秒", float(action["seconds"]))
+                    self.sleep(float(action["seconds"]))
+                elif action_type == "optional_template_tap":
+                    center, score = images.find(action)
+                    LOGGER.info("模板相似度：%.3f，阈值：%.3f", score, float(action["threshold"]))
+                    if center is None:
+                        LOGGER.info("未发现领取按钮，跳过")
+                    else:
+                        LOGGER.info("发现领取按钮，点击坐标：(%d, %d)", center[0], center[1])
+                        self.client.tap(*center)
+                elif action_type == "popup_cleanup":
+                    cleanup_popups(
+                        self.client,
+                        action,
+                        template_matcher=self.template_matcher,
+                        asset_root=self.asset_root,
+                        sleep=self.sleep,
+                    )
+                elif action_type == "return_to_main":
+                    return_to_main(
+                        self.client,
+                        action,
+                        template_matcher=self.template_matcher,
+                        asset_root=self.asset_root,
+                        sleep=self.sleep,
+                    )
+                elif action_type in {"required_template_tap", "main_menu_tap"}:
+                    required_template_tap(self.client, action, template_matcher=self.template_matcher,
+                                          asset_root=self.asset_root, sleep=self.sleep)
+                elif action_type == "authorize_account":
+                    authorize_account(self.client, action, template_matcher=self.template_matcher,
                                       asset_root=self.asset_root, sleep=self.sleep)
-            elif action_type == "authorize_account":
-                authorize_account(self.client, action, template_matcher=self.template_matcher,
-                                  asset_root=self.asset_root, sleep=self.sleep)
-            elif action_type == "finish_login_authorization":
-                finish_login_authorization(
-                    self.client,
-                    action,
-                    template_matcher=self.template_matcher,
-                    asset_root=self.asset_root,
-                    sleep=self.sleep,
-                )
-            elif action_type == "find_card_and_click":
-                navigation = navigate_to_card(
-                    self.client,
-                    action,
-                    template_matcher=self.template_matcher,
-                    asset_root=self.asset_root,
-                    sleep=self.sleep,
-                )
-                if navigation.completed:
-                    skip_action_type = action.get("completed_skip_type", "handle_organization_prayer")
-                    completed_card_name = action["name"]
-            elif action_type == "handle_organization_prayer":
-                handle_organization_prayer(
-                    self.client,
-                    action,
-                    template_matcher=self.template_matcher,
-                    asset_root=self.asset_root,
-                    sleep=self.sleep,
-                )
-            elif action_type == "handle_coin_fortune":
-                handle_coin_fortune(
-                    self.client,
-                    action,
-                    template_matcher=self.template_matcher,
-                    asset_root=self.asset_root,
-                    sleep=self.sleep,
-                )
-            elif action_type == "prepare_arena_matchmaking":
-                prepare_arena_matchmaking(
-                    self.client, action, template_matcher=self.template_matcher,
-                    asset_root=self.asset_root, sleep=self.sleep,
-                )
-            elif action_type == "enter_arena":
-                enter_arena(
-                    self.client, action, template_matcher=self.template_matcher,
-                    asset_root=self.asset_root, sleep=self.sleep,
-                )
-            elif action_type == "enter_secret_realm":
-                entered = enter_secret_realm(self.client, action, template_matcher=self.template_matcher,
-                                             asset_root=self.asset_root, sleep=self.sleep)
-                if not entered:
-                    skip_action_type = "handle_secret_realm"
-                    completed_card_name = "秘境探险"
-            elif action_type == "handle_secret_realm":
-                handle_secret_realm(self.client, action, template_matcher=self.template_matcher,
-                                    asset_root=self.asset_root, sleep=self.sleep,
-                                    secret_realm_once=self.user_options['secretRealmMode'] == 'once')
-                # 秘境处理器正常返回代表已用完券，或已按用户设置完成首次成功及结算收尾。
-                action_count = index
-                LOGGER.info('秘境处理已完成，结束本次任务，跳过后续 %d 个动作', len(actions) - index)
-                break
-            elif action_type == "handle_abundance":
-                handle_abundance(
-                    self.client, action, template_matcher=self.template_matcher,
-                    asset_root=self.asset_root, sleep=self.sleep,
-                )
-            elif action_type == "handle_survival_challenge":
-                handle_survival_challenge(
-                    self.client,
-                    action,
-                    template_matcher=self.template_matcher,
-                    asset_root=self.asset_root,
-                    sleep=self.sleep,
-                )
-            elif action_type == "handle_squad_assault":
-                handle_squad_assault(
-                    self.client, action, template_matcher=self.template_matcher,
-                    asset_root=self.asset_root, sleep=self.sleep,
-                )
-            elif action_type in ("handle_ichiraku_takeout", "handle_equipment_upgrade"):
-                handler = handle_ichiraku_takeout if action_type == "handle_ichiraku_takeout" else handle_equipment_upgrade
-                handler(self.client, action, template_matcher=self.template_matcher,
-                        asset_root=self.asset_root, sleep=self.sleep)
-            elif action_type == "handle_free_recruit":
-                handle_free_recruit(
-                    self.client,
-                    action,
-                    template_matcher=self.template_matcher,
-                    asset_root=self.asset_root,
-                    sleep=self.sleep,
-                )
-            else:
-                raise ValueError(f"不支持的动作类型：{action_type!r}")
+                elif action_type == "finish_login_authorization":
+                    finish_login_authorization(
+                        self.client,
+                        action,
+                        template_matcher=self.template_matcher,
+                        asset_root=self.asset_root,
+                        sleep=self.sleep,
+                    )
+                elif action_type == "find_card_and_click":
+                    navigation = navigate_to_card(
+                        self.client,
+                        action,
+                        template_matcher=self.template_matcher,
+                        asset_root=self.asset_root,
+                        sleep=self.sleep,
+                    )
+                    if navigation.completed:
+                        skip_action_type = action.get("completed_skip_type", "handle_organization_prayer")
+                        completed_card_name = action["name"]
+                elif action_type == "handle_organization_prayer":
+                    handle_organization_prayer(
+                        self.client,
+                        action,
+                        template_matcher=self.template_matcher,
+                        asset_root=self.asset_root,
+                        sleep=self.sleep,
+                    )
+                elif action_type == "handle_coin_fortune":
+                    handle_coin_fortune(
+                        self.client,
+                        action,
+                        template_matcher=self.template_matcher,
+                        asset_root=self.asset_root,
+                        sleep=self.sleep,
+                    )
+                elif action_type == "prepare_arena_matchmaking":
+                    prepare_arena_matchmaking(
+                        self.client, action, template_matcher=self.template_matcher,
+                        asset_root=self.asset_root, sleep=self.sleep,
+                    )
+                elif action_type == "enter_arena":
+                    enter_arena(
+                        self.client, action, template_matcher=self.template_matcher,
+                        asset_root=self.asset_root, sleep=self.sleep,
+                    )
+                elif action_type == "enter_secret_realm":
+                    entered = enter_secret_realm(self.client, action, template_matcher=self.template_matcher,
+                                                 asset_root=self.asset_root, sleep=self.sleep)
+                    if not entered:
+                        skip_action_type = "handle_secret_realm"
+                        completed_card_name = "秘境探险"
+                elif action_type == "handle_secret_realm":
+                    handle_secret_realm(self.client, action, template_matcher=self.template_matcher,
+                                        asset_root=self.asset_root, sleep=self.sleep,
+                                        secret_realm_once=self.user_options['secretRealmMode'] == 'once')
+                    # 秘境处理器正常返回代表已用完券，或已按用户设置完成首次成功及结算收尾。
+                    action_count = index
+                    LOGGER.info('秘境处理已完成，结束本次任务，跳过后续 %d 个动作', len(actions) - index)
+                    break
+                elif action_type == "handle_abundance":
+                    handle_abundance(
+                        self.client, action, template_matcher=self.template_matcher,
+                        asset_root=self.asset_root, sleep=self.sleep,
+                    )
+                elif action_type == "handle_survival_challenge":
+                    handle_survival_challenge(
+                        self.client,
+                        action,
+                        template_matcher=self.template_matcher,
+                        asset_root=self.asset_root,
+                        sleep=self.sleep,
+                    )
+                elif action_type == "handle_squad_assault":
+                    handle_squad_assault(
+                        self.client, action, template_matcher=self.template_matcher,
+                        asset_root=self.asset_root, sleep=self.sleep,
+                    )
+                elif action_type in ("handle_ichiraku_takeout", "handle_equipment_upgrade"):
+                    handler = handle_ichiraku_takeout if action_type == "handle_ichiraku_takeout" else handle_equipment_upgrade
+                    handler(self.client, action, template_matcher=self.template_matcher,
+                            asset_root=self.asset_root, sleep=self.sleep)
+                elif action_type == "handle_free_recruit":
+                    handle_free_recruit(
+                        self.client,
+                        action,
+                        template_matcher=self.template_matcher,
+                        asset_root=self.asset_root,
+                        sleep=self.sleep,
+                    )
+                else:
+                    raise ValueError(f"不支持的动作类型：{action_type!r}")
         check_execution()
         LOGGER.info(
             "执行结束：%d 个动作", action_count,
