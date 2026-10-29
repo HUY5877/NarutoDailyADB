@@ -26,40 +26,60 @@ class RecordingClient:
     def back(self): self._record("back")
 
 
-def test_optional_image_retry_has_no_aggregate_wait_limit():
-    actions = [{"type": "wait", "seconds": 300}] * 4 + [{
-        "type": "optional_template_tap", "template": "button.png",
-        "left": 0, "top": 0, "right": 100, "bottom": 100, "threshold": 0.85,
-    }]
-    summary = ActionRunner(RecordingClient(), dry_run=True).run(actions)
-    assert summary.action_count == 5
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("action", [
+    {"type": "tap", "x": 1, "y": 2},
+    {"type": "swipe", "x1": 1, "y1": 2, "x2": 3, "y2": 4, "duration_ms": 500},
+    {"type": "back"},
+    {"type": "optional_template_tap", "template": "old.png", "left": 0, "top": 0,
+     "right": 100, "bottom": 100, "threshold": 0.85},
+    {"type": "authorize_account"},
+    {"type": "finish_login_authorization"},
+])
+def test_runner_rejects_removed_action_types_without_device_input(monkeypatch, action, dry_run):
+    from naruto_daily import runner
+
+    client = RecordingClient()
+    client.screenshot = lambda: b"screen"
+    for name in ("authorize_account", "finish_login_authorization"):
+        monkeypatch.setattr(runner, name, lambda *a, **kw: client._record("authorization"), raising=False)
+
+    with pytest.raises(ValueError, match="不支持的动作类型"):
+        ActionRunner(client, dry_run=dry_run, sleep=lambda _: None,
+                     template_matcher=lambda *a: ((10, 20), 0.99)).run([action])
+
+    assert client.calls == []
 
 
 def test_runner_executes_actions_in_order_and_reports_summary():
     client = RecordingClient()
-    sleeps = []
-    runner = ActionRunner(client, sleep=sleeps.append)
+    client.screenshot = lambda: b"screen"
+    events = []
+    client.tap = lambda x, y: events.append(("tap", x, y))
+    runner = ActionRunner(client, sleep=lambda seconds: events.append(("wait", seconds)),
+                          template_matcher=lambda *args: ((10, 20), 0.99))
     actions = [
-        {"type": "tap", "x": 10, "y": 20},
+        required_action(),
         {"type": "wait", "seconds": 1.25},
-        {"type": "swipe", "x1": 1, "y1": 2, "x2": 3, "y2": 4, "duration_ms": 500},
-        {"type": "back"},
+        required_action(),
     ]
 
     summary = runner.run(actions)
 
-    assert client.calls == [("tap", 10, 20), ("swipe", 1, 2, 3, 4, 500), ("back",)]
-    assert sleeps == [1.25]
-    assert summary.action_count == 4
+    assert events == [
+        ("wait", 3.0), ("tap", 10, 20), ("wait", 3.0), ("wait", 1.25),
+        ("wait", 3.0), ("tap", 10, 20), ("wait", 3.0),
+    ]
+    assert summary.action_count == 3
 
 
 def test_dry_run_suppresses_input_and_sleep():
     client = RecordingClient()
     sleeps = []
     summary = ActionRunner(client, sleep=sleeps.append, dry_run=True).run([
-        {"type": "tap", "x": 10, "y": 20},
+        required_action(),
         {"type": "wait", "seconds": 2},
-        {"type": "back"},
+        {"type": "return_to_main"},
     ])
 
     assert client.calls == []
@@ -69,12 +89,16 @@ def test_dry_run_suppresses_input_and_sleep():
 
 def test_adb_failure_aborts_remaining_actions():
     client = RecordingClient(fail_on="tap")
-    runner = ActionRunner(client, sleep=lambda _: None)
+    client.screenshot = lambda: b"screen"
+    waits = []
+    runner = ActionRunner(client, sleep=waits.append,
+                          template_matcher=lambda *args: ((1, 2), 0.99))
 
     with pytest.raises(AdbError, match="lost device"):
-        runner.run([{"type": "tap", "x": 1, "y": 2}, {"type": "back"}])
+        runner.run([required_action(), {"type": "wait", "seconds": 99}])
 
     assert client.calls == []
+    assert waits == [3.0]
 
 
 def test_runner_dry_run_accepts_combined_wait_actions():
@@ -103,40 +127,11 @@ def test_runner_accepts_configured_login_prayer_and_recruit_flow():
 def test_runner_executes_more_than_one_hundred_actions_without_wait_budget():
     client = RecordingClient()
     sleeps = []
-    actions = [{"type": "wait", "seconds": 300}, {"type": "back"}] * 101
+    actions = [{"type": "wait", "seconds": 300}, {"type": "wait", "seconds": 1}] * 101
     summary = ActionRunner(client, sleep=sleeps.append).run(actions)
     assert summary.action_count == 202
-    assert sleeps == [300] * 101
-    assert client.calls == [("back",)] * 101
-
-
-def test_optional_template_tap_clicks_only_when_match_is_found(caplog):
-    client = RecordingClient()
-    client.screenshot = lambda: b"screen"
-    matches = iter([((957, 906), 0.94), (None, 0.42), (None, 0.42)])
-
-    def matcher(png, template_path, roi, threshold):
-        assert png == b"screen"
-        assert template_path == Path("assets") / "claim_button.png"
-        assert roi == (780, 820, 1140, 1000)
-        assert threshold == 0.85
-        return next(matches)
-
-    action = {
-        "type": "optional_template_tap",
-        "template": "claim_button.png",
-        "left": 780, "top": 820, "right": 1140, "bottom": 1000,
-        "threshold": 0.85,
-    }
-    runner = ActionRunner(client, sleep=lambda _: None, template_matcher=matcher, asset_root=Path("assets"))
-
-    with caplog.at_level(logging.INFO, logger="naruto_daily"):
-        runner.run([action, action])
-
-    assert client.calls == [("tap", 957, 906)]
-    assert "0.940" in caplog.text
-    assert "0.420" in caplog.text
-    assert "跳过" in caplog.text
+    assert sleeps == [300, 1] * 101
+    assert client.calls == []
 
 
 def required_action():
@@ -184,16 +179,18 @@ def test_required_template_tap_waits_until_button_appears(caplog):
 def test_required_template_tap_times_out_and_stops_following_actions():
     client = RecordingClient()
     client.screenshot = lambda: b"screen"
+    waits = []
     runner = ActionRunner(
         client,
-        sleep=lambda _: None,
+        sleep=waits.append,
         template_matcher=lambda *args: (None, 0.20),
     )
 
     with pytest.raises(VisualError, match="等待开始游戏按钮超时"):
-        runner.run([required_action(), {"type": "tap", "x": 1, "y": 2}])
+        runner.run([required_action(), {"type": "wait", "seconds": 99}])
 
     assert client.calls == []
+    assert 99 not in waits
 
 
 def test_required_daily_action_uses_one_second_defaults():
@@ -235,36 +232,6 @@ def test_repeated_unstable_required_button_respects_timeout():
     assert waits == [3.0]
 
 
-def test_action_runner_dispatches_optional_second_authorization():
-    client = RecordingClient()
-    client.screenshot = lambda: b"screen"
-    action = {
-        "type": "finish_login_authorization",
-        "timeout_seconds": 4,
-        "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
-        "second_authorization": {
-            "name": "第二次授权同意按钮", "template": "second.png",
-            "left": 700, "top": 700, "right": 1220, "bottom": 930,
-            "threshold": 0.85,
-        },
-        "start_game": {
-            "name": "开始游戏按钮", "template": "start.png",
-            "left": 650, "top": 780, "right": 1270, "bottom": 1020,
-            "threshold": 0.85,
-        },
-    }
-
-    ActionRunner(
-        client,
-        sleep=lambda _: None,
-        template_matcher=lambda *args: ((956, 911), 0.99),
-    ).run([action])
-
-    assert client.calls == [("tap", 956, 911)]
-
-
 def test_action_runner_dispatches_card_navigation():
     client = RecordingClient()
     client.screenshot = lambda: b"screen"
@@ -294,6 +261,7 @@ def test_action_runner_dispatches_card_navigation():
 
 def test_completed_card_skips_only_prayer_handler_and_keeps_later_tasks(caplog):
     client = RecordingClient()
+    waits = []
     client.screenshot = lambda: b"screen"
     action = {
         "type": "find_card_and_click", "name": "组织祈福", "template": "organization.png",
@@ -310,15 +278,16 @@ def test_completed_card_skips_only_prayer_handler_and_keeps_later_tasks(caplog):
     with caplog.at_level(logging.INFO, logger="naruto_daily"):
         ActionRunner(
             client,
-            sleep=lambda _: None,
+            sleep=waits.append,
             template_matcher=lambda *args: next(results),
         ).run([
             action,
             {"type": "handle_organization_prayer"},
-            {"type": "tap", "x": 1, "y": 2},
+            {"type": "wait", "seconds": 99},
         ])
 
-    assert client.calls == [("tap", 1, 2)]
+    assert client.calls == []
+    assert waits[-1] == 99
     assert "组织祈福今日已完成，跳过对应页面处理" in caplog.text
 
 
@@ -453,6 +422,7 @@ def test_action_runner_dispatches_two_free_fortune_clicks():
 
 def test_completed_fortune_card_skips_only_fortune_handler():
     client = RecordingClient()
+    waits = []
     client.screenshot = lambda: b"screen"
     card = {
         "type": "find_card_and_click", "name": "进行1次金币招财", "template": "fortune.png",
@@ -469,19 +439,21 @@ def test_completed_fortune_card_skips_only_fortune_handler():
 
     ActionRunner(
         client,
-        sleep=lambda _: None,
+        sleep=waits.append,
         template_matcher=lambda *args: next(results),
     ).run([
         card,
         {"type": "handle_coin_fortune"},
-        {"type": "tap", "x": 1, "y": 2},
+        {"type": "wait", "seconds": 99},
     ])
 
-    assert client.calls == [("tap", 1, 2)]
+    assert client.calls == []
+    assert waits[-1] == 99
 
 
 def test_completed_recruit_card_skips_only_recruit_handler():
     client = RecordingClient()
+    waits = []
     client.screenshot = lambda: b"screen"
     card = {
         "type": "find_card_and_click", "name": "忍者招募", "template": "recruit.png",
@@ -498,12 +470,13 @@ def test_completed_recruit_card_skips_only_recruit_handler():
 
     ActionRunner(
         client,
-        sleep=lambda _: None,
+        sleep=waits.append,
         template_matcher=lambda *args: next(results),
     ).run([
         card,
         {"type": "handle_free_recruit"},
-        {"type": "tap", "x": 1, "y": 2},
+        {"type": "wait", "seconds": 99},
     ])
 
-    assert client.calls == [("tap", 1, 2)]
+    assert client.calls == []
+    assert waits[-1] == 99

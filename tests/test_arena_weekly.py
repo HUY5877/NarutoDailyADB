@@ -17,7 +17,7 @@ from naruto_daily.runner import ActionRunner
 from naruto_daily.login_service import daily, ldplayer_worker, runtime as runtime_module
 from naruto_daily.login_service.models import parse_queue_task
 from naruto_daily.login_service.user_options import parse_user_options
-from test_login_service_daily import session_for
+from test_login_service_daily import daily_action, session_for
 from test_login_service_ldplayer_worker import daily_dependencies, request
 from test_login_service_terminal_logs import make_runtime, PNG, SUCCESS_PROTOCOL, no_reader_tasks, eventually
 from test_login_service_user_options import queue_body
@@ -40,7 +40,7 @@ def test_unknown_main_tasks_are_rejected(main_task):
 
 def weekly_session(tmp_path):
     return session_for(tmp_path, user_options={'mainTask': 'arena_weekly'}, change=lambda data: data['tasks'].update(
-        arena_weekly=[{'type': 'tap', 'x': 123, 'y': 456}, {'type': 'wait', 'seconds': 45}]))
+        arena_weekly=[daily_action(123), {'type': 'wait', 'seconds': 45}]))
 
 
 def test_weekly_runs_only_its_entry_then_repeats_duel_for_forty_minutes(tmp_path, monkeypatch):
@@ -61,8 +61,27 @@ def test_weekly_runs_only_its_entry_then_repeats_duel_for_forty_minutes(tmp_path
     assert starts == [before + 45 + 2400]
     assert calls == [before + 45 + offset for offset in (0, 600, 1200, 1800)]
     assert clock() == starts[0]
-    assert [cmd[-2:] for cmd, _ in commands if 'tap' in cmd] == [['123', '456']]
+    assert [cmd[-2:] for cmd, _ in commands if 'tap' in cmd] == [['123', '0']]
     assert current_execution() is None
+
+
+def test_weekly_battle_is_one_monitored_module_for_the_whole_forty_minutes(tmp_path, monkeypatch):
+    from naruto_daily.common.module_reporting import module_reporting
+    session, clock, _ = weekly_session(tmp_path)
+    session._logged_in = True
+    events = []
+
+    def battle(*args, **kwargs):
+        assert events[-1]['name'] == 'arena_weekly'
+        assert events[-1]['state'] == 'started'
+        clock.sleep(600)
+        check_execution()
+
+    monkeypatch.setattr(daily, 'run_duel_battle', battle)
+    with module_reporting(events.append):
+        session.run_daily(clock() + 60)
+    weekly = [event for event in events if event['name'] == 'arena_weekly']
+    assert [event['state'] for event in weekly] == ['started', 'finished']
 
 
 @pytest.mark.parametrize('error', [AdbError('input failed'), RuntimeError('failed'), DailyDeadlineExceeded('early'),

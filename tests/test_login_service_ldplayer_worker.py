@@ -308,6 +308,37 @@ def daily_dependencies(calls):
     return Manager, DriverError, Device, fetch
 
 
+def test_daily_worker_binds_module_events_to_its_device(monkeypatch, tmp_path):
+    from naruto_daily.common.module_reporting import module_scope
+
+    class Session:
+        def __init__(self, **kwargs):
+            pass
+
+        def wait_for_authorization(self, deadline):
+            pass
+
+        def finish_login(self, deadline):
+            with module_scope('return_to_main'):
+                pass
+
+        def run_daily(self, deadline):
+            with module_scope('handle_free_recruit'):
+                pass
+            return 1
+
+    monkeypatch.setattr(ldplayer_worker, '_load_daily_session', lambda: Session)
+    code, events = invoke(monkeypatch,
+        request(dailyConfigPath=str(tmp_path / 'daily.json'), dailyTimeoutSeconds=3000),
+        daily_dependencies([]))
+    assert code == 0
+    assert [event for event in events if event['type'] == 'module'] == [
+        {'type': 'module', 'state': state, 'name': name, 'serial': 'emulator-5570'}
+        for name in ('return_to_main', 'handle_free_recruit')
+        for state in ('started', 'finished')
+    ]
+
+
 @pytest.mark.parametrize('completed_battles,error,expected_error', [
     (0, None, None),
     (4, None, None),

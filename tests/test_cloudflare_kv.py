@@ -238,12 +238,12 @@ def test_child_inherits_models_without_fetching_cloud_or_loading_local_secrets(m
     child['REDIS_URL'] = 'redis://inherited.invalid/1'
     assert child['APP_ENV'] == 'test'
     assert child['MULTIMODAL_ROUTING_COUNTER_KEY'] == 'private-profile-counter'
-    (tmp_path / '.env').write_text('APP_ENV=prod\nLOGIN_ACCOUNT_NAME=local-secret\n', encoding='utf-8')
+    (tmp_path / '.env').write_text('APP_ENV=prod\nADB_PATH=local-adb.exe\n', encoding='utf-8')
     monkeypatch.setattr(os, 'environ', child)
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: pytest.fail('Child must reuse parent configuration'))
     assert environment.read_environment()['YUWAN_API_KEY'] == 'inherited-key'
     assert 'OSS_ACCESS_KEY_SECRET' not in environment.read_environment()
-    assert 'LOGIN_ACCOUNT_NAME' not in environment.read_environment()
+    assert 'ADB_PATH' not in environment.read_environment()
 
 
 def test_entrypoint_fetches_kv_before_redis_validation_and_service_creation(monkeypatch, tmp_path):

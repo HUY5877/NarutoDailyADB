@@ -90,7 +90,7 @@ def test_secret_realm_runs_two_battles_then_zero_completes_without_returning_to_
     monkeypatch.setattr(runner, "return_to_main", lambda *a, **kw: returned.append(True))
     caplog.set_level(logging.INFO, logger='naruto_daily')
     summary = runner.ActionRunner(client, template_matcher=secret_matcher, sleep=sleeps.append).run([
-        secret_action(), {"type": "return_to_main"}, {"type": "tap", "x": 1, "y": 1}])
+        secret_action(), {"type": "return_to_main"}, {"type": "wait", "seconds": 99}])
     assert client.taps == [(1443, 791), (1787, 920), (1787, 920)]
     assert len(battles) == 2 and returned == [] and len(calls) == 5
     assert summary.action_count == 1
@@ -119,6 +119,7 @@ def test_confirmed_zero_finishes_run_without_closing_room(monkeypatch, counts):
     from naruto_daily.secret_realm import handler
 
     client = SecretClient()
+    waits = []
     calls = fake_model(monkeypatch, counts)
 
     def unexpected(*args, **kwargs):
@@ -126,14 +127,15 @@ def test_confirmed_zero_finishes_run_without_closing_room(monkeypatch, counts):
 
     monkeypatch.setattr(handler, 'run_battle', unexpected)
     monkeypatch.setattr(runner, 'return_to_main', unexpected)
-    summary = runner.ActionRunner(client, template_matcher=secret_matcher, sleep=lambda _: None).run([
+    summary = runner.ActionRunner(client, template_matcher=secret_matcher, sleep=waits.append).run([
         {'type': 'wait', 'seconds': 0}, secret_action(), {'type': 'return_to_main'},
-        {'type': 'tap', 'x': 1, 'y': 1},
+        {'type': 'wait', 'seconds': 99},
     ])
 
     assert summary.action_count == 2
     assert client.taps == [(1443, 791)]
     assert len(calls) == len(counts)
+    assert 99 not in waits
 
 
 def test_failed_battle_does_not_repeat_deploy(monkeypatch):
@@ -173,12 +175,14 @@ def test_positive_tickets_continue_without_requiring_a_decrease(monkeypatch, cou
 def test_unreadable_count_never_becomes_zero_or_deploys(monkeypatch):
     from naruto_daily import runner
     client = SecretClient()
+    waits = []
     fake_model(monkeypatch, [None] * 6)
     with pytest.raises(MultimodalError, match="调用上限"):
-        runner.ActionRunner(client, template_matcher=secret_matcher, sleep=lambda _: None).run([
-            secret_action(), {'type': 'tap', 'x': 1, 'y': 1},
+        runner.ActionRunner(client, template_matcher=secret_matcher, sleep=waits.append).run([
+            secret_action(), {'type': 'wait', 'seconds': 99},
         ])
     assert client.taps == [(1443, 791)]
+    assert 99 not in waits
 
 
 def test_secret_realm_is_last_in_login_and_all_tasks():

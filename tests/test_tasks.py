@@ -12,32 +12,32 @@ def settings_with_tasks(tasks):
 
 def test_each_task_is_independently_selectable():
     tasks = {
-        "login": [{"type": "tap", "x": 0, "y": 0}],
-        "organization_pray": [{"type": "tap", "x": 5, "y": 5}],
-        "sign_in": [{"type": "tap", "x": 1, "y": 1}],
-        "stamina": [{"type": "tap", "x": 2, "y": 2}],
-        "recruit": [{"type": "tap", "x": 3, "y": 3}],
-        "abundance": [{"type": "tap", "x": 4, "y": 4}],
+        "login": [{"type": "wait", "seconds": 0}],
+        "organization_pray": [{"type": "wait", "seconds": 5}],
+        "sign_in": [{"type": "wait", "seconds": 1}],
+        "stamina": [{"type": "wait", "seconds": 2}],
+        "recruit": [{"type": "wait", "seconds": 3}],
+        "abundance": [{"type": "wait", "seconds": 4}],
     }
     settings = settings_with_tasks(tasks)
 
-    assert build_task(settings, "recruit") == [{"type": "tap", "x": 3, "y": 3}]
+    assert build_task(settings, "recruit") == [{"type": "wait", "seconds": 3}]
 
 
 def test_login_main_flow_continues_to_prayer_recruit_and_abundance_after_cleanup():
     tasks = {
         "login": [{"type": "popup_cleanup", "rounds": 1}],
-        "organization_pray": [{"type": "tap", "x": 5, "y": 5}],
+        "organization_pray": [{"type": "handle_organization_prayer"}],
         "sign_in": [],
         "stamina": [],
-        "recruit": [{"type": "tap", "x": 3, "y": 3}],
+        "recruit": [{"type": "handle_free_recruit"}],
         "abundance": [{"type": "handle_abundance"}, {"type": "return_to_main"}],
     }
 
     assert build_task(settings_with_tasks(tasks), "login") == [
         {"type": "popup_cleanup", "rounds": 1},
-        {"type": "tap", "x": 5, "y": 5},
-        {"type": "tap", "x": 3, "y": 3},
+        {"type": "handle_organization_prayer"},
+        {"type": "handle_free_recruit"},
         {"type": "handle_abundance"},
         {"type": "return_to_main"},
     ]
@@ -101,11 +101,11 @@ def test_example_squad_route_uses_reward_card_skip_and_returns_before_secret_rea
 
 
 def test_build_all_preserves_approved_order():
-    tasks = {name: [{"type": "tap", "x": index, "y": 0}] for index, name in enumerate(
+    tasks = {name: [{"type": "wait", "seconds": index}] for index, name in enumerate(
         ["login", "organization_pray", "sign_in", "stamina", "recruit", "abundance"], start=1
     )}
 
-    assert [action["x"] for action in build_all(settings_with_tasks(tasks))] == [1, 2, 5, 3, 4, 6]
+    assert [action["seconds"] for action in build_all(settings_with_tasks(tasks))] == [1, 2, 5, 3, 4, 6]
 
 
 def test_build_all_accepts_many_actions_and_large_total_wait():

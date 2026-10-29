@@ -20,7 +20,7 @@ def valid_payload() -> dict:
         "tasks": {
             "login": [],
             "organization_pray": [],
-            "sign_in": [{"type": "tap", "x": 100, "y": 200}, {"type": "wait", "seconds": 1.5}],
+            "sign_in": [{"type": "wait", "seconds": 1.5}],
             "stamina": [],
             "recruit": [],
             "abundance": [],
@@ -33,7 +33,75 @@ def test_load_settings_returns_validated_values(tmp_path):
 
     assert settings.adb_path == Path("E:/LDPlayer9/adb.exe")
     assert (settings.screen_width, settings.screen_height) == (1280, 720)
-    assert settings.tasks["sign_in"][0] == {"type": "tap", "x": 100, "y": 200}
+    assert settings.tasks["sign_in"][0] == {"type": "wait", "seconds": 1.5}
+
+
+@pytest.mark.parametrize('action', [
+    {'type': 'tap', 'x': 100, 'y': 200},
+    {'type': 'swipe', 'x1': 1000, 'y1': 400, 'x2': 100, 'y2': 400, 'duration_ms': 500},
+    {'type': 'back'},
+    {'type': 'optional_template_tap', 'template': 'button.png',
+     'left': 0, 'top': 0, 'right': 100, 'bottom': 100, 'threshold': .9},
+    {'type': 'authorize_account'},
+    {'type': 'finish_login_authorization'},
+])
+def test_removed_action_types_are_rejected(tmp_path, action):
+    payload = valid_payload()
+    payload['tasks']['login'] = [action]
+    with pytest.raises(ConfigError, match='不支持的动作'):
+        load_settings(write_config(tmp_path, payload))
+
+
+@pytest.mark.parametrize('prefix', [[], [{'type': 'tap', 'x': 158, 'y': 924}]])
+def test_old_login_reports_config_migration_before_resolving_removed_account_variable(tmp_path, monkeypatch, prefix):
+    from naruto_daily import config
+
+    monkeypatch.delenv('LOGIN_ACCOUNT_NAME', raising=False)
+    environment_reads = []
+
+    def read_environment():
+        environment_reads.append(True)
+        return {}
+
+    monkeypatch.setattr(config, 'read_environment', read_environment)
+    payload = valid_payload()
+    payload['tasks']['login'] = [*prefix, {
+        'type': 'authorize_account', 'account_name': '${LOGIN_ACCOUNT_NAME}',
+        'timeout_seconds': 40, 'poll_seconds': 1,
+    }]
+    with pytest.raises(ConfigError, match='不支持的动作.*config.example.json') as caught:
+        load_settings(write_config(tmp_path, payload))
+    assert 'LOGIN_ACCOUNT_NAME' not in str(caught.value)
+    assert environment_reads == []
+
+
+def test_example_login_contains_only_scan_handoff_and_main_screen_cleanup(tmp_path, monkeypatch):
+    monkeypatch.delenv('LOGIN_ACCOUNT_NAME', raising=False)
+    payload = json.loads((Path(__file__).parents[1] / 'config.example.json').read_text(encoding='utf-8'))
+    settings = load_settings(write_config(tmp_path, payload))
+    login = settings.tasks['login']
+    assert [action['type'] for action in login] == [
+        'required_template_tap', 'wait', 'popup_cleanup', 'return_to_main',
+    ]
+    assert login[0]['template'] == 'assets/start_game_button.png'
+
+
+@pytest.mark.parametrize('change,error', [
+    (lambda swipe: swipe.update(x1=1920), '坐标'),
+    (lambda swipe: swipe.update(y1=-1), '坐标'),
+    (lambda swipe: swipe.update(x2=True), '坐标'),
+    (lambda swipe: swipe.update(y2=1080), '坐标'),
+    (lambda swipe: swipe.update(duration_ms=0), 'duration_ms'),
+    (lambda swipe: swipe.update(duration_ms=True), 'duration_ms'),
+    (lambda swipe: swipe.update(x1=0), '必须向左'),
+    (lambda swipe: swipe.update(extra=True), '未知字段'),
+])
+def test_secret_entry_still_validates_its_nested_swipe(tmp_path, change, error):
+    payload = json.loads((Path(__file__).parents[1] / 'config.example.json').read_text(encoding='utf-8'))
+    action = payload['tasks']['secret_realm_farm'][0]
+    change(action['swipe'])
+    with pytest.raises(ConfigError, match=error):
+        load_settings(write_config(tmp_path, payload))
 
 
 def arena_entry_action():
@@ -216,50 +284,6 @@ def test_squad_assault_configuration_rejects_unscaled_screen(tmp_path):
         load_settings(write_config(tmp_path, payload))
 
 
-def test_optional_image_retry_has_no_task_wait_budget(tmp_path):
-    payload = valid_payload()
-    payload["tasks"]["sign_in"] = [{"type": "wait", "seconds": 300}, {
-        "type": "optional_template_tap", "template": "button.png",
-        "left": 0, "top": 0, "right": 100, "bottom": 100, "threshold": 0.85,
-    }]
-    settings = load_settings(write_config(tmp_path, payload))
-    assert len(settings.tasks["sign_in"]) == 2
-
-
-def test_login_task_accepts_real_1920_by_1080_coordinates(tmp_path):
-    payload = valid_payload()
-    payload["screen"] = {"width": 1920, "height": 1080}
-    payload["tasks"]["login"] = [
-        {"type": "tap", "x": 158, "y": 924},
-        {"type": "tap", "x": 1605, "y": 813},
-        {"type": "tap", "x": 961, "y": 834},
-        {"type": "tap", "x": 961, "y": 806},
-        {"type": "tap", "x": 961, "y": 910},
-    ]
-
-    settings = load_settings(write_config(tmp_path, payload))
-
-    assert [action["x"] for action in settings.tasks["login"]] == [158, 1605, 961, 961, 961]
-
-
-def test_optional_template_tap_validates_region_and_threshold(tmp_path):
-    payload = valid_payload()
-    payload["screen"] = {"width": 1920, "height": 1080}
-    payload["tasks"]["login"] = [{
-        "type": "optional_template_tap",
-        "template": "assets/claim_button.png",
-        "left": 780,
-        "top": 820,
-        "right": 1140,
-        "bottom": 1000,
-        "threshold": 0.85,
-    }]
-
-    settings = load_settings(write_config(tmp_path, payload))
-
-    assert settings.tasks["login"][0]["threshold"] == 0.85
-
-
 def test_popup_cleanup_accepts_two_safe_targets(tmp_path):
     payload = valid_payload()
     payload["screen"] = {"width": 1920, "height": 1080}
@@ -316,66 +340,19 @@ def test_required_template_tap_accepts_timeout_and_poll_interval(tmp_path):
     assert settings.tasks["login"][0]["post_click_wait_seconds"] == 3
 
 
-def test_finish_login_authorization_accepts_optional_second_page(tmp_path):
-    payload = valid_payload()
-    payload["screen"] = {"width": 1920, "height": 1080}
-    payload["tasks"]["login"] = [{
-        "type": "finish_login_authorization",
-        "timeout_seconds": 40,
-        "poll_seconds": 1,
-        "pre_click_wait_seconds": 3,
-        "post_click_wait_seconds": 3,
-        "second_authorization": {
-            "name": "第二次授权同意按钮",
-            "template": "assets/qq_agree_game_info.png",
-            "left": 700, "top": 700, "right": 1220, "bottom": 930,
-            "threshold": 0.85,
-        },
-        "start_game": {
-            "name": "开始游戏按钮",
-            "template": "assets/start_game_button.png",
-            "left": 650, "top": 780, "right": 1270, "bottom": 1020,
-            "threshold": 0.85
-        }
-    }]
-
-    settings = load_settings(write_config(tmp_path, payload))
-
-    action = settings.tasks["login"][0]
-    assert action["timeout_seconds"] == 40
-    assert action["second_authorization"]["template"] == "assets/qq_agree_game_info.png"
-    assert action["pre_click_wait_seconds"] == 3
-    assert action["post_click_wait_seconds"] == 3
-
-
-def test_old_click_actions_without_wait_fields_are_still_accepted(tmp_path):
+def test_start_game_defaults_to_longer_click_waits(tmp_path):
     project_root = Path(__file__).parents[1]
     payload = json.loads((project_root / "config.example.json").read_text(encoding="utf-8"))
     for actions in payload["tasks"].values():
         for action in actions:
-            if action["type"] in {"required_template_tap", "finish_login_authorization"}:
+            if action["type"] == "required_template_tap":
                 action.pop("pre_click_wait_seconds")
                 action.pop("post_click_wait_seconds")
-                if action["type"] == "finish_login_authorization":
-                    action["second_authorization"] = {
-                        "name": "第二次授权页面",
-                        "template": "assets/qq_second_authorization_marker.png",
-                        "left": 0, "top": 200, "right": 1300, "bottom": 450,
-                        "threshold": 0.85,
-                        "click_x": 961, "click_y": 806,
-                    }
 
     settings = load_settings(write_config(tmp_path, payload))
 
-    assert settings.tasks["login"][2]["pre_click_wait_seconds"] == 3
-    assert settings.tasks["login"][2]["post_click_wait_seconds"] == 3
-    second = settings.tasks["login"][4]["second_authorization"]
-    assert second == {
-        "name": "第二次授权同意按钮",
-        "template": "assets/qq_agree_game_info.png",
-        "left": 700, "top": 700, "right": 1220, "bottom": 930,
-        "threshold": 0.85,
-    }
+    assert settings.tasks["login"][0]["pre_click_wait_seconds"] == 3
+    assert settings.tasks["login"][0]["post_click_wait_seconds"] == 3
 
 
 def test_return_to_main_accepts_ten_round_close_settings(tmp_path):
@@ -804,8 +781,8 @@ def test_organization_prayer_rejects_unsafe_click_settings(tmp_path, mutate, mes
     ("mutate", "message"),
     [
         (lambda p: p["screen"].update(width=0), "screen width"),
-        (lambda p: p["tasks"]["sign_in"][0].update(x=-1), "坐标"),
-        (lambda p: p["tasks"]["sign_in"][0].update(x=1280), "坐标"),
+        (lambda p: p["tasks"]["sign_in"][0].update(seconds=-1), "等待时间"),
+        (lambda p: p["tasks"]["sign_in"][0].update(seconds=True), "等待时间"),
         (lambda p: p["tasks"]["sign_in"][0].update(type="purchase"), "不支持的动作"),
         (lambda p: p["tasks"]["sign_in"][0].update(extra=True), "未知字段"),
     ],

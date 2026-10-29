@@ -1,4 +1,4 @@
-"""Private Aliyun OSS storage for login QR images."""
+"""Private Aliyun OSS storage for login QR and exception images."""
 
 from __future__ import annotations
 
@@ -20,6 +20,9 @@ _UUID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _PREFIX_PATTERN = re.compile(r"[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*")
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MAX_EXCEPTION_PNG_BYTES = 16 * 1024 * 1024
+_MAX_EXCEPTION_PUT_ATTEMPTS = 100
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,7 @@ class StoredObject:
 class ObjectStorage(Protocol):
     async def initialize(self) -> None: ...
     async def put(self, id: str, png: bytes, expires_at: str) -> None: ...
+    async def put_exception(self, id: str, count: int, png: bytes) -> int: ...
     async def head(self, id: str) -> StoredObject | None: ...
     async def get(self, id: str) -> StoredObject | None: ...
     async def delete(self, id: str) -> None: ...
@@ -156,6 +160,67 @@ class AliyunObjectStorage:
                 "x-oss-meta-expires-at": expires_at,
             })
             self._known_expiries[id] = timestamp
+
+    async def put_exception(self, id: str, count: int, png: bytes) -> int:
+        """Keep a private diagnostic independently of the QR image's lifetime."""
+        _safe_id(id)
+        if type(count) is not int or count <= 0:
+            raise ValueError("Invalid exception image count")
+        if (not isinstance(png, bytes) or not png.startswith(_PNG_SIGNATURE)
+                or len(png) > _MAX_EXCEPTION_PNG_BYTES):
+            raise ValueError("Invalid exception PNG")
+        # Blocking child pipe readers may occupy every default executor thread.
+        # Diagnostics use their own daemon so uploads can start immediately.
+        loop = asyncio.get_running_loop()
+        result = loop.create_future()
+
+        def settle(actual_count: int | None, error: Exception | None) -> None:
+            if result.done():
+                return
+            if error is not None:
+                result.set_exception(error)
+            else:
+                result.set_result(actual_count)
+
+        def send() -> None:
+            actual_count, failure = None, None
+            try:
+                actual_count = self._put_exception(id, count, png)
+            except Exception as error:
+                # Deliver errors only to the caller; an uncaught thread error
+                # could expose SDK credentials through stderr.
+                failure = error
+            try:
+                loop.call_soon_threadsafe(settle, actual_count, failure)
+            except RuntimeError:
+                # The task can be cancelled and its event loop closed while
+                # the SDK finishes an already running upload.
+                pass
+
+        threading.Thread(target=send, name="oss-exception-upload", daemon=True).start()
+        return await result
+
+    def _put_exception(self, id: str, count: int, png: bytes) -> int:
+        with self._lock:
+            bucket = self._client()
+        # Diagnostic I/O must not hold the QR lifecycle lock. OSS conditional
+        # writes also protect earlier images from another attempt or worker.
+        for candidate in range(count, count + _MAX_EXCEPTION_PUT_ATTEMPTS):
+            key = f"{self.prefix}/exceptions/{id}_{candidate}.png"
+            try:
+                bucket.put_object(key, png, headers={
+                    "Content-Type": "image/png",
+                    "Cache-Control": "no-store",
+                    "x-oss-object-acl": "private",
+                    "x-oss-forbid-overwrite": "true",
+                })
+            except Exception as error:
+                if (getattr(error, "status", None) != 409
+                        or getattr(error, "code", None) != "FileAlreadyExists"):
+                    raise
+            else:
+                return candidate
+        raise RuntimeError("Exception image counter conflicts exhausted")
 
     @staticmethod
     def _metadata(result: Any) -> StoredObject | None:

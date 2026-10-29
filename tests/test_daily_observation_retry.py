@@ -262,26 +262,6 @@ def test_prayer_disappeared_coin_button_preserves_failure_without_global_scope()
     assert device.taps == [(300, 200), (400, 300), (1500, 200)]
 
 
-@pytest.mark.parametrize('invalid', [None, dict(nickname=None)])
-def test_account_authorization_reads_past_call_cap_and_confirms_latest_nickname(monkeypatch, invalid):
-    from naruto_daily.login import authorization
-
-    clock, device = Clock(), Device()
-    model = Model([invalid] * 4 + [dict(nickname='测试用户')] * 2)
-    monkeypatch.setattr(authorization, 'MultimodalClient', lambda *args, **kwargs: model)
-    config = dict(action(), account_name='测试用户', picker_marker=target('picker'),
-                  switch_account=target('switch'), agree_button=target('agree'))
-
-    def matcher(frame, path, *args):
-        return ((int(frame) * 10, 500), 1) if path.stem == 'agree' else (None, 0)
-
-    with execution_scope(30, clock=clock, sleep=clock.sleep):
-        authorization.authorize_account(device, config, template_matcher=matcher, clock=clock)
-
-    assert device.taps == [(60, 500)]
-    assert model.frames == device.frames == [b'1', b'2', b'3', b'4', b'5', b'6']
-
-
 def test_survival_continues_after_round_cap_until_fresh_zero_count():
     from test_survival_challenge import Client, Model as ResetModel, action as survival_action, run
 
@@ -462,7 +442,7 @@ def test_survival_start_without_confirmed_reset_waits_to_deadline_after_retry_ca
     assert len(device.frames) > 15
 
 
-@pytest.mark.parametrize('module', ['authorization', 'recruit', 'secret_entry', 'secret_exit'])
+@pytest.mark.parametrize('module', ['recruit', 'secret_entry', 'secret_exit'])
 @pytest.mark.parametrize('scoped', [True, False])
 def test_click_prewait_reaches_scope_deadline_without_early_failure_or_input(monkeypatch, module, scoped):
     clock, device = Clock(), Device()
@@ -470,17 +450,7 @@ def test_click_prewait_reaches_scope_deadline_without_early_failure_or_input(mon
     context = execution_scope(2, clock=clock, sleep=clock.sleep) if scoped else nullcontext()
 
     with pytest.raises(DailyDeadlineExceeded if scoped else VisualError), context:
-        if module == 'authorization':
-            from naruto_daily.login import authorization
-
-            model = Model([dict(nickname='测试用户')])
-            monkeypatch.setattr(authorization, 'MultimodalClient', lambda *args, **kwargs: model)
-            config.update(account_name='测试用户', picker_marker=target('picker'),
-                          switch_account=target('switch'), agree_button=target('agree'))
-            matcher = lambda frame, path, *args: ((200, 500), 1) if path.stem == 'agree' else (None, 0)
-            authorization.authorize_account(device, config, template_matcher=matcher,
-                                             sleep=clock.sleep, clock=clock)
-        elif module == 'recruit':
+        if module == 'recruit':
             from naruto_daily.recruit.free_button import click_free_recruit
 
             model = Model([dict(category='普通招募', free_count=1, button_text='免费1抽', center=[1100, 800])])
@@ -505,7 +475,7 @@ def test_click_prewait_reaches_scope_deadline_without_early_failure_or_input(mon
     assert clock() == (2 if scoped else 0)
 
 
-@pytest.mark.parametrize('module', ['authorization', 'recruit', 'secret_entry', 'secret_realm', 'secret_tickets'])
+@pytest.mark.parametrize('module', ['recruit', 'secret_entry', 'secret_realm', 'secret_tickets'])
 @pytest.mark.parametrize('scoped', [True, False])
 def test_model_observation_log_shows_only_active_call_limit(monkeypatch, caplog, module, scoped):
     clock, device = Clock(), Device()
@@ -514,17 +484,7 @@ def test_model_observation_log_shows_only_active_call_limit(monkeypatch, caplog,
     caplog.set_level('INFO', logger='naruto_daily')
 
     with context:
-        if module == 'authorization':
-            from naruto_daily.login import authorization
-
-            model = Model([dict(nickname='测试用户')] * 2)
-            monkeypatch.setattr(authorization, 'MultimodalClient', lambda *args, **kwargs: model)
-            config.update(account_name='测试用户', picker_marker=target('picker'),
-                          switch_account=target('switch'), agree_button=target('agree'))
-            matcher = lambda frame, path, *args: ((200, 500), 1) if path.stem == 'agree' else (None, 0)
-            authorization.authorize_account(device, config, template_matcher=matcher,
-                                             sleep=clock.sleep, clock=clock)
-        elif module == 'recruit':
+        if module == 'recruit':
             from naruto_daily.recruit.free_button import click_free_recruit
 
             model = Model([dict(category='普通招募', free_count=1, button_text='免费1抽', center=[1100, 800])] * 2)

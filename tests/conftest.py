@@ -72,5 +72,4 @@ def configured_environment(monkeypatch, tmp_path):
     monkeypatch.setenv('OSS_KEY_PREFIX', 'login')
     monkeypatch.setenv('MULTIMODAL_ROUTING_COUNTER_KEY', 'naruto:multimodal:route:sequence')
     monkeypatch.setenv('LDPLAYER_STATE_DIR', '.data/login-service/ldplayer')
-    monkeypatch.setenv('LOGIN_ACCOUNT_NAME', '离落花开花败')
     return counter

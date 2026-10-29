@@ -18,6 +18,7 @@ from typing import Callable, TextIO
 from uuid import UUID
 
 from naruto_daily.common.execution import DAILY_TIMEOUT_SECONDS, DailyDeadlineExceeded
+from naruto_daily.common.module_reporting import module_reporting
 
 from .log_events import forward_task_logs
 from .user_options import parse_user_options
@@ -261,6 +262,11 @@ def main(
         _send(output_stream, {"type": "stage", "status": "starting_emulator"})
         instance = manager.allocate(task_id, deadline)
         serial = manager.start(instance, deadline)
+
+        if daily_options is not None:
+            log_context.enter_context(module_reporting(
+                lambda event: _send(output_stream, {**event, 'serial': serial}),
+            ))
 
         daily_session = None
         if daily_options is not None:

@@ -2,7 +2,7 @@
 
 基于 Windows 和雷电模拟器 9 的《火影忍者》手游 ADB 自动化项目，支持日常任务、秘境探险和 QQ 扫码登录。
 
-当前分支为 `test-jev` 实验实现。主界面入口、战斗结束、秘境入口、丰饶结算、装备页面/材料动作和一乐外卖领取改用 JEV 多模态选择；程序先列出可选状态或当前截图的候选编号，再把选项还原为本地结果和坐标。昵称、数字 OCR、自由坐标和导航动作仍由现有生成模型处理。JEV 返回未知状态或非法选项时不授权点击，也不自动回退到生成模型。
+当前分支为 `test-jev` 实验实现。主界面入口、战斗结束、秘境入口、丰饶结算、装备页面/材料动作和一乐外卖领取改用 JEV 多模态选择；程序先列出可选状态或当前截图的候选编号，再把选项还原为本地结果和坐标。数字 OCR、自由坐标和导航动作仍由现有生成模型处理。JEV 返回未知状态或非法选项时不授权点击，也不自动回退到生成模型。
 
 测试 worker 和扫码客户端均在各自 `.env` 设置 `APP_ENV=test`，读取 Cloudflare 的 `hyrz-test` namespace；正式环境使用 `APP_ENV=prod`，读取现有 `hyrz` namespace。两者内部使用相同的普通变量名，Redis 队列、日志、OSS 前缀、模型计数器和本地状态目录均由各自配置决定，代码不追加 `test-jev` 后缀。缺少测试配置时停止启动，不读取正式配置。客户端消息、当前配置示例和部署条件见[测试协议](docs/test-jev-client-protocol.md)。测试必须使用独立模拟器实例池。
 
@@ -35,6 +35,10 @@ if (-not (Test-Path .\.env)) {
 Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限，列出 key 和批量读取均须允许。`APP_ENV` 只能是 `prod` 或 `test`，省略时为 `prod`；JEV 测试工作区须显式设置 `test`。prod 选择 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，兼容旧 `CLOUDFLARE_KV_NAMESPACE_ID`；test 必须提供 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`。启动只读取选定 namespace，全部读取成功才发布配置，修改后需重启。Redis、OSS、数据库和隔离路径不从本地旧配置回退；鱼玩 key/model 按原约定成对保存在本地 `.env`，启动解析后由任务子进程继承。
 
 扫码服务还需配置 OSS、雷电控制台路径和实例池，见[扫码服务说明](naruto_daily/login_service/README.md)。服务按分配到的实例覆盖任务配置中的 ADB 路径和 `serial`。
+
+登录统一使用扫码授权。`tasks.login` 只负责点击“开始游戏”、等待加载、清理弹窗和返回主界面。直接执行 `python -m naruto_daily run login --config config.example.json` 或 `run all` 前，需要先完成扫码并停留在“开始游戏”页面。独立刷秘境仍支持 `python -m naruto_daily run secret_realm_farm --qr-login --config config.example.json`，由命令行展示二维码并接续任务。
+
+如果仍使用旧版 `config.local.json` 或其他自定义任务配置，请将 `tasks.login` 替换为当前示例中的登录收尾动作。顶层 `tap`、`swipe`、`back`、`optional_template_tap`、`authorize_account` 和 `finish_login_authorization` 已移除，旧配置会明确报错；秘境内部的滑动参数继续支持。ADB 路径、设备编号和其他自定义任务设置按需保留。
 
 登录后依次处理公告和领取按钮，再检查通用关闭按钮；未发现关闭按钮时，使用本地图片模板识别“组织争霸赛”弹窗。确认弹窗仍在后，点击底部空白位置 `(1220,975)` 关闭，继续原有主界面检查。未识别到该弹窗时沿用原流程；此规则仅在登录收尾的 `return_to_main.dismiss_popup` 中配置。
 

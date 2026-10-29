@@ -11,6 +11,7 @@ from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import VisualError, find_template_in_png
 from naruto_daily.common.results import PopupCleanupSummary
 from naruto_daily.common.execution import check_execution, current_execution
+from naruto_daily.common.module_reporting import monitored_module
 
 
 LOGGER = logging.getLogger("naruto_daily")
@@ -37,6 +38,7 @@ def _dismiss_popup(images: ImageRecognition, popup: dict, pre_click_wait: float,
     return True
 
 
+@monitored_module('return_to_main')
 def return_to_main(
     client: AdbClient,
     action: dict,

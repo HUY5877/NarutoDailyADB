@@ -10,6 +10,7 @@ import logging
 import math
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import sys
@@ -392,6 +393,9 @@ class LoginRuntime:
                 and record.attempt_id and message.get('captureAttemptId') == record.attempt_id):
             capture_owner = None
         capture_started = False
+        module_monitor = None
+        module_stack: list[str] = []
+        module_serial = None
         try:
             child.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
             child.stdin.close()
@@ -418,6 +422,32 @@ class LoginRuntime:
                         continue
                     if daily and event.get("type") == "log":
                         self._accept_log(record, event)
+                    elif daily and event.get('type') == 'module':
+                        name, state, serial = event.get('name'), event.get('state'), event.get('serial')
+                        if (record.authorized_at is None and record.daily_started_at is None
+                                or not isinstance(name, str) or re.fullmatch(r'[a-z][a-z0-9_]{0,79}', name) is None
+                                or state not in ('started', 'finished')
+                                or not isinstance(serial, str) or serial == 'unknown'
+                                or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', serial) is None
+                                or module_serial is not None and serial != module_serial
+                                or self.config.ldplayer_console_path is None):
+                            raise ValueError('Invalid module event')
+                        if state == 'started':
+                            if len(module_stack) >= 32:
+                                raise ValueError('Too many nested modules')
+                            if module_monitor is None:
+                                from .module_timeout import ModuleTimeoutMonitor
+                                module_monitor = ModuleTimeoutMonitor(
+                                    record.id, self.config.ldplayer_console_path.with_name('adb.exe'), self.storage,
+                                )
+                                module_serial = serial
+                            module_stack.append(name)
+                            module_monitor.begin(name, serial)
+                        else:
+                            if not module_stack or module_stack[-1] != name:
+                                raise ValueError('Unexpected module completion')
+                            module_stack.pop()
+                            module_monitor.end()
                     elif event.get("type") == "stage" and event.get("status") in (
                         "starting_emulator", "opening_game", "preparing_qr",
                     ):
@@ -518,7 +548,7 @@ class LoginRuntime:
                             self._run_reporter.emit(record, message='已开始决斗场周胜战斗，执行 40 分钟后自动结束')
                     elif daily and event.get("type") == "daily_completed":
                         count = event.get("actionCount")
-                        if (record.daily_started_at is None or action_count is not None
+                        if (record.daily_started_at is None or action_count is not None or module_stack
                                 or record.user_options.get('mainTask') == 'arena_weekly' and not arena_started
                                 or type(count) is not int or count < 0):
                             raise ValueError("Unexpected daily completion")
@@ -548,6 +578,12 @@ class LoginRuntime:
         finally:
             self._kill(child)
             try:
+                if module_monitor is not None:
+                    try:
+                        await module_monitor.close()
+                    except Exception:
+                        logger.warning('Task %s: 模块异常截图收尾失败', record.id,
+                                       extra={'backend_only': True})
                 await asyncio.to_thread(child.wait)
                 if stderr_task is not None:
                     # The child has closed its writer; drain buffered diagnostics
