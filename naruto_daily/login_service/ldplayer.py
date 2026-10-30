@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import io
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -26,6 +27,8 @@ _PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+")
 _SERIAL = re.compile(r"[A-Za-z0-9._:-]+")
 _SIZE = re.compile(r"(\d+)x(\d+)")
 _CAPTURE_PACKAGES = frozenset({"com.huy.authcapture", "com.tencent.tim"})
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024
 
 
 def _binding_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -124,6 +127,7 @@ class LDPlayerManager:
         *,
         full_deadline: bool = False,
         accepted_returncodes: tuple[int, ...] = (0,),
+        max_output_bytes: int | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         remaining = self._remaining(deadline)
         timeout = remaining if full_deadline else min(self.command_timeout, remaining)
@@ -147,6 +151,8 @@ class LDPlayerManager:
                 # receiving output after the command itself has exited.
                 stdout_size = os.fstat(stdout.fileno()).st_size
                 stderr_size = os.fstat(stderr.fileno()).st_size
+                if max_output_bytes is not None and max(stdout_size, stderr_size) > max_output_bytes:
+                    raise LDPlayerError(f"LDPlayer {action} output exceeded the allowed size.")
                 stdout.seek(0)
                 stderr.seek(0)
                 result = subprocess.CompletedProcess(
@@ -731,6 +737,48 @@ class LDPlayerManager:
         """Verify the fallback target independently of helper package discovery."""
         with self._exclusive(deadline):
             self._capture_serial(instance, deadline)
+
+    def capture_task_screenshot(self, task_id: str, *, timeout_seconds: float = 15) -> bytes:
+        """Capture only this task's verified running instance, before its binding is released."""
+        task_id, expected_name = self._task(task_id)
+        try:
+            if type(timeout_seconds) not in (int, float):
+                raise ValueError
+            timeout = float(timeout_seconds)
+            if not math.isfinite(timeout) or timeout <= 0:
+                raise ValueError
+        except (OverflowError, TypeError, ValueError):
+            raise LDPlayerError("LDPlayer screenshot timeout must be finite and positive.") from None
+
+        # Failure diagnostics get a fresh budget even when the task's deadline
+        # has expired. Keep ownership locked until the ADB read is complete.
+        deadline = time.time() + timeout
+        with self._exclusive(deadline):
+            if self.pool_indices:
+                bindings, _ = self._pool_state(deadline)
+                key, binding = self._pool_task(bindings, task_id)
+                if binding is None or binding["state"] not in {"reserved", "qr_ready"}:
+                    raise LDPlayerOwnershipError("Login task has no active LDPlayer pool binding.")
+                instance = LDPlayerInstance(binding["name"], int(key), binding.get("serial"), task_id)
+            else:
+                binding = self._load_state().get(task_id)
+                if (binding is None or binding.get("mode", "clone") != "clone"
+                        or binding.get("name") != expected_name
+                        or type(binding.get("index")) is not int or binding["index"] <= 0):
+                    raise LDPlayerOwnershipError("Login task has no allocated managed LDPlayer binding.")
+                instance = LDPlayerInstance(expected_name, binding["index"], binding.get("serial"))
+
+            serial = self._capture_serial(instance, deadline)
+            screenshot = self._run_result(
+                [self.adb_path, "-s", serial, "exec-out", "screencap", "-p"],
+                deadline, "diagnostic screenshot", max_output_bytes=_MAX_SCREENSHOT_BYTES,
+            ).stdout
+            self._remaining(deadline)
+            if (len(screenshot) <= len(_PNG_SIGNATURE)
+                    or len(screenshot) > _MAX_SCREENSHOT_BYTES
+                    or not screenshot.startswith(_PNG_SIGNATURE)):
+                raise LDPlayerError("LDPlayer diagnostic screenshot did not return a valid PNG within the size limit.")
+            return screenshot
 
     def install_missing_app(
         self, instance: LDPlayerInstance, apk: Path, package: str, deadline: float,
