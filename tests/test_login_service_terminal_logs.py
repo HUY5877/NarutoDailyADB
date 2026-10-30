@@ -4,6 +4,7 @@ import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
 import io
+import json
 import logging
 import sys
 from uuid import uuid4
@@ -121,6 +122,44 @@ for event in message['events']:
         child = runtime._children[record.id]
         assert child.poll() == 0 and child.stderr.closed
         assert no_reader_tasks()
+    asyncio.run(scenario())
+
+
+def test_child_inherits_multiple_keys_and_redacts_each_stderr_secret(monkeypatch, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    keys = ['private-openai-first', 'private-openai-second']
+    monkeypatch.setenv('OPENAI_API_KEY', json.dumps(keys))
+    monkeypatch.setenv('OPENAI_MODEL', 'gpt-4.1')
+    monkeypatch.setenv('OPENAI_ENABLED', 'true')
+    monkeypatch.setenv('DEEPSEEK_ENABLED', 'false')
+    monkeypatch.setenv('YUWAN_ENABLED', 'false')
+    program = r'''
+import json,os,sys
+message=json.loads(sys.stdin.readline())
+keys=json.loads(os.environ['OPENAI_API_KEY'])
+assert keys == ['private-openai-first', 'private-openai-second']
+assert os.environ['OPENAI_MODEL'] == 'gpt-4.1'
+assert os.environ['OPENAI_ENABLED'] == 'true'
+assert os.environ['DEEPSEEK_ENABLED'] == 'false'
+assert 'YUWAN_ENABLED' not in os.environ
+for key in keys:
+    print('INFO upstream echoed '+key, file=sys.stderr, flush=True)
+for event in message['events']:
+    print(json.dumps(event), flush=True)
+'''
+
+    async def scenario():
+        runtime, reporter, record = make_runtime(tmp_path)
+        result = await asyncio.wait_for(runtime._run_child(record, [sys.executable, '-u', '-c', program], {
+            'events': SUCCESS_PROTOCOL,
+        }, daily=True), 8)
+        assert result == PNG
+        messages = local_messages(caplog, record.id)
+        assert sum('upstream echoed [REDACTED]' in message for message in messages) == 2
+        assert all(key not in caplog.text for key in keys)
+        assert all(key not in json.dumps(reporter.events) for key in keys)
+        assert no_reader_tasks()
+
     asyncio.run(scenario())
 
 

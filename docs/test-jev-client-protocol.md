@@ -16,7 +16,9 @@ CLOUDFLARE_KV_NAMESPACE_ID_TEST=your-hyrz-test-namespace-id
 
 每个 namespace 内都使用 `REDIS_QUEUE_KEY`、`OSS_KEY_PREFIX` 等普通变量名，不加环境前缀。启动只读取选定 namespace，所有配置读取成功后才启用；必填配置缺失或读取失败时停止启动，不读取另一个 namespace 或本地旧业务配置。修改 KV 后须重启网站后端和常驻 worker，已有子进程继续使用父进程传入的配置快照。
 
-以下 22 个字段分别保存在 `hyrz` 和 `hyrz-test` 中，名称相同、值独立。密钥值不在文档中列出。
+管理员「大模型渠道」接口只管理 OpenAI、DeepSeek，每次直接读取当前网站 namespace，并保存对应渠道的 model、JSON key 列表和启停状态。网站后端的 `CLOUDFLARE_API_TOKEN` 为此需要 Workers KV Storage 写权限；worker 仅需读取权限。模型管理页面不受网站启动配置缓存影响，但 worker 仍需重启才使用新配置。先部署支持 key 列表的新 worker，再通过页面保存列表，避免旧 worker 把 JSON 当成单 key。
+
+以下字段分别保存在 `hyrz` 和 `hyrz-test` 中，名称相同、值独立。密钥值不在文档中列出。
 
 | 字段 | 用途与填写规则 |
 | --- | --- |
@@ -34,12 +36,13 @@ CLOUDFLARE_KV_NAMESPACE_ID_TEST=your-hyrz-test-namespace-id
 | `JWT_SECRET` | 网站登录签名密钥；两个 namespace 使用独立随机值，至少 32 字节 |
 | `SESSION_COOKIE_NAME` | 网站账号 Cookie 名；两个 namespace 分开配置，必填 |
 | `PORT` | 网站本机端口；两个 namespace 分开配置，必填 |
-| `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` | worker DeepSeek 生成渠道，key 留空禁用；启用时模型名必填 |
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` / `DEEPSEEK_ENABLED` | DeepSeek 生成渠道；key 支持 JSON 字符串列表并兼容旧单 key，`false` 关闭；启用且有 key 时模型名必填 |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_ENABLED` | OpenAI 官方生成渠道，规则与 DeepSeek 相同；首次配置为空列表、空模型名、`false`，填写并测试后启用 |
 | `JEV_API_KEY` / `JEV_MODEL` | worker JEV 选择判断渠道；JEV 场景需要有效 key/model |
 | `QQ_BOT_APP_ID` / `QQ_BOT_APP_SECRET` / `QQ_BOT_GROUP_OPENID` | 网站绑定回调与 worker 主动通知共用；三项同时填写或全部留空，启用前在测试 namespace 填写测试机器人和目标群 |
 | `QQ_BOT_ORIGINAL_GROUP_OPENID` | 保留的机器人原群标识；不代替运行时 `QQ_BOT_GROUP_OPENID` |
 
-可选扩展也使用普通变量名，例如 `OSS_STS_TOKEN`、`ALLOWED_ORIGINS`。测试网站若改用 `local` 存储，须在 `hyrz-test` 显式配置独立的 `LOCAL_OBJECTS_DIR`，不可复用正式目录。鱼玩按原约定在 worker 本地 `.env` 配置 `YUWAN_API_KEY` 和 `YUWAN_MODEL`，启用时两项须成对填写；修改后重启，任务子进程继承父进程解析结果。QQ 通知使用测试 namespace 的普通 `QQ_BOT_*` 和 `DATABASE_URL`，不再单列本地测试专用变量。
+可选扩展也使用普通变量名，例如 `OSS_STS_TOKEN`、`ALLOWED_ORIGINS`。测试网站若改用 `local` 存储，须在 `hyrz-test` 显式配置独立的 `LOCAL_OBJECTS_DIR`，不可复用正式目录。鱼玩不使用 Cloudflare 配置，只在各机器的本地 `.env` 配置 `YUWAN_API_KEY` 和 `YUWAN_MODEL`：有 key 时启用且模型名必填，无 key、空 key 或空列表时关闭；`YUWAN_ENABLED` 不参与判断。修改后重启，任务子进程继承父进程解析结果。QQ 通知使用测试 namespace 的普通 `QQ_BOT_*` 和 `DATABASE_URL`，不再单列本地测试专用变量。
 
 当前资源值如下。它们是可修改的 Cloudflare 配置，不是源码默认值或自动重写规则。
 

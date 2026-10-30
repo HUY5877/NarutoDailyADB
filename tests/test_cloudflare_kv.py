@@ -210,14 +210,14 @@ def test_local_yuwan_key_and_model_are_loaded_and_override_cloud(monkeypatch, tm
 
 
 @pytest.mark.parametrize('local_key', ['', '   '])
-def test_blank_local_yuwan_key_preserves_cloud_yuwan_model(monkeypatch, tmp_path, local_key):
+def test_blank_local_yuwan_key_never_uses_cloud_yuwan_model(monkeypatch, tmp_path, local_key):
     with (tmp_path / '.env').open('a', encoding='utf-8') as stream:
         stream.write(f'\nYUWAN_API_KEY="{local_key}"\nYUWAN_MODEL=unused-local-model\n')
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: {
         'YUWAN_API_KEY': 'cloud-yuwan', 'YUWAN_MODEL': 'cloud-model'})
     environment.initialize_environment()
-    assert os.environ['YUWAN_API_KEY'] == 'cloud-yuwan'
-    assert os.environ['YUWAN_MODEL'] == 'cloud-model'
+    assert os.environ.get('YUWAN_API_KEY') is None
+    assert os.environ.get('YUWAN_MODEL') is None
 
 
 def test_local_yuwan_requires_its_own_model_before_publishing(monkeypatch, tmp_path):
@@ -249,7 +249,7 @@ def test_child_inherits_models_without_fetching_cloud_or_loading_local_secrets(m
 def test_entrypoint_fetches_kv_before_redis_validation_and_service_creation(monkeypatch, tmp_path):
     calls = []
     remote = {**OSS_ENV, 'REDIS_URL': 'redis://cloud.invalid/0',
-              'YUWAN_API_KEY': 'cloud-key', 'YUWAN_MODEL': 'cloud-model',
+              'DEEPSEEK_API_KEY': 'cloud-key', 'DEEPSEEK_MODEL': 'cloud-model',
               'LDPLAYER_STATE_DIR': str(tmp_path / 'cloud-state')}
     monkeypatch.setattr(kv, 'fetch_environment', lambda settings: calls.append('cloud') or remote)
     async def run(config):

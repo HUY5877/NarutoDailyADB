@@ -34,6 +34,8 @@ if (-not (Test-Path .\.env)) {
 
 Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限，列出 key 和批量读取均须允许。`APP_ENV` 只能是 `prod` 或 `test`，省略时为 `prod`；JEV 测试工作区须显式设置 `test`。prod 选择 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，兼容旧 `CLOUDFLARE_KV_NAMESPACE_ID`；test 必须提供 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`。启动只读取选定 namespace，全部读取成功才发布配置，修改后需重启。Redis、OSS、数据库和隔离路径不从本地旧配置回退；鱼玩 key/model 按原约定成对保存在本地 `.env`，启动解析后由任务子进程继承。
 
+生成模型支持鱼玩、DeepSeek 和 OpenAI。每个渠道的 `*_API_KEY` 可使用 JSON 字符串数组，兼容旧单 key，按每组 model + key 共用原 Redis 计数器轮询。OpenAI 和 DeepSeek 由 Cloudflare 配置，`*_ENABLED=false` 关闭渠道，管理员可在 `NarutoLoginClient` 的「大模型渠道」页面编辑并测试，网站后端 Token 另需 KV 写权限。鱼玩只由每台 worker 本地 `.env` 的 key/model 决定是否启用，未配置 key 就关闭，不使用云端启停状态。具体配置和升级顺序见[多模态网关说明](naruto_daily/multimodal/README.md#配置)。
+
 扫码服务还需配置 OSS、雷电控制台路径和实例池，见[扫码服务说明](naruto_daily/login_service/README.md)。服务按分配到的实例覆盖任务配置中的 ADB 路径和 `serial`。
 
 登录统一使用扫码授权。`tasks.login` 只负责点击“开始游戏”、等待加载、清理弹窗和返回主界面。直接执行 `python -m naruto_daily run login --config config.example.json` 或 `run all` 前，需要先完成扫码并停留在“开始游戏”页面。独立刷秘境仍支持 `python -m naruto_daily run secret_realm_farm --qr-login --config config.example.json`，由命令行展示二维码并接续任务。
