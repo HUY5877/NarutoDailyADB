@@ -396,6 +396,7 @@ class LoginRuntime:
         module_monitor = None
         module_stack: list[str] = []
         module_serial = None
+        failed_exit = False
         try:
             child.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
             child.stdin.close()
@@ -569,21 +570,40 @@ class LoginRuntime:
         except TimeoutError:
             self._check_interrupted(record)
             if not arena_started or not timeout.expired() or self._stopping:
+                failed_exit = not self._stopping
+                if failed_exit:
+                    record._failure_observed_at = time.time()
                 raise
             # 定时周胜按正常完成结束；finally 立即杀掉执行子进程，不走失败保留现场。
             logger.info('Task %s: 决斗场周胜战斗时限已到，结束执行子进程', record.id)
             self._set_daily_status(record, 'completed')
             assert png is not None
             return png
+        except (_TaskInterrupted, _WorkerStopping, asyncio.CancelledError):
+            raise
+        except Exception:
+            failed_exit = True
+            record._failure_observed_at = time.time()
+            raise
         finally:
             self._kill(child)
+            if module_monitor is not None:
+                # Diagnostic upload time is not business execution time.
+                module_monitor.stop_tracking()
             try:
-                if module_monitor is not None:
-                    try:
-                        await module_monitor.close()
-                    except Exception:
-                        logger.warning('Task %s: 模块异常截图收尾失败', record.id,
-                                       extra={'backend_only': True})
+                try:
+                    if failed_exit:
+                        # Stop game automation before collecting the current frame.
+                        # Keep the emulator and its task binding until upload ends.
+                        await asyncio.to_thread(child.wait)
+                        await self._collect_failure_diagnostic(record)
+                finally:
+                    if module_monitor is not None:
+                        try:
+                            await module_monitor.close()
+                        except Exception:
+                            logger.warning('Task %s: 模块异常截图收尾失败', record.id,
+                                           extra={'backend_only': True})
                 await asyncio.to_thread(child.wait)
                 if stderr_task is not None:
                     # The child has closed its writer; drain buffered diagnostics
@@ -600,6 +620,28 @@ class LoginRuntime:
                 child.stdout.close()
                 if stderr is not None:
                     stderr.close()
+
+    async def _collect_failure_diagnostic(self, record: TaskRecord) -> None:
+        """Attempt one bounded diagnostic before this task releases its emulator."""
+        if (self.config.emulator_driver != 'ldplayer' or self._stopping
+                or record._admin_interrupted or record._failure_screenshot_attempted):
+            return
+        record._failure_screenshot_attempted = True
+        try:
+            from .failure_screenshot import capture_task_failure
+
+            await capture_task_failure(
+                record.id,
+                lambda: self._ldplayer_manager().capture_task_screenshot(
+                    record.id, timeout_seconds=15,
+                ),
+                self.storage,
+            )
+        except Exception as error:
+            # A diagnostic must not replace the original task failure or expose
+            # paths, credentials or SDK response text through exception strings.
+            logger.warning('Task %s: 任务失败截图收尾失败 (%s)', record.id, type(error).__name__,
+                           extra={'backend_only': True})
 
     async def _relay_child_stderr(self, record: TaskRecord, stream) -> None:
         """Show full diagnostics locally without publishing them to Redis."""
@@ -1065,6 +1107,8 @@ class LoginRuntime:
         keep_ldplayer = False
         requeue_on_exit = False
         cancelled = False
+        failed_exit = False
+        diagnostic_cancelled = False
         if self._run_reporter is not None:
             self._run_reporter.emit(record, status="starting_emulator")
         try:
@@ -1112,6 +1156,16 @@ class LoginRuntime:
             requeue_on_exit = not record.qr_published and self._redis_queue is not None
             raise
         except Exception as error:
+            if record._admin_interrupted:
+                # An interruption received while a failure image was uploading
+                # takes precedence over the exception that started that upload.
+                self._set_daily_status(record, 'interrupted', error_code='admin_interrupted')
+                self._pending_deletes.add(task_id)
+                return
+            failed_exit = not self._stopping and not isinstance(error, _WorkerStopping)
+            failure_time = record._failure_observed_at
+            if failure_time is None:
+                failure_time = time.time()
             # Failures before the child starts have no daily status yet, but
             # still need a safe public reason in the final execution log.
             record.daily_error_code = (
@@ -1134,7 +1188,7 @@ class LoginRuntime:
                     status, code = "interrupted", "worker_stopped"
                 elif isinstance(error, TimeoutError) or (
                     record.authorized_at is None and record.daily_started_at is None
-                    and record.expires_at_ms <= time.time() * 1000
+                    and record.expires_at_ms <= failure_time * 1000
                 ):
                     status = "failed"
                     code = ("daily_timeout" if record.daily_started_at is not None else
@@ -1148,7 +1202,7 @@ class LoginRuntime:
                 self._pending_deletes.add(task_id)
                 if record.expires_at_ms <= time.time() * 1000:
                     self._expire(record)
-            elif isinstance(error, _TaskExpired) or record.expires_at_ms <= time.time() * 1000:
+            elif isinstance(error, _TaskExpired) or record.expires_at_ms <= failure_time * 1000:
                 self._expire(record)
                 if uploaded:
                     # The sweeper may have deleted the object before a slow upload finished.
@@ -1181,6 +1235,16 @@ class LoginRuntime:
             child = self._children.pop(task_id, None)
             if child is not None:
                 self._kill(child)
+            if failed_exit:
+                try:
+                    if child is not None:
+                        await asyncio.to_thread(child.wait)
+                    await self._collect_failure_diagnostic(record)
+                except asyncio.CancelledError:
+                    # Cancellation during diagnostics still has to release the
+                    # emulator; restore it after the normal cleanup below.
+                    cancelled = diagnostic_cancelled = True
+                    self._set_daily_status(record, 'interrupted', error_code='worker_stopped')
             interruption_reported = False
             requeue_on_exit = requeue_on_exit and not (
                 record.qr_published or record.authorized_at is not None
@@ -1191,7 +1255,7 @@ class LoginRuntime:
                 interruption_reported = await self._release_and_requeue(record)
             elif self.config.emulator_driver == "ldplayer" and not keep_ldplayer:
                 try:
-                    if (not self._stopping and not record._admin_interrupted
+                    if (not self._stopping and not record._admin_interrupted and not cancelled
                             and (record.daily_status == "failed" or record.status == "failed")):
                         await self._hold_failed_ldplayer(record)
                 finally:
@@ -1230,6 +1294,8 @@ class LoginRuntime:
             record._processing = False
             if delivered and not cancelled and not requeue_on_exit and not keep_ldplayer:
                 self._notify_task_finished(record, final_status)
+            if diagnostic_cancelled:
+                raise asyncio.CancelledError
 
     async def _sweep_loop(self) -> None:
         while not self._stopping:

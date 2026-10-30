@@ -195,15 +195,20 @@ class ModuleTimeoutMonitor:
                 logger.warning('模块超时截图上传等待超时，停止重试，任务=%s 模块=%s 编号=%s',
                                self._log_task_id, name, count)
 
-    async def close(self) -> None:
-        """Stop all timers and finish already-triggered work within a bound."""
-        if self._close_task is None:
+    def stop_tracking(self) -> None:
+        """Freeze module timers while previously triggered diagnostics finish."""
+        if not self._closed:
             # A hard worker deadline can end the task just before the periodic
             # poll runs. Preserve any diagnostic that became due meanwhile.
             self.check()
             self._closed = True
             self._stack.clear()
             self._poll_task.cancel()
+
+    async def close(self) -> None:
+        """Stop all timers and finish already-triggered work within a bound."""
+        if self._close_task is None:
+            self.stop_tracking()
             self._close_task = asyncio.create_task(self._drain(), name='module-timeout-close')
         cancelled = False
         # A cancellation of the business task must not abandon an upload or

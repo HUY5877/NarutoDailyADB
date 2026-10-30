@@ -77,6 +77,8 @@ class TaskRecord:
     _interrupt_event: Event | None = field(default=None, repr=False, compare=False)
     _processing: bool = field(default=False, repr=False, compare=False)
     _instance_released: bool = field(default=False, repr=False, compare=False)
+    _failure_screenshot_attempted: bool = field(default=False, repr=False, compare=False)
+    _failure_observed_at: float | None = field(default=None, repr=False, compare=False)
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {
