@@ -33,11 +33,15 @@ JEV_MODEL=typesafe/jev-1.14
 
 ## 配置
 
-在选定 Cloudflare namespace 中配置 DeepSeek 的 key、模型名、Redis 和路由计数器，以下为测试示例，每行对应一项 KV：
+在选定 Cloudflare namespace 中配置渠道的 key 列表、模型名、启停状态、Redis 和路由计数器。以下为示例，每行对应一项 KV，示例 key 需替换为真实值：
 
 ```dotenv
-DEEPSEEK_API_KEY=your-model-key
+DEEPSEEK_API_KEY=["your-deepseek-key-1","your-deepseek-key-2"]
 DEEPSEEK_MODEL=your-multimodal-model
+DEEPSEEK_ENABLED=true
+OPENAI_API_KEY=[]
+OPENAI_MODEL=
+OPENAI_ENABLED=false
 REDIS_URL=redis://127.0.0.1:6379/0
 MULTIMODAL_ROUTING_COUNTER_KEY=naruto:multimodal-test-jev:route:sequence
 ```
@@ -46,6 +50,11 @@ MULTIMODAL_ROUTING_COUNTER_KEY=naruto:multimodal-test-jev:route:sequence
 | --- | --- | --- | --- |
 | 鱼玩 | `https://llm-proxy.yuwan-game.com/v1` | `YUWAN_API_KEY` | `YUWAN_MODEL` |
 | DeepSeek 官方 | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` |
+| OpenAI 官方 | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `OPENAI_MODEL` |
+
+`*_API_KEY` 支持 JSON 字符串数组，也兼容原有纯文本单 key。每个渠道最多 20 个 key，每个 key 最长 512 个字符；列表元素不能为空或含控制字符。模型名最长 200 个字符。`*_ENABLED` 使用 `true` / `false`；未设置时保留原行为，有 key 就启用。设置 `false` 后跳过整个渠道；空列表或空 key 也不参与轮询。每个 key 与该渠道的同一模型配成一项，按列表顺序轮询。JEV 保持独立配置，不加入生成模型轮询。
+
+OpenAI 沿用项目的 Chat Completions 协议，需要配置支持图片输入及所需工具调用的模型；连通性测试只证明基本请求可达，不保证所有任务能力。请求参数依据 [OpenAI 官方接口文档](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)，OpenAI 路由将 `max_tokens` 转换为 `max_completion_tokens`，去掉 DeepSeek 的 `thinking` 和通用请求中的 `reasoning_effort`，避免向不支持这些参数的模型发送它们。
 
 鱼玩按原约定在 worker 本地 `.env` 配置 `YUWAN_API_KEY` 和 `YUWAN_MODEL`，启用时两项须成对填写；修改后重启 worker。任务子进程继承父进程解析后的鱼玩配置，不重新读取本地文件。
 
@@ -53,19 +62,23 @@ DeepSeek 使用 `/chat/completions`，地址依据[官方 API 文档](https://ap
 
 DeepSeek 官方不支持在思考模式下强制或指定工具，详见[请求参数文档](https://api-docs.deepseek.com/api/create-chat-completion)。路由层仅对该渠道此类导航请求关闭思考模式，保留工具约束；普通图片识别沿用原参数，重试切到其他兼容渠道时不会继承 DeepSeek 官方参数适配。
 
-启动时只按去除首尾空白后的 key 是否非空确定有效渠道，不请求上游验证 key、模型或额度。有效渠道必须填写模型名；没有有效渠道或缺少 `REDIS_URL` 时明确报配置错误。只配置一个渠道也正常参与 Redis 计数。
+启动时验证配置格式，并按启停状态和 key 列表确定有效项，不请求上游验证 key、模型或额度。有效渠道必须填写模型名；没有有效渠道或缺少 `REDIS_URL` 时明确报配置错误。只配置一个 key 也正常参与 Redis 计数。
 
 DeepSeek、Redis 和路由计数器使用所选 namespace 中的同名 KV key，不回退到本地 `.env`。根目录 `.env` 还需配置 `APP_ENV`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 和对应的 `CLOUDFLARE_KV_NAMESPACE_ID_PROD` / `CLOUDFLARE_KV_NAMESPACE_ID_TEST`，详见[项目配置说明](../../README.md)与[完整字段表](../../docs/test-jev-client-protocol.md#cloudflare-配置)。
 
 服务启动只拉取一次所选 KV namespace，读取全部成功后初始化网关。有效渠道列表在本次启动中固定，修改配置后重启服务；任务子进程继承父进程的 `APP_ENV`、模型配置、已解析 `REDIS_URL` 和 `MULTIMODAL_ROUTING_COUNTER_KEY`，不重复拉取云端。普通脚本访问模型也使用相同的启动加载流程。
 
-DeepSeek 配置使用上表中的变量，key 留空即禁用该渠道。任务 JSON 的 `multimodal` 只需保留 `timeout_seconds` 和 `max_calls`，请删除旧的 URL、模型占位符；它们不再决定实际路由，也不再通过旧配置自动补齐。
+DeepSeek 和 OpenAI 配置使用上表中的变量，key 留空即不参与轮询。任务 JSON 的 `multimodal` 只需保留 `timeout_seconds` 和 `max_calls`，请删除旧的 URL、模型占位符；它们不再决定实际路由，也不再通过旧配置自动补齐。
+
+`NarutoLoginClient` 的管理员菜单提供「大模型渠道」管理：查看当前环境、编辑模型及 key 列表、启停渠道、逐个 key 测试连通性。页面只显示已存 key 的脱敏摘要，可保留、替换、删除或新增；测试当前填写的值不会保存配置，也不会消耗 Redis 路由计数。保存写入当前网站环境的 namespace，等待 KV 同步后重启 worker 生效；已经运行的子进程继续使用旧快照。鱼玩存在本地 `.env` 覆盖时，应同时检查本地配置。
+
+升级顺序：先部署支持列表的 worker 和 client，再通过管理页保存列表并重启 worker。旧版 worker 不认识 JSON key 列表，不能先把正在使用的单 key 改成 JSON。初始 OpenAI 配置为 `OPENAI_API_KEY=[]`、空 `OPENAI_MODEL`、`OPENAI_ENABLED=false`，填写真实 key 与模型、测试通过后再启用。
 
 ## 请求流程
 
-1. 启动时按预定义顺序筛选有 key 的渠道，冻结有效列表和配置。
+1. 启动时按鱼玩、DeepSeek、OpenAI 的预定义顺序筛选启用渠道，将每个渠道的 key 列表展开成独立轮询项，冻结有效列表和配置。
 2. 每次生成模型的实际 HTTP 尝试前，对所选 namespace 的 `MULTIMODAL_ROUTING_COUNTER_KEY` 执行原子 `INCR`。当前测试值为 `naruto:multimodal-test-jev:route:sequence`，代码不固定 key 或追加后缀；缺少该配置时停止初始化。
-3. 用返回值对有效渠道数取模，作为有效列表的下标，同时替换 URL、Authorization 和请求体中的 `model`。
+3. 用返回值对有效 `model + key` 项数取模，作为有效列表的下标，同时替换 URL、Authorization 和请求体中的 `model`。
 4. 请求成功返回；非 200 或网络异常按现有规则等待并重试，下一次尝试再次 `INCR`。图片重试仍重新截图，导航历史和已执行的工具动作保留。
 
 计数器不存在时 Redis 从 0 增加到 1，按有效列表长度取模选择下标；仅一个有效渠道时，下标始终为 0。已有计数器继续累计，不在服务启动时清零，也不设置过期时间。多个进程共用同一 Redis URL、数据库和 key；它们应部署一致的渠道配置。并发情况下其他请求也会消耗序号，因此单个请求的相邻重试不保证切换到另一渠道。

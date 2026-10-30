@@ -13,12 +13,13 @@ from dotenv import dotenv_values
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CHANNEL_ENV_NAMES = (
-    'YUWAN_API_KEY', 'YUWAN_MODEL',
-    'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL',
+    'YUWAN_API_KEY', 'YUWAN_MODEL', 'YUWAN_ENABLED',
+    'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL', 'DEEPSEEK_ENABLED',
+    'OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_ENABLED',
     'JEV_API_KEY', 'JEV_MODEL',
 )
 JEV_ENV_NAMES = ('JEV_API_KEY', 'JEV_MODEL')
-LOCAL_CHANNEL_ENV_NAMES = ('YUWAN_API_KEY', 'YUWAN_MODEL', *JEV_ENV_NAMES)
+LOCAL_CHANNEL_ENV_NAMES = ('YUWAN_API_KEY', 'YUWAN_MODEL', 'YUWAN_ENABLED', *JEV_ENV_NAMES)
 CLOUD_ENV_NAMES = (*CHANNEL_ENV_NAMES, 'REDIS_URL', 'REDIS_QUEUE_KEY',
                    'MULTIMODAL_ROUTING_COUNTER_KEY', 'LDPLAYER_STATE_DIR',
                    'OSS_REGION', 'OSS_BUCKET', 'OSS_ACCESS_KEY_ID',
@@ -73,11 +74,21 @@ def initialize_environment(env_file: Path | None = None) -> None:
 
         values = fetch_environment({**os.environ, 'APP_ENV': profile})
         cloud_count = len(values)
-        local_yuwan = bool((local.get('YUWAN_API_KEY') or '').strip())
+        from naruto_daily.multimodal.channels import CHANNELS, channel_enabled, channel_values, parse_api_keys
+
+        # 显式本地开关独立于 key；关闭渠道时不解析其密钥或要求模型。
+        channel_enabled(local, CHANNELS[0])
+        if local.get('YUWAN_ENABLED') is not None:
+            values['YUWAN_ENABLED'] = local['YUWAN_ENABLED']
+        yuwan_enabled = channel_enabled(values, CHANNELS[0])
+        local_yuwan = bool(parse_api_keys(local.get('YUWAN_API_KEY'), 'YUWAN_API_KEY')) if yuwan_enabled else bool(
+            (local.get('YUWAN_API_KEY') or '').strip())
         if local_yuwan:
-            if not (local.get('YUWAN_MODEL') or '').strip():
-                raise EnvironmentConfigError('本地启用鱼玩时，请在 .env 配置非空的 YUWAN_MODEL')
-            values.update({name: local[name] for name in ('YUWAN_API_KEY', 'YUWAN_MODEL')})
+            selected = {**values, 'YUWAN_API_KEY': local['YUWAN_API_KEY'],
+                        'YUWAN_MODEL': local.get('YUWAN_MODEL') or ''}
+            channel_values(selected, CHANNELS[0])
+            values.update({name: selected[name] for name in ('YUWAN_API_KEY', 'YUWAN_MODEL', 'YUWAN_ENABLED')
+                           if name in selected})
         # JEV 本地配置独立于生成模型；子进程只继承已解析的值。
         # 环境变量优先于 .env，明确的空值也不能回退到共享 KV 中的 key。
         for name in JEV_ENV_NAMES:
@@ -92,7 +103,7 @@ def initialize_environment(env_file: Path | None = None) -> None:
         os.environ['APP_ENV'] = profile
         _initialized = True
         logging.getLogger(__name__).info('Cloudflare KV 配置已加载：%d 项；鱼玩本地配置：%s',
-                                         cloud_count, '启用' if local_yuwan else '未启用',
+                                         cloud_count, '启用' if local_yuwan and yuwan_enabled else '未启用',
                                          extra={'backend_only': True})
 
 

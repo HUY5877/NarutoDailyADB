@@ -40,15 +40,11 @@ def load_gateway_settings(values: Mapping[str, str | None] | None = None) -> Gat
     values = read_environment() if values is None else values
     active = []
     for definition in CHANNELS:
-        key, model = channel_values(values, definition)
-        if not key:
-            continue
-        if not model:
-            raise EnvironmentConfigError(f'请配置有效渠道 {definition.name} 的 {definition.model_variable}')
-        active.append(Channel(definition.name, definition.base_url, model, key))
+        keys, model = channel_values(values, definition)
+        active.extend(Channel(definition.name, definition.base_url, model, key) for key in keys)
     if not active:
         raise EnvironmentConfigError('未配置有效多模态渠道，请在 Cloudflare KV 配置 '
-                                     'DEEPSEEK_API_KEY，或在本地 .env / KV 配置 YUWAN_API_KEY')
+                                     'DEEPSEEK_API_KEY / OPENAI_API_KEY，或在本地 .env / KV 配置 YUWAN_API_KEY，并启用渠道')
     redis_url = (values.get('REDIS_URL') or '').strip()
     try:
         address = urlsplit(redis_url)
@@ -116,6 +112,13 @@ class MultimodalGateway:
         if channel.name == 'deepseek' and (choice == 'required' or isinstance(choice, dict)):
             payload['reasoning_effort'] = 'none'
             payload['thinking'] = {'type': 'disabled'}
+        elif channel.name == 'openai':
+            # 通用 OpenAI 模型不能接收 DeepSeek 扩展或推理模型专用参数。
+            # 使用当前模型默认推理设置；只改本次反序列化的副本，不污染重试。
+            payload.pop('thinking', None)
+            payload.pop('reasoning_effort', None)
+            if 'max_tokens' in payload:
+                payload.setdefault('max_completion_tokens', payload.pop('max_tokens'))
         headers = {key: value for key, value in headers.items()
                    if key.lower() not in ('authorization', 'host', 'content-length')}
         headers['Authorization'] = 'Bearer ' + channel.api_key

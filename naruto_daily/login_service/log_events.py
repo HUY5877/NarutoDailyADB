@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -103,7 +104,24 @@ def _is_capture_exception(error: BaseException | None) -> bool:
 def model_log_secrets() -> tuple[str, ...]:
     """保护启动时注入环境变量的模型密钥。"""
     values = read_multimodal_environment()
-    return tuple((values.get(name) or '').strip() for name in API_KEY_ENV_NAMES)
+    secrets = []
+    for name in API_KEY_ENV_NAMES:
+        value = (values.get(name) or '').strip()
+        if not value:
+            continue
+        secrets.append(value)
+        if name == 'JEV_API_KEY':
+            continue  # JEV 仍使用独立的单 key 协议。
+        try:
+            keys = json.loads(value)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(keys, list):
+            for key in keys:
+                if isinstance(key, str) and key.strip():
+                    secrets.extend((key, key.strip(), json.dumps(key, ensure_ascii=False)[1:-1],
+                                    json.dumps(key, ensure_ascii=True)[1:-1]))
+    return tuple(secrets)
 
 
 def sanitize_log_message(message: str, *, secrets: Iterable[str] = (),
