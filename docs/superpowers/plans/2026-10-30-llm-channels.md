@@ -4,7 +4,7 @@
 
 **Goal:** 增加 OpenAI、多 key Redis 轮询、管理员渠道配置及连通性测试。
 
-**Architecture:** worker 沿用 Cloudflare KV 启动快照和现有 Redis 计数器。client 后端在当前 APP_ENV 选定的 namespace 读写配置；浏览器只收脱敏 key 信息。每个渠道固定 API 地址，model 可修改。
+**Architecture:** worker 沿用 Cloudflare KV 启动快照和现有 Redis 计数器。client 后端只在当前 APP_ENV 选定的 namespace 管理 OpenAI、DeepSeek；浏览器只收脱敏 key 信息。鱼玩只使用本机 `.env` 的 key/model。每个渠道固定 API 地址。
 
 **Tech Stack:** Python、Redis、Cloudflare SDK；client 使用现有 Express、React、TypeScript。
 
@@ -12,15 +12,15 @@
 
 ## 共同约定
 
-- 两仓库从 origin/main 建立 codex/llm-channel-management，并推送同名远端；提交说明中文。
+- worker 从 origin/main 建立 codex/llm-channel-management，并推送同名远端；client 后续按用户要求直接在 main 开发。提交说明中文。
 - OPENAI_API_KEY / DEEPSEEK_API_KEY / YUWAN_API_KEY 支持 JSON 字符串数组，兼容旧纯文本单 key。
-- 每渠道同一 model，对应 *_MODEL；*_ENABLED 缺省保持旧行为（有 key 就启用），false 跳过；新增 OpenAI 默认关闭。
+- 每渠道同一 model，对应 *_MODEL；OpenAI、DeepSeek 的 *_ENABLED 缺省保持旧行为（有 key 就启用），false 跳过；新增 OpenAI 默认关闭。鱼玩仅本机 `.env` 有 key 才启用，无 key 则关闭，不使用云端配置或独立启停变量。
 - 保留现有渠道定义顺序，OpenAI 追加；每渠道按 key 列表顺序展开。沿用 INCR % 槽位数，计数器不重置。
 - 所有 key 的日志脱敏逐项处理；子进程继承列表及启停配置。
 - KV 保持当前启动读取语义，保存后提示重启 worker 生效，不宣传即时生效。
 - 管理员可以测试未保存的 model/key 或已保存的指定 key；固定上游 URL，超时、禁重定向，有限输出。测试不保存、不消耗轮询计数，不返回完整上游错误或 key。
 - 生产站只操作 prod namespace；不接受浏览器指定 namespace。测试缺配置时不能回退生产。
-- 云端先补齐缺失 OpenAI 默认空配置；不把运行中的旧 DeepSeek 单 key 原地改为列表，以免旧 worker 把 JSON 当作 key。
+- 云端先补齐缺失 OpenAI 默认空配置；用户后续要求已将正式、测试 DeepSeek 原密钥迁为单元素列表，回读及连通性验证通过，worker 重启前须升级支持列表的新代码。
 
 ## 任务与验证
 
@@ -54,3 +54,9 @@ prod/test 已补齐并回读 OpenAI 默认关闭配置。测试环境的管理�
 - worker：全量执行 4446 项，首轮 4444 项通过，2 项打包测试因本任务虚拟环境缺少 setuptools 失败。安装 pyproject 声明的构建依赖后，两项重跑通过；没有为此修改源代码。准确结果为全套已执行、失败项复验通过，并非单次全量全绿。
 - worker 本轮相关 247 项回归测试通过，包含本地关闭鱼玩后忽略坏 key 的边界测试。
 - 两仓库完成独立审查与差异格式检查。原主目录的未提交文档删除未改动。生产、测试站均未部署新代码；OpenAI 仍需管理员填写真实 model 和 key 并开启，保存后等待 KV 同步并重启 worker。
+
+## 后续范围修正
+
+用户明确鱼玩仅按各机器的本地网络可用性配置。client 的页面、接口、类型和测试只包含 OpenAI、DeepSeek，拒绝鱼玩的保存和测试请求。worker 丢弃云端鱼玩 key/model/开关，仅使用本地 `.env` 的 key/model；无本地 key 或空列表时关闭，不因云端有 key 而启用，也不因旧开关值关闭已有本地 key。子进程只继承本机解析后的鱼玩配置。
+
+修正验证：worker 环境、Cloudflare 启动、网关、子进程继承、实际日志和测试环境隔离相关 298 项测试通过；client 模型管理、Cloudflare 和 API 相关 70 项自动测试及 25 项浏览器测试通过，类型检查和生产构建通过。先以回归测试复现旧行为，再修复；独立审查未发现 P1/P2。本轮未重跑两仓库完整测试套件，也未部署 worker。

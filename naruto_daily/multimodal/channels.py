@@ -67,6 +67,8 @@ def parse_api_keys(value: str | None, variable: str) -> tuple[str, ...]:
 
 
 def channel_enabled(values: Mapping[str, str | None], definition: ChannelDefinition) -> bool:
+    if definition.name == 'yuwan':
+        return True  # 本机 .env 有 key 才启用；忽略已废弃的启停字段。
     value = values.get(definition.enabled_variable)
     if value is None:
         return True  # 缺省是否启用仍由 key 是否非空决定。

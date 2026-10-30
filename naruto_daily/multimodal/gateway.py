@@ -44,7 +44,7 @@ def load_gateway_settings(values: Mapping[str, str | None] | None = None) -> Gat
         active.extend(Channel(definition.name, definition.base_url, model, key) for key in keys)
     if not active:
         raise EnvironmentConfigError('未配置有效多模态渠道，请在 Cloudflare KV 配置 '
-                                     'DEEPSEEK_API_KEY / OPENAI_API_KEY，或在本地 .env / KV 配置 YUWAN_API_KEY，并启用渠道')
+                                     'DEEPSEEK_API_KEY / OPENAI_API_KEY 并启用渠道，或在本地 .env 配置 YUWAN_API_KEY')
     redis_url = (values.get('REDIS_URL') or '').strip()
     try:
         address = urlsplit(redis_url)

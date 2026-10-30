@@ -132,6 +132,7 @@ def test_child_inherits_multiple_keys_and_redacts_each_stderr_secret(monkeypatch
     monkeypatch.setenv('OPENAI_MODEL', 'gpt-4.1')
     monkeypatch.setenv('OPENAI_ENABLED', 'true')
     monkeypatch.setenv('DEEPSEEK_ENABLED', 'false')
+    monkeypatch.setenv('YUWAN_ENABLED', 'false')
     program = r'''
 import json,os,sys
 message=json.loads(sys.stdin.readline())
@@ -140,6 +141,7 @@ assert keys == ['private-openai-first', 'private-openai-second']
 assert os.environ['OPENAI_MODEL'] == 'gpt-4.1'
 assert os.environ['OPENAI_ENABLED'] == 'true'
 assert os.environ['DEEPSEEK_ENABLED'] == 'false'
+assert 'YUWAN_ENABLED' not in os.environ
 for key in keys:
     print('INFO upstream echoed '+key, file=sys.stderr, flush=True)
 for event in message['events']:

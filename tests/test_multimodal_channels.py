@@ -46,17 +46,24 @@ def test_multiple_keys_share_incr_modulo_counter_across_sync_and_async(configure
     assert configured_environment.keys == ['test:unchanged:counter'] * 5
 
 
-@pytest.mark.parametrize('prefix', ['YUWAN', 'DEEPSEEK', 'OPENAI'])
+@pytest.mark.parametrize('prefix', ['DEEPSEEK', 'OPENAI'])
 def test_explicitly_disabled_channel_retains_keys_without_requiring_a_model(prefix):
     config = settings(**{prefix + '_ENABLED': 'false', prefix + '_MODEL': ''})
     assert prefix.lower() not in [c.name for c in config.channels]
 
 
-@pytest.mark.parametrize('prefix', ['YUWAN', 'DEEPSEEK', 'OPENAI'])
+@pytest.mark.parametrize('prefix', ['DEEPSEEK', 'OPENAI'])
 @pytest.mark.parametrize('value', ['1', 'yes', 'FALSE', '', 'null'])
 def test_enabled_flag_rejects_values_other_than_true_and_false(prefix, value):
     with pytest.raises(EnvironmentConfigError, match=prefix + '_ENABLED'):
         settings(**{prefix + '_ENABLED': value})
+
+
+@pytest.mark.parametrize('enabled', ['true', 'false', '', 'obsolete-value'])
+def test_yuwan_keys_enable_the_local_channel_without_consulting_a_flag(enabled):
+    config = settings(YUWAN_ENABLED=enabled)
+    assert [(c.api_key, c.model) for c in config.channels if c.name == 'yuwan'] == [
+        ('yuwan-first', 'yuwan-vision'), ('yuwan-second', 'yuwan-vision')]
 
 
 @pytest.mark.parametrize('value', [

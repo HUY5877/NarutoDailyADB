@@ -34,52 +34,72 @@ def test_child_inherits_json_keys_models_and_enabled_flags_without_refetch(monke
     assert [(c.name, c.api_key) for c in channels] == [('openai', 'openai-one'), ('openai', 'openai-two')]
 
 
-@pytest.mark.parametrize('enabled', ['true', 'false'])
-def test_local_yuwan_json_keys_and_explicit_enabled_override_cloud(tmp_path, remote_environment, enabled):
+@pytest.mark.parametrize('enabled', ['true', 'false', '', 'obsolete-value'])
+def test_only_local_yuwan_keys_and_model_are_used_regardless_of_enabled_flags(
+        monkeypatch, tmp_path, remote_environment, enabled):
     remote_environment.update(YUWAN_API_KEY='cloud-yuwan', YUWAN_MODEL='cloud-model',
-                              YUWAN_ENABLED='false' if enabled == 'true' else 'true')
+                              YUWAN_ENABLED=enabled)
+    monkeypatch.setenv('YUWAN_API_KEY', 'stale-process-yuwan')
+    monkeypatch.setenv('YUWAN_MODEL', 'stale-process-model')
+    monkeypatch.setenv('YUWAN_ENABLED', 'false')
     (tmp_path / '.env').write_text(
         'YUWAN_API_KEY=\'["local-one", "local-two"]\'\n'
-        f'YUWAN_ENABLED={enabled}\n' + ('YUWAN_MODEL=local-model\n' if enabled == 'true' else ''),
+        f'YUWAN_ENABLED={enabled}\nYUWAN_MODEL=local-model\n',
         encoding='utf-8')
     environment.initialize_environment()
     child = environment.model_environment_for_child()
     assert json.loads(child['YUWAN_API_KEY']) == ['local-one', 'local-two']
-    assert child['YUWAN_ENABLED'] == enabled
-    assert [(c.api_key, c.model) for c in load_gateway_settings(child).channels if c.name == 'yuwan'] == (
-        [('local-one', 'local-model'), ('local-two', 'local-model')] if enabled == 'true' else [])
+    assert 'YUWAN_ENABLED' not in child and 'YUWAN_ENABLED' not in environment.read_environment()
+    monkeypatch.setattr(os, 'environ', child)
+    monkeypatch.setattr(environment, '_initialized', False)
+    monkeypatch.setattr(cloudflare_kv, 'fetch_environment', lambda _: pytest.fail('Child must use local snapshot'))
+    assert [(c.api_key, c.model) for c in initialize_gateway().channels if c.name == 'yuwan'] == [
+        ('local-one', 'local-model'), ('local-two', 'local-model')]
 
 
-def test_local_empty_json_list_preserves_cloud_yuwan_config(tmp_path, remote_environment):
-    remote_environment.update(YUWAN_API_KEY='cloud-yuwan', YUWAN_MODEL='cloud-model')
-    (tmp_path / '.env').write_text("YUWAN_API_KEY='[]'\nYUWAN_MODEL=unused-local-model", encoding='utf-8')
-    environment.initialize_environment()
-    assert os.environ['YUWAN_API_KEY'] == 'cloud-yuwan'
-    assert os.environ['YUWAN_MODEL'] == 'cloud-model'
-
-
-@pytest.mark.parametrize('local_key', [None, '', '[]', '["unfinished"'])
-def test_explicit_local_yuwan_false_skips_invalid_keys_and_disables_cloud_in_child(
+@pytest.mark.parametrize('local_key', [None, '', '   ', '[]'])
+def test_missing_local_yuwan_key_discards_cloud_and_stale_process_config(
         monkeypatch, tmp_path, remote_environment, local_key):
     remote_environment.update(YUWAN_API_KEY='cloud-yuwan', YUWAN_MODEL='cloud-model', YUWAN_ENABLED='true')
-    local_config = 'YUWAN_ENABLED=false\n'
+    monkeypatch.setenv('YUWAN_API_KEY', 'stale-process-yuwan')
+    monkeypatch.setenv('YUWAN_MODEL', 'stale-process-model')
+    monkeypatch.setenv('YUWAN_ENABLED', 'true')
+    local_config = 'YUWAN_ENABLED=true\nYUWAN_MODEL=unused-local-model\n'
     if local_key is not None:
         local_config += f"YUWAN_API_KEY='{local_key}'\n"
     (tmp_path / '.env').write_text(local_config, encoding='utf-8')
     environment.initialize_environment()
     child = environment.model_environment_for_child()
-    assert child['YUWAN_ENABLED'] == 'false'
+    for values in (environment.read_environment(), child):
+        assert all(name not in values for name in ('YUWAN_API_KEY', 'YUWAN_MODEL', 'YUWAN_ENABLED'))
     monkeypatch.setattr(os, 'environ', child)
     monkeypatch.setattr(environment, '_initialized', False)
-    monkeypatch.setattr(cloudflare_kv, 'fetch_environment', lambda _: pytest.fail('Child must inherit local disable'))
+    monkeypatch.setattr(cloudflare_kv, 'fetch_environment', lambda _: pytest.fail('Child must not refetch'))
     assert [(c.name, c.api_key) for c in initialize_gateway().channels] == [('deepseek', 'cloud-deepseek')]
 
 
-@pytest.mark.parametrize('enabled', ['', 'no', 'FALSE'])
-def test_invalid_local_yuwan_enabled_is_rejected_even_without_a_local_key(
+def test_invalid_cloud_yuwan_values_are_ignored_entirely(remote_environment):
+    remote_environment.update(YUWAN_API_KEY='["unfinished"', YUWAN_MODEL='invalid\nmodel',
+                              YUWAN_ENABLED='obsolete-value')
+    environment.initialize_environment()
+    child = environment.model_environment_for_child()
+    assert all(name not in child for name in ('YUWAN_API_KEY', 'YUWAN_MODEL', 'YUWAN_ENABLED'))
+    assert [(c.name, c.api_key) for c in load_gateway_settings(child).channels] == [('deepseek', 'cloud-deepseek')]
+
+
+@pytest.mark.parametrize('enabled', ['true', 'false', 'obsolete-value'])
+def test_local_yuwan_key_requires_local_model_even_with_a_legacy_disabled_flag(
         tmp_path, remote_environment, enabled):
-    (tmp_path / '.env').write_text(f"YUWAN_ENABLED='{enabled}'\n", encoding='utf-8')
-    with pytest.raises(environment.EnvironmentConfigError, match='YUWAN_ENABLED'):
+    remote_environment.update(YUWAN_API_KEY='cloud-key', YUWAN_MODEL='cloud-model', YUWAN_ENABLED='false')
+    (tmp_path / '.env').write_text(f"YUWAN_API_KEY=local-key\nYUWAN_ENABLED='{enabled}'\n", encoding='utf-8')
+    with pytest.raises(environment.EnvironmentConfigError, match='YUWAN_MODEL'):
+        environment.initialize_environment()
+    assert not environment._initialized
+
+
+def test_invalid_local_yuwan_key_is_not_hidden_by_a_legacy_disabled_flag(tmp_path, remote_environment):
+    (tmp_path / '.env').write_text("YUWAN_API_KEY='[\"unfinished\"'\nYUWAN_ENABLED=false\n", encoding='utf-8')
+    with pytest.raises(environment.EnvironmentConfigError, match='YUWAN_API_KEY'):
         environment.initialize_environment()
     assert not environment._initialized
 

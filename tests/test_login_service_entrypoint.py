@@ -148,7 +148,7 @@ def test_default_entrypoint_loads_bootstrap_from_project_root(monkeypatch, tmp_p
         assert settings['CLOUDFLARE_API_TOKEN'] == 'root-token'
         return {'REDIS_URL': 'redis://cloud.invalid/3',
                 'MULTIMODAL_ROUTING_COUNTER_KEY': 'naruto:multimodal:route:sequence',
-                'YUWAN_API_KEY': 'cloud-key', 'YUWAN_MODEL': 'cloud-model'}
+                'DEEPSEEK_API_KEY': 'cloud-key', 'DEEPSEEK_MODEL': 'cloud-model'}
 
     monkeypatch.setattr(cloudflare_kv, 'fetch_environment', fetch)
     monkeypatch.setattr(service_config, 'load_config', lambda: SimpleNamespace(
