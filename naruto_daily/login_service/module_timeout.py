@@ -25,7 +25,8 @@ CLOSE_TIMEOUT_SECONDS = 65.0
 _PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 _MAX_PNG_BYTES = 16 * 1024 * 1024
 _SERIAL = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]*')
-_EXCLUDED_MODULES = frozenset({'enter_secret_realm', 'handle_secret_realm'})
+# 周胜战斗本来就按 40 分钟运行，不触发 10 分钟模块诊断截图。
+_EXCLUDED_MODULES = frozenset({'enter_secret_realm', 'handle_secret_realm', 'arena_weekly'})
 logger = logging.LoggerAdapter(logging.getLogger(__name__), {'backend_only': True})
 
 

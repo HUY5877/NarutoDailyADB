@@ -140,8 +140,24 @@ def test_end_before_threshold_prevents_any_later_capture(monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('name', ['enter_secret_realm', 'handle_secret_realm'])
-def test_secret_realm_is_excluded_but_its_nested_return_has_own_timer(monkeypatch, name):
+def test_arena_weekly_does_not_capture_during_its_planned_forty_minutes(monkeypatch):
+    async def scenario():
+        monitor, clock, storage, calls, _ = monitor_for(monkeypatch)
+        monitor.begin('arena_weekly', SERIAL)
+        for elapsed in (600, 1200, 1800, 2400):
+            clock.now = elapsed
+            monitor.check()
+            await asyncio.sleep(0.01)
+        monitor.end()
+        await monitor.close()
+        assert calls == []
+        assert storage.saved == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('name', ['enter_secret_realm', 'handle_secret_realm', 'arena_weekly'])
+def test_excluded_module_keeps_its_nested_return_timer(monkeypatch, name):
     async def scenario():
         monitor, clock, storage, calls, _ = monitor_for(monkeypatch)
         monitor.begin(name, SERIAL)
