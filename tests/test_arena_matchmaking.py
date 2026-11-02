@@ -32,7 +32,8 @@ class Replay:
 
     def __init__(self, monkeypatch, states=('checked', 'checked', 'checked', 'unchecked'), *,
                  labels=(), action=None, real_templates=False, size=(1920, 1080),
-                 late_screenshot=None, advanced_disappears_after=None, button_centers=None):
+                 late_screenshot=None, advanced_disappears_after=None, button_centers=None,
+                 ignore_settings_tap=False):
         self.action = action or action_config()
         self.clock = 0.
         self.events, self.taps, self.swipes, self.returns = [], [], [], []
@@ -47,9 +48,10 @@ class Replay:
         self.size = size
         self.late_screenshot = late_screenshot
         self.advanced_disappears_after = advanced_disappears_after
+        self.ignore_settings_tap = ignore_settings_tap
         self.screen_count = 0
         self.button_centers = {phase: deque(points) for phase, points in (button_centers or {}).items()}
-        self.button_center = {'main': (86, 225), 'settings': (350, 520)}
+        self.button_center = {'main': (86, 226), 'settings': (350, 520)}
         monkeypatch.setattr(settings, 'return_to_main', self.return_to_main)
 
     @property
@@ -99,7 +101,7 @@ class Replay:
             x, y = center
             frame[y - h // 2:y - h // 2 + h, x - w // 2:x - w // 2 + w] = template
 
-        if data['phase'] == 'main':
+        if data['phase'] == 'main' and data['button'] is not None:
             paste(self.action['settings_button']['template'], data['button'])
         if data['advanced_visible']:
             paste(self.action['advanced_tab']['template'],
@@ -142,8 +144,9 @@ class Replay:
         self.taps.append(point)
         self.events.append(('tap', self.screen_count, point))
         if self.phase == 'main':
-            assert point == self.button_center['main']
-            self.phase = 'settings'
+            assert point == (86, 226)
+            if not self.ignore_settings_tap:
+                self.phase = 'settings'
         elif self.phase == 'settings':
             assert point == self.button_center['settings']
             self.phase = 'advanced'
@@ -170,10 +173,36 @@ class Replay:
             asset_root=ROOT, sleep=self.sleep, clock=lambda: self.clock)
 
 
+def test_occluded_settings_button_still_opens_settings_at_fixed_position(monkeypatch):
+    replay = Replay(monkeypatch, ('unchecked',), real_templates=True,
+                    button_centers={'main': [None]})
+    target = replay.action['settings_button']
+    roi = tuple(target[key] for key in ('left', 'top', 'right', 'bottom'))
+    center, _ = find_template_in_png(replay.screenshot(), ROOT / target['template'],
+                                     roi, target['threshold'])
+    assert center is None
+
+    replay.run()
+
+    assert replay.taps == [(86, 226), (350, 520)]
+    assert len(replay.returns) == 1
+
+
+def test_ignored_settings_click_stops_before_advanced_tab_or_swipes(monkeypatch):
+    replay = Replay(monkeypatch, ('unchecked',), ignore_settings_tap=True)
+
+    with pytest.raises(VisualError, match='超时'):
+        replay.run()
+
+    assert replay.taps == [(86, 226)]
+    assert replay.swipes == []
+    assert replay.returns == []
+
+
 def test_checked_is_cancelled_once_then_verified_before_return(monkeypatch):
     replay = Replay(monkeypatch, action=action_config(scroll_swipes=10))
     replay.run()
-    assert replay.taps == [(86, 225), (350, 520), (1537, 653)]
+    assert replay.taps == [(86, 226), (350, 520), (1537, 653)]
     assert len(replay.swipes) == 10
     assert len(replay.returns) == 1
     assert replay.events[-1][0] == 'return'
@@ -189,7 +218,7 @@ def test_checked_is_cancelled_once_then_verified_before_return(monkeypatch):
 def test_unchecked_or_manually_cancelled_during_recheck_is_not_toggled(monkeypatch, states):
     replay = Replay(monkeypatch, states)
     replay.run()
-    assert replay.taps == [(86, 225), (350, 520)]
+    assert replay.taps == [(86, 226), (350, 520)]
     assert len(replay.returns) == 1
 
 
@@ -202,7 +231,6 @@ def test_recheck_refreshes_label_and_checkbox_position(monkeypatch):
 
 
 @pytest.mark.parametrize('phase, original, fresh, index', [
-    ('main', (86, 225), (100, 235), 0),
     ('settings', (350, 520), (370, 530), 1),
 ])
 def test_button_disappearing_on_recheck_is_observed_again_with_fresh_center(
@@ -219,7 +247,7 @@ def test_click_that_does_not_clear_checkbox_is_never_repeated(monkeypatch):
     replay = Replay(monkeypatch, ('checked',))
     with pytest.raises((VisualError, TimeoutError)):
         replay.run()
-    assert replay.taps == [(86, 225), (350, 520), (1537, 653)]
+    assert replay.taps == [(86, 226), (350, 520), (1537, 653)]
     assert not replay.returns
 
 
@@ -228,7 +256,7 @@ def test_uncertain_state_never_clicks_checkbox_or_returns(monkeypatch, state):
     replay = Replay(monkeypatch, (state,))
     with pytest.raises((VisualError, TimeoutError)):
         replay.run()
-    assert replay.taps == [(86, 225), (350, 520)]
+    assert replay.taps == [(86, 226), (350, 520)]
     assert len(replay.swipes) == replay.action['scroll_swipes']
     assert not replay.returns
 
@@ -238,7 +266,7 @@ def test_uncertainty_on_preclick_frame_discards_earlier_checked_state(monkeypatc
     replay = Replay(monkeypatch, ('checked', 'checked', state))
     with pytest.raises((VisualError, TimeoutError)):
         replay.run()
-    assert replay.taps == [(86, 225), (350, 520)]
+    assert replay.taps == [(86, 226), (350, 520)]
     assert not replay.returns
 
 
@@ -247,7 +275,7 @@ def test_disappearing_advanced_tab_stops_further_swipes(monkeypatch):
     with pytest.raises((VisualError, TimeoutError)):
         replay.run()
     assert len(replay.swipes) == 1
-    assert replay.taps == [(86, 225), (350, 520)]
+    assert replay.taps == [(86, 226), (350, 520)]
     assert not replay.returns
 
 
@@ -276,7 +304,7 @@ def test_shared_deadline_stops_after_late_checkbox_recheck(monkeypatch):
     with pytest.raises(DailyDeadlineExceeded):
         with execution_scope(10., clock=lambda: replay.clock, sleep=replay.sleep):
             replay.run()
-    assert replay.taps == [(86, 225), (350, 520)]
+    assert replay.taps == [(86, 226), (350, 520)]
     assert not replay.returns
 
 
@@ -287,5 +315,5 @@ def test_shared_deadline_stops_after_late_checkbox_recheck(monkeypatch):
 def test_real_templates_ignore_checked_box_on_another_row(monkeypatch, states, checkbox_taps):
     replay = Replay(monkeypatch, states, real_templates=True)
     replay.run()
-    assert replay.taps == [(86, 225), (350, 520), *checkbox_taps]
+    assert replay.taps == [(86, 226), (350, 520), *checkbox_taps]
     assert len(replay.returns) == 1
