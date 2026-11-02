@@ -79,6 +79,7 @@ class TaskRecord:
     _instance_released: bool = field(default=False, repr=False, compare=False)
     _failure_screenshot_attempted: bool = field(default=False, repr=False, compare=False)
     _failure_observed_at: float | None = field(default=None, repr=False, compare=False)
+    _qr_expiry_scheduled: bool = field(default=False, repr=False, compare=False)
 
     def to_view(self) -> dict[str, object]:
         view: dict[str, object] = {
