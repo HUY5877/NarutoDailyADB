@@ -15,6 +15,8 @@ from naruto_daily.return_to_main import return_to_main
 
 
 LOGGER = logging.getLogger('naruto_daily')
+# 1920×1080 主界面的固定位置；忍者头像下的文字可能遮挡设置按钮模板。
+SETTINGS_BUTTON = (86, 226)
 # 从两列设置项之间的空隙拖动，避开文字、复选框和主场景预览按钮。
 SETTINGS_SWIPE = (1090, 900, 1090, 300, 650)
 SETTINGS_SWIPE_RETRIES = ((1090, 700, 1090, 300, 650), (1090, 500, 1090, 300, 650))
@@ -157,7 +159,12 @@ def prepare_arena_matchmaking(client, action, *, template_matcher=find_template_
                               asset_root=Path('.'), sleep=time.sleep, clock=time.monotonic):
     """只在明确勾选时取消一次；确认关闭后调用已有回主界面流程。"""
     flow = _SettingsFlow(client, action, template_matcher, asset_root, sleep, clock)
-    flow.button('settings_button')
+    flow.screenshot()  # 固定坐标点击前仍检查画面尺寸和剩余时间。
+    flow.pause(action['pre_click_wait_seconds'])
+    LOGGER.info('按固定坐标点击主界面设置按钮')
+    flow.tap(*SETTINGS_BUTTON)
+    flow.pause(action['post_click_wait_seconds'])
+    # 识别并复查设置页中的高级设置入口，未进入设置页时不会继续操作。
     flow.button('advanced_tab')
     for index in range(action['scroll_swipes']):
         LOGGER.info('高级设置向上滑动 %d/%d', index + 1, action['scroll_swipes'])
