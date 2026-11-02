@@ -297,7 +297,11 @@ class LoginRuntime:
 
     def _expire(self, record: TaskRecord) -> None:
         if record.authorized_at is not None or record.daily_started_at is not None:
-            self._pending_deletes.add(record.id)
+            # Execution outlives the QR deadline. Schedule expiry only once;
+            # failed deletes stay pending, and late uploads can enqueue again.
+            if not record._qr_expiry_scheduled:
+                self._pending_deletes.add(record.id)
+                record._qr_expiry_scheduled = True
             return
         if record.status == "expired":
             return
@@ -1345,6 +1349,7 @@ class LoginRuntime:
             if record.expires_at_ms <= now:
                 self._expire(record)
             if (record.expires_at_ms + self.config.retention_ms <= now
+                    and not record._processing
                     and task_id not in self._children and task_id not in self._pending_deletes):
                 del self._tasks[task_id]
         for task_id in list(self._pending_deletes):

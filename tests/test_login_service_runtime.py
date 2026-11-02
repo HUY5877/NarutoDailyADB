@@ -7,6 +7,7 @@ from io import BytesIO
 import json
 import os
 import secrets
+import time
 from uuid import uuid4
 
 import pytest
@@ -23,6 +24,7 @@ class MemoryStorage:
     def __init__(self):
         self.objects = {}
         self.put_ids = []
+        self.delete_ids = []
         self.sweep_count = 0
         self.delete_failures = 0
         self.fail_put = False
@@ -37,6 +39,7 @@ class MemoryStorage:
         self.put_ids.append(task_id)
 
     async def delete(self, task_id):
+        self.delete_ids.append(task_id)
         if self.delete_failures:
             self.delete_failures -= 1
             raise OSError("temporary failure")
@@ -754,6 +757,105 @@ def test_ldplayer_worker_expiry_closes_unfinished_instance(monkeypatch, tmp_path
             assert child.poll() is not None
         finally:
             await runtime.stop()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(('authorized_at', 'daily_started_at', 'daily_status'), [
+    (1.0, None, 'entering_game'),
+    (None, 1.0, 'running_daily'),
+    (1.0, 1.0, 'completed'),
+])
+def test_expired_authorized_qr_is_deleted_once_across_sweeps_and_lookups(
+    authorized_at, daily_started_at, daily_status,
+):
+    async def scenario():
+        storage = MemoryStorage()
+        runtime = LoginRuntime(ServiceConfig(), storage)
+        record = parse_submission(submission())
+        record.status = 'qr_ready'
+        record.authorized_at = authorized_at
+        record.daily_started_at = daily_started_at
+        record.daily_status = daily_status
+        record.expires_at_ms = time.time() * 1000 - 1
+        runtime._tasks[record.id] = record
+        await storage.put(record.id, b'qr', record.expires_at)
+
+        for _ in range(5):
+            assert runtime.get_task(record.id, record.access_token)['status'] == 'qr_ready'
+            await runtime._sweep()
+
+        assert storage.objects == {}
+        assert storage.delete_ids == [record.id]
+        assert record.daily_status == daily_status
+        assert record.id in runtime._tasks
+
+    asyncio.run(scenario())
+
+
+def test_expired_authorized_qr_retries_failed_delete_then_stops():
+    async def scenario():
+        storage = MemoryStorage()
+        storage.delete_failures = 1
+        runtime = LoginRuntime(ServiceConfig(), storage)
+        record = parse_submission(submission())
+        record.authorized_at = 1.0
+        record.expires_at_ms = time.time() * 1000 - 1
+        runtime._tasks[record.id] = record
+        await storage.put(record.id, b'qr', record.expires_at)
+
+        await runtime._sweep()
+        assert record.id in storage.objects
+        assert record.id in runtime._pending_deletes
+        await runtime._sweep()
+        assert storage.objects == {}
+        assert record.id not in runtime._pending_deletes
+        await runtime._sweep()
+        assert storage.delete_ids == [record.id, record.id]
+
+    asyncio.run(scenario())
+
+
+def test_authorized_record_is_released_after_qr_cleanup_and_retention():
+    async def scenario():
+        storage = MemoryStorage()
+        runtime = LoginRuntime(ServiceConfig(retention_ms=0), storage)
+        record = parse_submission(submission())
+        record.authorized_at = 1.0
+        record.daily_status = 'completed'
+        record.expires_at_ms = time.time() * 1000 - 1
+        runtime._tasks[record.id] = record
+
+        await runtime._sweep()
+        await runtime._sweep()
+
+        assert runtime.get_task(record.id, record.access_token) is None
+        assert runtime.stats['tasks'] == 0
+        assert storage.delete_ids == [record.id]
+
+    asyncio.run(scenario())
+
+
+def test_qr_cleanup_retains_record_until_processing_finishes():
+    async def scenario():
+        runtime = LoginRuntime(ServiceConfig(retention_ms=0), MemoryStorage())
+        record = parse_submission(submission())
+        record.authorized_at = 1.0
+        record.daily_status = 'failed'
+        record.expires_at_ms = time.time() * 1000 - 1
+        # The child has exited, but emulator cleanup and final reporting remain.
+        record._processing = True
+        runtime._tasks[record.id] = record
+
+        await runtime._sweep()
+        await runtime._sweep()
+        assert runtime.get_task(record.id, record.access_token) is not None
+        runtime._on_run_interrupted(record.id, record.attempt_id)
+        assert record._admin_interrupted
+
+        record._processing = False
+        await runtime._sweep()
+        assert runtime.get_task(record.id, record.access_token) is None
+
     asyncio.run(scenario())
 
 
