@@ -68,7 +68,7 @@ def test_admin_interrupt_during_final_completion_write_releases_session_and_supp
             assert record._admin_interrupted
             assert record.daily_status == "interrupted"
             assert json.loads(await client.get(run_key))["status"] == "interrupted"
-            assert json.loads(await client.get(session_key))["status"] == "failed"
+            assert json.loads(await client.get(session_key))["status"] == "interrupted"
             assert "completed" not in notifications
             assert released == [record.id]
             assert not runtime._stopping
@@ -133,7 +133,7 @@ def test_admin_interrupt_wakes_existing_failure_hold_and_releases_only_its_insta
 
             assert released == [record.id]
             assert record.daily_status == "interrupted"
-            assert json.loads(await client.get(session_key))["status"] == "failed"
+            assert json.loads(await client.get(session_key))["status"] == "interrupted"
             assert not runtime._stop_event.is_set() and not runtime._stopping
             assert await client.llen(cfg.redis_queue_key) == 0
         finally:
@@ -213,13 +213,13 @@ def test_slow_final_write_does_not_notify_success_and_late_interruption_closes_s
             # the execution coroutine that already returned after flush timeout.
             try:
                 async with asyncio.timeout(1):
-                    while json.loads(await client.get(session_key))["status"] != "failed":
+                    while json.loads(await client.get(session_key))["status"] != "interrupted":
                         await asyncio.sleep(.01)
             except TimeoutError:
                 pass
 
             assert "completed" not in before_redis_reply, "Redis 回写结果未知时不能提前通知成功"
-            assert json.loads(await client.get(session_key))["status"] == "failed"
+            assert json.loads(await client.get(session_key))["status"] == "interrupted"
             assert record._admin_interrupted and record.daily_status == "interrupted"
             assert json.loads(await client.get(run_key))["status"] == "interrupted"
             assert "completed" not in notifications

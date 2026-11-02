@@ -114,11 +114,11 @@ def test_scan_progress_reaches_website_while_game_is_still_opening(
             assert await runtime._run_reporter.flush(record.id)
             run = json.loads(await client.get(f'{runtime.config.redis_queue_key}:runs:{record.id}'))
             assert run['scanCapturedAt'].endswith('Z')
-            assert run['status'] == 'opening_game' and 'authorizedAt' not in run
+            assert run['status'] == 'waiting_scan' and 'authorizedAt' not in run
             session = json.loads(await client.get(session_key))
             assert not session.get('loginAuthorized')
             if not redis_unavailable:
-                assert session['scanCaptured'] is True and session['status'] == 'qr_ready'
+                assert session['scanCaptured'] is True and session['status'] == 'waiting_scan'
                 assert 'refreshRequestId' not in session and await client.get(refresh_key) is None
             entered_game.touch()
             await asyncio.wait_for(work, 5)

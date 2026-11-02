@@ -119,7 +119,7 @@ def test_admin_interrupt_between_await_and_eval_rejects_already_built_updates(st
 
             interrupted = await admin_interrupt(client, run_key)
             if session_expired:
-                await client.delete(session_key)
+                record.expires_at_ms = 1
             resume.set()
             await writing
 
@@ -153,7 +153,7 @@ def test_status_only_admin_change_is_detected_even_when_retry_sequence_is_unchan
             interrupted = await admin_interrupt(client, run_key)
             assert json.loads(interrupted)["sequence"] == update.snapshot["sequence"]
             if session_expired:
-                await client.delete(session_key)
+                record.expires_at_ms = 1
 
             await reporter._write(record.id, update)
             await reporter._write(record.id, update)
@@ -173,6 +173,7 @@ def test_worker_completed_before_admin_interrupt_cannot_overwrite_the_later_stop
         calls = []
         reporter = reporter_with_callback(cfg, queue, calls)
         try:
+            assert await queue.set_execution_status(record, "completed")
             completed = pending_update(reporter, record, "completed", "执行完毕")
             await reporter._write(record.id, completed)
             run_key = keys(cfg, record)[0]
@@ -199,6 +200,7 @@ def test_workers_own_repeated_interrupted_updates_do_not_trigger_admin_callback(
         try:
             running = pending_update(reporter, record, "running_daily", "日常执行中")
             await reporter._write(record.id, running)
+            assert await queue.set_execution_status(record, "interrupted")
             stopped = pending_update(reporter, record, "interrupted", "执行进程主动退出")
             await reporter._write(record.id, stopped)
             await reporter._write(record.id, stopped)
@@ -225,10 +227,10 @@ def test_new_attempt_can_restart_but_stale_same_worker_attempt_cannot_write_or_i
         old_reporter = reporter_with_callback(cfg, queue, old_calls)
         new_reporter = reporter_with_callback(cfg, queue, new_calls)
         try:
-            old_initial = pending_update(old_reporter, first, "running_daily", "旧执行开始")
+            old_initial = pending_update(old_reporter, first, "opening_game", "旧执行开始")
             await old_reporter._write(first.id, old_initial)
             run_key, _, session_key = keys(cfg, first)
-            await admin_interrupt(client, run_key)
+            # The original attempt is requeued before reaching a terminal state.
             # A buffered old update has a larger sequence than a fresh reporter.
             for index in range(3):
                 stale = pending_update(old_reporter, first, "completed", f"旧执行迟到更新 {index}")
@@ -247,7 +249,7 @@ def test_new_attempt_can_restart_but_stale_same_worker_attempt_cannot_write_or_i
                 await admin_interrupt(client, run_key)
             before = await client.get(run_key)
             if session_expired:
-                await client.delete(session_key)
+                second.expires_at_ms = 1
 
             await old_reporter._write(first.id, stale)
             assert await client.get(run_key) == before

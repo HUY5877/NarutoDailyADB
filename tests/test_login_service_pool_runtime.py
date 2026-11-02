@@ -52,6 +52,12 @@ class FakeRedisQueue:
         record.error = error
         return True
 
+    async def mark_authorized(self, record):
+        return True
+
+    async def set_execution_status(self, record, status):
+        return True
+
     async def requeue(self, record):
         self.requeued.append(record.id)
         record.status = "queued"
@@ -261,7 +267,7 @@ def test_shutdown_releases_pool_before_requeueing_same_task(monkeypatch, tmp_pat
         monkeypatch.setattr(runtime, "_requeue", requeue)
         await runtime._process_record(task)
         assert events == [
-            ("close", task.id), ("flush", task.id), ("finish", task.id), ("requeue", task.id),
+            ("close", task.id), ("requeue", task.id), ("flush", task.id), ("finish", task.id),
         ]
     asyncio.run(scenario())
 

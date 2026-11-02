@@ -130,8 +130,10 @@ def test_publish_callback_releases_instance_without_requeue_or_failure_hold(
             assert pool.closed == [record.id]
             assert record.id not in runtime._children and not runtime._stopping
             assert await client.llen(cfg.redis_queue_key) == 0
-            assert json.loads(await client.get(run_key)) == interrupted
-            assert json.loads(await client.get(session_key))["status"] == "failed"
+            final = json.loads(await client.get(run_key))
+            assert final["status"] == "interrupted" and final["attemptId"] == interrupted["attemptId"]
+            assert final["errorCode"] == "admin_interrupted" and final["finishedAt"]
+            assert json.loads(await client.get(session_key))["status"] == "interrupted"
         finally:
             if not work.done():
                 work.cancel()

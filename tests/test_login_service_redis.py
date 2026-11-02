@@ -44,7 +44,7 @@ def fake_client():
 
 
 async def enqueue(client, body, *, session=None, ttl=60_000):
-    key = f"{config().redis_queue_key}:sessions:{body['id']}"
+    key = f"{config().redis_queue_key}:runs:{body['id']}"
     if session is None:
         session = session_body(body)
     await client.set(key, json.dumps(session), px=ttl)
@@ -88,7 +88,7 @@ def test_failed_login_cleanup_releases_only_its_lock_and_preserves_history(lease
             run, log = f'{prefix}:runs:{record.id}', f'{prefix}:logs:{record.id}'
             await client.set(refresh, 'pending command', ex=600)
             await client.set(other_refresh, 'another task', ex=600)
-            await client.set(run, 'execution failure history', ex=86400)
+            # The retained task itself now contains the failure history.
             await client.xadd(log, {'json': 'original execution log'})
             before = await client.pttl(key)
             record.daily_error_code = error_code
@@ -98,14 +98,14 @@ def test_failed_login_cleanup_releases_only_its_lock_and_preserves_history(lease
             assert await queue.finish_failed(record)
             ended = json.loads(await client.get(key))
             assert ended['status'] == 'failed' and ended['errorCode'] == error_code
-            assert 'loginAuthorized' not in ended and 'refreshRequestId' not in ended
+            assert ended['loginAuthorized'] is True and 'refreshRequestId' not in ended
             for field in ['tokenHash', 'createdAt', 'expiresAt', 'userOptions', 'loginExpiresAt']:
                 assert ended.get(field) == saved.get(field)
-            assert 0 < await client.pttl(key) <= before
+            assert await client.ttl(key) >= 604799
             assert await client.get(active) is None
             assert await client.get(refresh) is None
             assert await client.get(other_refresh) == 'another task'
-            assert await client.get(run) == 'execution failure history' and await client.xlen(log) == 1
+            assert ended['finishedAt'] is not None and await client.xlen(log) == 1
             assert await client.llen(prefix) == 0, 'failure must not automatically replay the task'
             newer = str(uuid4())
             await client.set(active, newer, ex=600)
@@ -116,7 +116,7 @@ def test_failed_login_cleanup_releases_only_its_lock_and_preserves_history(lease
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('damage', ['missing', 'no_ttl', 'expired', 'owner', 'identity', 'queued'])
+@pytest.mark.parametrize('damage', ['missing', 'no_ttl', 'owner', 'identity', 'queued'])
 def test_failed_login_cleanup_never_recreates_or_overwrites_unowned_sessions(damage):
     async def scenario():
         client = fake_client()
@@ -162,7 +162,7 @@ def test_claim_starts_fixed_occupancy_and_refresh_ack_is_scoped_idempotent():
         assert claimed['expiresAt'] == body['expiresAt']
         assert claimed['loginExpiresAt'] == record.expires_at
         assert record.queue_expires_at == body['expiresAt']
-        assert 590000 < await client.pttl(active_key) <= 600000
+        assert await client.ttl(active_key) >= 604799
         assert claimed['refreshSupported'] is True
         deadline = record.expires_at
         request_id = str(uuid4())
@@ -208,7 +208,7 @@ def test_scan_capture_cancels_only_its_refresh_without_authorizing_or_extending_
             refresh = f'{prefix}:refresh:{record.id}'
             other_refresh = f'{prefix}:refresh:{uuid4()}'
             saved = json.loads(await client.get(key))
-            saved.update(status=phase, refreshRequestId=request_id)
+            saved.update(status='waiting_scan' if phase == 'qr_ready' else phase, refreshRequestId=request_id)
             await client.set(key, json.dumps(saved), keepttl=True)
             await client.set(refresh, json.dumps({'taskId': record.id, 'requestId': request_id}), ex=600)
             await client.set(other_refresh, 'another task', ex=600)
@@ -216,12 +216,12 @@ def test_scan_capture_cancels_only_its_refresh_without_authorizing_or_extending_
             assert await queue.mark_scan_captured(record)
             assert await queue.mark_scan_captured(record), 'lost acknowledgement can be retried'
             captured = json.loads(await client.get(key))
-            assert captured['scanCaptured'] is True and captured['status'] == 'qr_ready'
+            assert captured['scanCaptured'] is True and captured['status'] == 'waiting_scan'
             assert 'refreshRequestId' not in captured and 'loginAuthorized' not in captured
             for field in ['tokenHash', 'createdAt', 'expiresAt', 'loginStartedAt', 'loginExpiresAt', 'attemptId']:
                 assert captured[field] == saved[field]
-            assert 0 < await client.pttl(key) <= session_ttl
-            assert 0 < await client.pttl(active) <= active_ttl
+            assert await client.ttl(key) >= 604799
+            assert await client.ttl(active) >= 604799
             assert await client.get(active) == record.id
             assert await client.get(refresh) is None
             assert await client.get(other_refresh) == 'another task'
@@ -233,7 +233,7 @@ def test_scan_capture_cancels_only_its_refresh_without_authorizing_or_extending_
 
 
 @pytest.mark.parametrize('damage', [
-    'missing', 'no_ttl', 'expired', 'owner', 'attempt', 'identity', 'queued', 'failed', 'expired_status',
+    'missing', 'no_ttl', 'owner', 'attempt', 'identity', 'queued', 'failed', 'expired_status',
 ])
 def test_scan_capture_does_not_restore_or_modify_ineligible_sessions(damage):
     async def scenario():
@@ -334,18 +334,18 @@ def test_duplicate_tasks_have_one_owner_and_preserve_auth_and_ttl():
             other = second if owner is first else first
             stored = json.loads(await client.get(key))
             assert stored == session | {"status": "starting_emulator", "workerId": owner.owner,
-                                        "attemptId": claimed.attempt_id}
+                                        "attemptId": claimed.attempt_id, "taskId": claimed.id, "sequence": 0}
             assert claimed._queue_payload == payload
-            assert 0 < await client.pttl(key) <= before
+            assert await client.ttl(key) >= 604799
             assert not await other.set_status(claimed, "failed")
             assert await owner.set_status(claimed, "opening_game")
             assert await owner.set_status(claimed, "qr_ready")
             assert not await owner.set_status(claimed, "failed")
             stored = json.loads(await client.get(key))
-            assert stored["status"] == "qr_ready"
+            assert stored["status"] == "waiting_scan"
             assert stored["tokenHash"] == session["tokenHash"]
             assert stored["custom"] == {"preserved": True}
-            assert 0 < await client.pttl(key) <= before
+            assert await client.ttl(key) >= 604799
         finally:
             await client.aclose()
     asyncio.run(scenario())
@@ -522,8 +522,8 @@ def test_requeue_preserves_original_payload_ttl_and_session_credentials():
             before = await client.pttl(key)
             assert await queue.requeue(record)
             assert await client.lrange(config().redis_queue_key, 0, -1) == [payload]
-            assert json.loads(await client.get(key)) == session_body(body) | {"attemptId": record.attempt_id}
-            assert 0 < await client.pttl(key) <= before
+            assert json.loads(await client.get(key)) == session_body(body) | {"attemptId": record.attempt_id, "taskId": record.id, "sequence": 0}
+            assert await client.ttl(key) >= 604799
             assert not await queue.requeue(record)
             reclaimed = await other.pop()
             assert reclaimed.id == body["id"]

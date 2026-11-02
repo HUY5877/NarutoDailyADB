@@ -287,7 +287,7 @@ def test_secret_completion_changes_only_daily_timeout_group_message(
 
 @pytest.mark.parametrize('outcome', ['completed', 'failed'])
 @pytest.mark.parametrize('session_loss', ['deleted', 'expired'])
-def test_verified_username_survives_redis_session_deletion_or_expiry(monkeypatch, tmp_path, outcome, session_loss):
+def test_verified_username_survives_login_deadline_without_deleting_run(monkeypatch, tmp_path, outcome, session_loss):
     async def scenario():
         record = record_with_ttl()
         finish_gate = tmp_path / 'finish-after-session-loss'
@@ -316,14 +316,9 @@ def test_verified_username_survives_redis_session_deletion_or_expiry(monkeypatch
             run_key = f'{runtime.config.redis_queue_key}:runs:{record.id}'
             assert json.loads(await client.get(run_key))['username'] == '雪花'
             assert await queue.notification_user_id(record) == USER_ID
-            if session_loss == 'deleted':
-                await client.delete(key)
-            else:
-                await client.pexpire(key, 1)
-                async with asyncio.timeout(3):
-                    while await client.exists(key):
-                        await asyncio.sleep(.01)
-            assert await queue.notification_user_id(record) == ''
+            # Login expiry does not delete the unified execution record.
+            record.expires_at_ms = 1
+            assert await queue.notification_user_id(record) == USER_ID
             assert USER_ID not in repr(record) and USER_ID not in str(record.to_view())
             finish_gate.touch()
             await asyncio.wait_for(work, 3)
@@ -335,7 +330,7 @@ def test_verified_username_survives_redis_session_deletion_or_expiry(monkeypatch
             report = json.loads(await client.get(run_key))
             assert report['status'] == outcome and report['username'] == '雪花'
             assert pool.closed == [record.id]
-            assert await client.get(key) is None, 'Notification must never recreate an expired login session'
+            assert await client.exists(key) == 1, 'The execution record must outlive its login deadline'
         finally:
             await runtime.stop()
     asyncio.run(scenario())
@@ -420,7 +415,7 @@ def test_cleanup_failure_overrides_completed_result_before_notification(monkeypa
             await drain_notifications(runtime)
             assert run_report(runtime, record)['errorCode'] == 'instance_cleanup_failed'
             assert notifications.messages == [(record.id, '雪花', 'failed', 'instance_cleanup_failed')]
-            assert not queue.failed_sessions
+            assert queue.failed_sessions == [record.id]
         finally:
             await runtime.stop()
     asyncio.run(scenario())

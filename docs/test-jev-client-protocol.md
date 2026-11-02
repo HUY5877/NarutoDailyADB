@@ -66,14 +66,13 @@ PostgreSQL 复用同一主机、端口和账号，仅 URL 中的数据库名不�
 | 用途 | 运行时 key / 路径 |
 | --- | --- |
 | FIFO 队列 | `${REDIS_QUEUE_KEY}` |
-| 登录会话 | `${REDIS_QUEUE_KEY}:sessions:<taskId>` |
 | 用户活动任务锁 | `${REDIS_QUEUE_KEY}:users:<userId>:active` |
 | 二维码刷新命令 | `${REDIS_QUEUE_KEY}:refresh:<taskId>` |
-| 执行摘要 | `${REDIS_QUEUE_KEY}:runs:<taskId>` |
+| 统一扫码与执行状态 | `${REDIS_QUEUE_KEY}:runs:<taskId>` |
 | 执行日志 Stream | `${REDIS_QUEUE_KEY}:logs:<taskId>` |
 | OSS 二维码 | `${OSS_KEY_PREFIX}/<taskId>/qr.png` |
 
-消息字段、状态机和 TTL 沿用[worker 协议](../naruto_daily/login_service/README.md#redis-消息和状态)。客户端先创建带有 `tokenHash`、`simulation: true`、`queued` 状态、`userId` 和原时间戳的会话及用户活动锁，再 `LPUSH` 到所选队列。worker 原子领取，客户端不消费队列。
+消息字段、状态机和保存期限沿用[worker 协议](../naruto_daily/login_service/README.md#redis-消息和状态)。客户端先创建带有 `id/taskId`、`tokenHash`、`simulation: true`、`queued` 状态、`userId` 和原时间戳的统一 `runs` 记录及用户活动索引，再 `LPUSH` 到所选队列。worker 原子领取，客户端不消费队列。扫码仍限领取后 10 分钟；记录与活动索引至少保留 7 天，已授权任务的占用持续到执行结束。两端须按 worker 协议中的升级顺序协调切换，不得混跑旧版 `sessions` worker。
 
 ```json
 {

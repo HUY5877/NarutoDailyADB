@@ -180,7 +180,7 @@ def _body(config, **changes):
 async def _enqueue(client, prefix, body, **extra):
     session = {key: body[key] for key in ('id', 'createdAt', 'expiresAt')}
     session.update(status='queued', simulation=True, tokenHash='ab' * 32, **extra)
-    await client.set(f'{prefix}:sessions:{body["id"]}', json.dumps(session), px=60_000)
+    await client.set(f'{prefix}:runs:{body["id"]}', json.dumps(session), px=60_000)
     await client.lpush(prefix, json.dumps(body))
 
 

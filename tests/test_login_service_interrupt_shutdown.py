@@ -65,7 +65,7 @@ def test_shutdown_waits_for_interruption_cleanup_created_while_reporter_is_closi
         allow_cleanup = asyncio.Event()
         events = []
         original_reporter_close = reporter.close
-        original_finish_failed = queue.finish_failed
+        original_finish_failed = queue.set_execution_status
         original_queue_close = queue.close
 
         class DelayedTransport:
@@ -83,11 +83,11 @@ def test_shutdown_waits_for_interruption_cleanup_created_while_reporter_is_closi
             closing.set()
             await original_reporter_close(**kwargs)
 
-        async def finish_failed(current):
+        async def finish_failed(current, status):
             cleanup_started.set()
             await allow_cleanup.wait()
             assert "queue_closed" not in events, "中断会话清理必须在 Redis 连接关闭之前执行"
-            result = await original_finish_failed(current)
+            result = await original_finish_failed(current, status)
             events.append("session_cleaned")
             return result
 
@@ -97,7 +97,7 @@ def test_shutdown_waits_for_interruption_cleanup_created_while_reporter_is_closi
 
         queue._client = DelayedTransport()
         monkeypatch.setattr(reporter, "close", close_reporter)
-        monkeypatch.setattr(queue, "finish_failed", finish_failed)
+        monkeypatch.setattr(queue, "set_execution_status", finish_failed)
         monkeypatch.setattr(queue, "close", close_queue)
         reporter.start()
         stopping = asyncio.create_task(runtime.stop())
@@ -116,7 +116,7 @@ def test_shutdown_waits_for_interruption_cleanup_created_while_reporter_is_closi
             await asyncio.wait_for(asyncio.shield(stopping), 2)
 
             assert events == ["session_cleaned", "queue_closed"]
-            assert json.loads(await client.get(session_key))["status"] == "failed"
+            assert json.loads(await client.get(session_key))["status"] == "interrupted"
             assert await client.get(active_key) is None
             assert not runtime._interruption_tasks
         finally:

@@ -179,7 +179,7 @@ def test_claim_requeue_and_child_dispatch_preserve_channel(monkeypatch, channel,
             body = queue_body() | {'loginType': channel}
             session = {'id': body['id'], 'status': 'queued', 'createdAt': body['createdAt'], 'expiresAt': body['expiresAt'],
                        'simulation': True, 'tokenHash': 'ab' * 32, 'loginType': channel}
-            await client.set(f"{config.redis_queue_key}:sessions:{body['id']}", json.dumps(session), px=60_000)
+            await client.set(f"{config.redis_queue_key}:runs:{body['id']}", json.dumps(session), px=60_000)
             await client.lpush(config.redis_queue_key, json.dumps(body))
             queue = RedisTaskQueue(config, client=client)
             claimed = await queue.pop()

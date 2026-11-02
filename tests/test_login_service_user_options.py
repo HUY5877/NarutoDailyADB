@@ -160,7 +160,7 @@ def test_redis_claim_and_requeue_keep_complete_user_options(mode):
                 "expiresAt": body["expiresAt"], "simulation": True, "tokenHash": "ab" * 32,
             }
             payload = json.dumps(body)
-            await client.set(f"{config.redis_queue_key}:sessions:{body['id']}", json.dumps(session), px=60_000)
+            await client.set(f"{config.redis_queue_key}:runs:{body['id']}", json.dumps(session), px=60_000)
             await client.lpush(config.redis_queue_key, payload)
             record = await queue.pop()
             assert record is not None

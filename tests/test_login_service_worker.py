@@ -15,7 +15,7 @@ import pytest
 from oss_fakes import OSS_ENV
 
 from naruto_daily.login_service.config import ServiceConfig, load_config
-from naruto_daily.login_service.queue import RedisTaskQueue, SAFE_TASK_ERROR
+from naruto_daily.login_service.queue import RedisTaskQueue, SAFE_DRIVER_ERRORS, _STATUS_SCRIPT
 from naruto_daily.login_service.runtime import LoginRuntime
 
 
@@ -74,16 +74,18 @@ def worker(server, storage, **overrides):
 
 
 async def enqueue(client, runtime, body, *, ttl=30_000, session_fields=None):
-    # Match the public TypeScript envelope/session contract; no bearer token is queued.
+    # Match the single public run contract; its retention is independent of login TTL.
     session = {
-        "id": body["id"], "status": "queued", "createdAt": body["createdAt"],
-        "expiresAt": body["expiresAt"], "simulation": True,
+        "id": body["id"], "taskId": body["id"], "sequence": 0,
+        "status": "queued", "createdAt": body["createdAt"],
+        "expiresAt": body["expiresAt"], "simulation": True, "userId": str(uuid4()),
         "tokenHash": sha256(b"test-only-browser-session-token").hexdigest(),
     }
     session.update(session_fields or {})
-    key = f"{runtime.config.redis_queue_key}:sessions:{body['id']}"
+    key = f"{runtime.config.redis_queue_key}:runs:{body['id']}"
     payload = json.dumps(body)
-    await client.set(key, json.dumps(session), px=ttl)
+    await client.set(key, json.dumps(session), px=max(ttl, 604_800_000))
+    await client.set(f"{runtime.config.redis_queue_key}:users:{session['userId']}:active", body["id"], ex=604800)
     await client.lpush(runtime.config.redis_queue_key, payload)
     return key, payload, session
 
@@ -117,15 +119,8 @@ async def wait_for_run_status(client, runtime, task_id, status, *, timeout=8):
             await asyncio.sleep(0.01)
 
 
-async def assert_interrupted_run(client, runtime, task_id):
+async def assert_interrupted_journal(client, runtime, task_id):
     prefix = runtime.config.redis_queue_key
-    run = json.loads(await client.get(f"{prefix}:runs:{task_id}"))
-    assert run["status"] == "interrupted"
-    assert run["errorCode"] == "worker_stopped"
-    assert run["workerId"] == runtime._redis_queue.owner
-    assert run["finishedAt"] is not None
-    assert datetime.fromisoformat(run["finishedAt"].replace("Z", "+00:00"))
-    assert run["logSource"] == "disabled"
     assert await client.exists(f"{prefix}:logs:{task_id}") == 0
     journal_path = runtime.config.ldplayer_state_dir / "runs" / f"{task_id}.json"
     assert journal_path.is_file(), "Stopping a consumed task must persist its interrupted execution journal"
@@ -134,13 +129,19 @@ async def assert_interrupted_run(client, runtime, task_id):
     assert journal["errorCode"] == "worker_stopped"
 
 
-async def assert_requeued_session(client, runtime, key, payload, original, before_ttl, expected_attempt_id):
+async def assert_requeued_run(client, runtime, key, payload, original, before_ttl, expected_attempt_id):
     session = json.loads(await client.get(key))
-    attempt_id = session.pop("attemptId")
+    attempt_id = session["attemptId"]
     assert isinstance(attempt_id, str) and re.fullmatch(r"[0-9a-f]{32}", attempt_id)
     assert attempt_id == expected_attempt_id
-    assert session == original
-    assert 0 < await client.pttl(key) <= before_ttl
+    for field in ("id", "taskId", "createdAt", "expiresAt", "simulation", "userId", "tokenHash", "userOptions"):
+        if field in original:
+            assert session[field] == original[field]
+    assert session["status"] == "queued"
+    assert "workerId" not in session
+    assert isinstance(session["sequence"], int) and session["sequence"] >= original["sequence"]
+    assert before_ttl >= 604_790_000
+    assert await client.pttl(key) >= 604_790_000
     assert await client.lrange(runtime.config.redis_queue_key, 0, -1) == [payload]
 
 
@@ -153,10 +154,18 @@ def test_redis_worker_publishes_png_and_stages_without_changing_auth_or_expiry()
         storage = MemoryStorage()
         runtime = worker(server, storage, step_delay_ms=80)
         body = task_body()
-        # Deliberately shorter than expiresAt: a refreshed expiry is observable.
+        # A short requested fixture TTL cannot truncate the run's seven-day retention.
         key, _, original = await enqueue(producer, runtime, body, ttl=10_000)
         before_ttl = await producer.pttl(key)
         observed = {"queued"}
+        real_set_status = runtime._set_status
+
+        async def observe_status(record, status):
+            await real_set_status(record, status)
+            # waiting_scan can immediately become completed in the mock child.
+            observed.add(json.loads(await producer.get(key))["status"])
+
+        runtime._set_status = observe_status
         pids = set()
         await runtime.start()
         try:
@@ -166,12 +175,12 @@ def test_redis_worker_publishes_png_and_stages_without_changing_auth_or_expiry()
                     observed.add(session["status"])
                     assert session["tokenHash"] == original["tokenHash"]
                     assert session["expiresAt"] == original["expiresAt"]
-                    assert 0 < await producer.pttl(key) <= before_ttl
+                    assert await producer.pttl(key) >= 604_790_000
                     pids.update(child.pid for child in runtime._children.values())
-                    if session["status"] in {"qr_ready", "failed"}:
+                    if session["status"] in {"completed", "failed"}:
                         break
                     await asyncio.sleep(0.005)
-            assert observed == {"queued", "starting_emulator", "opening_game", "preparing_qr", "qr_ready"}
+            assert observed == {"queued", "starting_emulator", "opening_game", "preparing_qr", "waiting_scan", "completed"}
             assert len(pids) == 1 and os.getpid() not in pids
             png, expires_at = storage.objects[body["id"]]
             with Image.open(BytesIO(png)) as image:
@@ -196,16 +205,16 @@ def test_duplicate_redis_deliveries_produce_one_image():
         await producer.lpush(runtime.config.redis_queue_key, *([payload] * 4))
         await runtime.start()
         try:
-            await wait_for_status(producer, key, "qr_ready")
+            await wait_for_status(producer, key, "completed")
             # A completed task redelivered later must remain terminal, too.
             await producer.lpush(runtime.config.redis_queue_key, payload)
             next_body = task_body()
             next_key, _, _ = await enqueue(producer, runtime, next_body)
-            await wait_for_status(producer, next_key, "qr_ready")
+            await wait_for_status(producer, next_key, "completed")
             assert storage.put_ids.count(body["id"]) == 1
             assert set(storage.put_ids) == {body["id"], next_body["id"]}
             assert await producer.llen(runtime.config.redis_queue_key) == 0
-            assert json.loads(await producer.get(key))["status"] == "qr_ready"
+            assert json.loads(await producer.get(key))["status"] == "completed"
         finally:
             await runtime.stop()
             await producer.aclose()
@@ -224,7 +233,7 @@ def test_malformed_and_expired_messages_do_not_block_the_next_task():
             timespec="milliseconds",
         ).replace("+00:00", "Z")
         expired_key, _, _ = await enqueue(producer, runtime, expired)
-        expired_session = await producer.get(expired_key)
+        expired_session = json.loads(await producer.get(expired_key))
         missing = task_body()
         missing_key, _, _ = await enqueue(producer, runtime, missing)
         await producer.delete(missing_key)
@@ -234,9 +243,12 @@ def test_malformed_and_expired_messages_do_not_block_the_next_task():
         valid_key, _, _ = await enqueue(producer, runtime, valid)
         await runtime.start()
         try:
-            await wait_for_status(producer, valid_key, "qr_ready")
+            await wait_for_status(producer, valid_key, "completed")
             assert storage.put_ids == [valid["id"]]
-            assert await producer.get(expired_key) == expired_session
+            expired_run = json.loads(await producer.get(expired_key))
+            assert expired_run["status"] == "expired" and expired_run["finishedAt"]
+            for field in ("id", "taskId", "userId", "tokenHash", "createdAt", "expiresAt"):
+                assert expired_run[field] == expired_session[field]
             assert await producer.exists(missing_key) == 0
             assert await producer.llen(runtime.config.redis_queue_key) == 0
         finally:
@@ -257,13 +269,14 @@ def test_storage_failure_publishes_safe_error_and_worker_continues(caplog):
         await runtime.start()
         try:
             failed = await wait_for_status(producer, key, "failed")
-            assert failed["error"] == SAFE_TASK_ERROR
+            assert failed["errorCode"] == "unexpected_error"
+            assert failed["error"] == SAFE_DRIVER_ERRORS["unexpected_error"]
             assert failed["tokenHash"] == original["tokenHash"]
             assert body["id"] not in storage.objects
             storage.fail_put = False
             next_body = task_body()
             next_key, _, _ = await enqueue(producer, runtime, next_body)
-            await wait_for_status(producer, next_key, "qr_ready")
+            await wait_for_status(producer, next_key, "completed")
             assert storage.put_ids == [next_body["id"]]
             public_output = json.dumps(failed) + caplog.text
             assert "private-storage-password" not in public_output
@@ -275,7 +288,7 @@ def test_storage_failure_publishes_safe_error_and_worker_continues(caplog):
     asyncio.run(scenario())
 
 
-def test_shutdown_records_interrupted_run_and_next_worker_preserves_ready_image(tmp_path):
+def test_shutdown_requeues_same_run_and_next_worker_preserves_ready_image(tmp_path):
     async def scenario():
         server = fake_server()
         producer = fake_client(server)
@@ -288,7 +301,7 @@ def test_shutdown_records_interrupted_run_and_next_worker_preserves_ready_image(
             "userId": user_id, "userOptions": {"equipmentStamina": False},
         })
         active_key = f"{first.config.redis_queue_key}:users:{user_id}:active"
-        await producer.set(active_key, body["id"], px=30_000)
+        await producer.set(active_key, body["id"], ex=604800)
         before_ttl = await producer.pttl(key)
         await first.start()
         try:
@@ -301,12 +314,12 @@ def test_shutdown_records_interrupted_run_and_next_worker_preserves_ready_image(
             await asyncio.wait_for(first.stop(), 3)
             assert child.poll() is not None
             assert storage.put_ids == []
-            await assert_requeued_session(producer, first, key, payload, original, before_ttl, attempt_id)
+            await assert_requeued_run(producer, first, key, payload, original, before_ttl, attempt_id)
             assert await producer.get(active_key) == body["id"]
-            await assert_interrupted_run(producer, first, body["id"])
+            await assert_interrupted_journal(producer, first, body["id"])
             assert (await producer.xrange(log_key))[:len(original_logs)] == original_logs
             await second.start()
-            ready = await wait_for_status(producer, key, "qr_ready")
+            ready = await wait_for_status(producer, key, "completed")
             assert ready["tokenHash"] == original["tokenHash"]
             completed = await wait_for_run_status(producer, second, body["id"], "completed")
             assert completed["workerId"] == second._redis_queue.owner
@@ -317,9 +330,9 @@ def test_shutdown_records_interrupted_run_and_next_worker_preserves_ready_image(
             await asyncio.wait_for(second.stop(), 3)
             assert storage.objects[body["id"]] == png
             assert storage.put_ids == [body["id"]]
-            assert json.loads(await producer.get(key))["status"] == "qr_ready"
+            assert json.loads(await producer.get(key))["status"] == "completed"
             assert await producer.llen(first.config.redis_queue_key) == 0
-            assert 0 < await producer.pttl(key) <= before_ttl
+            assert await producer.pttl(key) >= 604_790_000
         finally:
             await first.stop()
             await second.stop()
@@ -328,7 +341,7 @@ def test_shutdown_records_interrupted_run_and_next_worker_preserves_ready_image(
     asyncio.run(scenario())
 
 
-def test_cancelling_entrypoint_worker_records_interrupted_run_and_requeues(monkeypatch, tmp_path):
+def test_cancelling_entrypoint_worker_records_interrupted_journal_and_requeues(monkeypatch, tmp_path):
     from naruto_daily.login_service import __main__ as entrypoint
     from naruto_daily.login_service import runtime as runtime_module
 
@@ -356,8 +369,8 @@ def test_cancelling_entrypoint_worker_records_interrupted_run_and_requeues(monke
             assert runtime._children == {}
             assert all(consumer.done() for consumer in runtime._workers)
             assert storage.put_ids == []
-            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl, attempt_id)
-            await assert_interrupted_run(producer, runtime, task_id)
+            await assert_requeued_run(producer, runtime, key, payload, original, before_ttl, attempt_id)
+            await assert_interrupted_journal(producer, runtime, task_id)
         finally:
             if not running.done():
                 running.cancel()
@@ -368,7 +381,7 @@ def test_cancelling_entrypoint_worker_records_interrupted_run_and_requeues(monke
     asyncio.run(scenario())
 
 
-def test_cancelling_consumer_terminates_child_and_records_interrupted_run(tmp_path):
+def test_cancelling_consumer_terminates_child_and_records_interrupted_journal(tmp_path):
     async def scenario():
         server = fake_server()
         producer = fake_client(server)
@@ -391,8 +404,8 @@ def test_cancelling_consumer_terminates_child_and_records_interrupted_run(tmp_pa
             assert child.poll() is not None
             assert runtime._children == {}
             assert storage.put_ids == []
-            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl, attempt_id)
-            await assert_interrupted_run(producer, runtime, body["id"])
+            await assert_requeued_run(producer, runtime, key, payload, original, before_ttl, attempt_id)
+            await assert_interrupted_journal(producer, runtime, body["id"])
         finally:
             await runtime.stop()
             await producer.aclose()
@@ -449,7 +462,7 @@ def test_old_consumer_cleanup_does_not_interrupt_new_attempt_with_same_owner(mon
     asyncio.run(scenario())
 
 
-def test_shutdown_before_initial_run_write_still_records_interrupted_run(tmp_path):
+def test_shutdown_before_initial_progress_publish_keeps_requeued_run(tmp_path):
     async def scenario():
         server = fake_server()
         producer = fake_client(server)
@@ -479,7 +492,7 @@ def test_shutdown_before_initial_run_write_still_records_interrupted_run(tmp_pat
             await asyncio.wait_for(publish_started.wait(), 3)
             await eventually(lambda: body["id"] in runtime._children)
             child = runtime._children[body["id"]]
-            assert await producer.get(run_key) is None
+            assert json.loads(await producer.get(run_key))["status"] == "starting_emulator"
             attempt_id = runtime._tasks[body["id"]].attempt_id
             stopping = asyncio.create_task(runtime.stop())
             # Hold the initial write until the real runtime has queued its stop
@@ -488,13 +501,13 @@ def test_shutdown_before_initial_run_write_still_records_interrupted_run(tmp_pat
                 update.snapshot["status"] == "interrupted"
                 for update in runtime._run_reporter._pending.get(body["id"], ())
             ))
-            assert await producer.get(run_key) is None
+            assert json.loads(await producer.get(run_key))["status"] == "queued"
             allow_publish.set()
             await asyncio.wait_for(stopping, 3)
             assert child.poll() is not None
             assert storage.put_ids == []
-            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl, attempt_id)
-            await assert_interrupted_run(producer, runtime, body["id"])
+            await assert_requeued_run(producer, runtime, key, payload, original, before_ttl, attempt_id)
+            await assert_interrupted_journal(producer, runtime, body["id"])
         finally:
             allow_publish.set()
             if stopping is not None:
@@ -506,7 +519,7 @@ def test_shutdown_before_initial_run_write_still_records_interrupted_run(tmp_pat
     asyncio.run(scenario())
 
 
-def test_shutdown_keeps_interrupted_history_without_recreating_deleted_session(tmp_path):
+def test_shutdown_keeps_local_interrupted_history_without_recreating_deleted_run(tmp_path):
     async def scenario():
         server = fake_server()
         producer = fake_client(server)
@@ -525,7 +538,7 @@ def test_shutdown_keeps_interrupted_history_without_recreating_deleted_session(t
             assert storage.put_ids == []
             assert await producer.get(key) is None
             assert await producer.lrange(runtime.config.redis_queue_key, 0, -1) == []
-            await assert_interrupted_run(producer, runtime, body["id"])
+            await assert_interrupted_journal(producer, runtime, body["id"])
         finally:
             await runtime.stop()
             await producer.aclose()
@@ -558,7 +571,7 @@ def test_shutdown_during_initial_status_write_does_not_spawn_and_requeues(monkey
                 return getattr(worker_client, name)
 
             async def eval(self, *args):
-                if args[-3] == "starting_emulator" and not status_started.is_set():
+                if args[0] == _STATUS_SCRIPT and args[8] == "starting_emulator" and not status_started.is_set():
                     status_started.set()
                     await finish_status.wait()
                 return await worker_client.eval(*args)
@@ -585,8 +598,8 @@ def test_shutdown_during_initial_status_write_does_not_spawn_and_requeues(monkey
             await asyncio.wait_for(stopping, 3)
             assert spawned == []
             assert storage.put_ids == []
-            await assert_requeued_session(producer, runtime, key, payload, original, before_ttl, attempt_id)
-            await assert_interrupted_run(producer, runtime, original["id"])
+            await assert_requeued_run(producer, runtime, key, payload, original, before_ttl, attempt_id)
+            await assert_interrupted_journal(producer, runtime, original["id"])
         finally:
             finish_status.set()
             if stopping is not None:

@@ -28,7 +28,7 @@ async def enqueue(client, *, created_delta=0, ttl=60):
     body = {'version': 1, 'id': task_id, 'objectKey': f'login/{task_id}/qr.png',
             'createdAt': (now + timedelta(seconds=created_delta)).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
             'expiresAt': (now + timedelta(seconds=ttl)).isoformat(timespec='milliseconds').replace('+00:00', 'Z')}
-    key = f'{CONFIG.redis_queue_key}:sessions:{task_id}'
+    key = f'{CONFIG.redis_queue_key}:runs:{task_id}'
     session = {**{k: body[k] for k in ('id', 'createdAt', 'expiresAt')},
                'status': 'queued', 'simulation': True, 'tokenHash': 'ab' * 32}
     payload = json.dumps(body)
@@ -110,7 +110,10 @@ def test_only_redis_expired_or_missing_sessions_are_pruned_without_blocking_next
             queue = RedisTaskQueue(CONFIG, client=client)
             assert await queue.pop() is None
             assert await client.lrange(CONFIG.redis_queue_key, 0, -1) == [payload]
-            assert await client.exists(f'{CONFIG.redis_queue_key}:runs:{stale["id"]}') == 0
+            if missing_session:
+                assert await client.exists(stale_key) == 0
+            else:
+                assert json.loads(await client.get(stale_key))["status"] == "expired"
             assert (await queue.pop()).id == live['id']
         finally:
             await client.aclose()
@@ -125,7 +128,7 @@ def test_atomic_claim_rechecks_redis_time_and_current_local_clock(monkeypatch, c
             _, key, payload = await enqueue(client, created_delta=0 if clock_change else 30)
             original = await client.get(key)
             actual = time.time()
-            times = iter([actual, actual + 120]) if clock_change else iter([actual + 40] * 2)
+            times = iter([actual, actual + 120, actual + 120]) if clock_change else iter([actual + 40] * 3)
             monkeypatch.setattr(models, 'time', SimpleNamespace(time=lambda: next(times)))
             monkeypatch.setattr('naruto_daily.login_service.queue.QUEUE_POLL_SECONDS', 0.001)
             assert await RedisTaskQueue(CONFIG, client=client).pop() is None
@@ -152,7 +155,7 @@ def test_retained_task_can_be_claimed_after_local_time_becomes_eligible(monkeypa
             assert await client.lrange(CONFIG.redis_queue_key, 0, -1) == [payload]
             local[0] = actual
             assert (await queue.pop()).id == body['id']
-            assert 0 < await client.pttl(key) <= ttl
+            assert await client.ttl(key) >= 604799
             assert await client.llen(CONFIG.redis_queue_key) == 0
             assert sum('left queued' in record.message for record in caplog.records) == 1
         finally:

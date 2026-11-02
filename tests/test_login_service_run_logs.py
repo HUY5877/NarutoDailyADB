@@ -45,7 +45,7 @@ def body():
 
 
 def keys(cfg, record):
-    return tuple(f"{cfg.redis_queue_key}:{kind}:{record.id}" for kind in ("runs", "logs", "sessions"))
+    return tuple(f"{cfg.redis_queue_key}:{kind}:{record.id}" for kind in ("runs", "logs", "runs"))
 
 
 async def claim(client, queue, *, session_ttl=30_000):
@@ -54,7 +54,8 @@ async def claim(client, queue, *, session_ttl=30_000):
         "id": message["id"], "createdAt": message["createdAt"], "expiresAt": message["expiresAt"],
         "simulation": True, "tokenHash": "ab" * 32, "status": "queued", "userId": "private-user-id",
     }
-    await client.set(f"{queue.config.redis_queue_key}:sessions:{message['id']}", json.dumps(session), px=session_ttl)
+    await client.set(f"{queue.config.redis_queue_key}:runs:{message['id']}", json.dumps(session), px=session_ttl)
+    await client.set(f"{queue.config.redis_queue_key}:users:{session['userId']}:active", message['id'], ex=604800)
     await client.lpush(queue.config.redis_queue_key, json.dumps(message))
     record = await queue.pop()
     assert record is not None
@@ -114,6 +115,7 @@ def test_direct_publication_does_not_wait_for_redis_and_coalesces_summaries():
             reporter.emit(record, status="running_daily")
             for index in range(20):
                 reporter.emit(record, message=f"step {index}")
+            assert await queue.set_execution_status(record, "completed")
             reporter.emit(record, status="completed")
             reporter.finish(record.id)
             assert len(publisher.events[record.id]) == 23  # Submitted, start, steps, finish.
@@ -126,7 +128,9 @@ def test_direct_publication_does_not_wait_for_redis_and_coalesces_summaries():
             reporter.start()
             await drain(reporter)
             run_key, stream_key, _ = keys(cfg, record)
-            assert json.loads(await client.get(run_key)) == snapshot
+            saved = json.loads(await client.get(run_key))
+            assert saved.items() >= {k: v for k, v in snapshot.items() if k != "finishedAt"}.items()
+            assert saved["finishedAt"] <= snapshot["finishedAt"]
             assert await client.exists(stream_key) == 0
         finally:
             await reporter.close(timeout=0.1)
@@ -151,10 +155,12 @@ def test_run_keeps_scan_capture_time_separate_from_game_authorization():
             await drain(reporter)
             captured = json.loads(await client.get(run_key))
             assert captured['scanCapturedAt'] == '2027-01-15T08:00:00.000Z'
-            assert captured['status'] == 'opening_game'
+            assert captured['status'] == 'waiting_scan'
             assert 'authorizedAt' not in captured and captured['startedAt'] is None
             record.authorized_at = 1_800_000_005.0
             reporter.emit(record, status='finishing_login')
+            record.daily_error_code = 'login_finish_failed'
+            assert await queue.set_execution_status(record, 'failed')
             reporter.emit(record, status='failed', error_code='login_finish_failed')
             await drain(reporter)
             finished = json.loads(await client.get(run_key))
@@ -180,6 +186,7 @@ def test_disabled_logs_do_not_create_or_refresh_a_legacy_redis_stream():
         reporter = RedisRunReporter(cfg, queue)
         reporter.start()
         try:
+            assert await queue.set_execution_status(record, "completed")
             reporter.emit(record, status="completed", message="new event")
             await drain(reporter)
             assert json.loads(await client.get(run_key))["logSource"] == "disabled"
@@ -197,9 +204,9 @@ def test_claim_seeds_publisher_from_previous_attempt_cursor():
         queue = RedisTaskQueue(cfg, client=client)
         record = await claim(client, queue)
         cursor = "1900000000000-999"
-        await client.set(keys(cfg, record)[0], json.dumps({
-            "taskId": record.id, "status": "interrupted", "logCursor": cursor,
-        }))
+        state = json.loads(await client.get(keys(cfg, record)[0]))
+        state["logCursor"] = cursor
+        await client.set(keys(cfg, record)[0], json.dumps(state), keepttl=True)
         assert await queue.requeue(record)
         queue.log_publisher = RecordingPublisher()
         claimed = await queue.pop()
@@ -230,9 +237,10 @@ def test_rapid_log_events_coalesce_redis_writes_across_event_loop_turns():
             for index in range(10):
                 await asyncio.sleep(0)
                 reporter.emit(record, message=f"step {index}")
+            assert await queue.set_execution_status(record, "completed")
             reporter.emit(record, status="completed")
             await drain(reporter)
-            assert len(writes) == 1
+            assert len(writes) == 2  # One lifecycle commit, one coalesced progress merge.
             assert len(published(reporter, record.id)) == 12
             assert json.loads(await client.get(keys(cfg, record)[0]))["status"] == "completed"
         finally:
@@ -263,7 +271,8 @@ def test_two_task_streams_and_snapshots_are_isolated_and_public():
             assert [item[1]["message"] for item in first_items] == ["first task started", "api_key=[REDACTED]"]
             assert [item[1]["message"] for item in second_items] == ["second task waiting"]
             public = json.dumps([first_state, second_state, first_items, second_items])
-            assert "private-api-value" not in public and "private-user-id" not in public and "tokenHash" not in public
+            assert "private-api-value" not in public
+            assert first_state["userId"] == "private-user-id" and "tokenHash" in first_state
             reporter.finish(first.id)
             reporter.finish(second.id)
             assert not reporter._states
@@ -300,11 +309,13 @@ def test_run_username_survives_progress_terminal_and_missing_session(terminal, e
             assert progress["username"] == "小鸣人"
             assert progress["actionIndex"] == 1 and progress["actionTotal"] == 3
 
-            await client.delete(session_key)
+            record.expires_at_ms = 1
             record.username = None  # Later progress must not remove an already-known name.
             reporter.emit(record, message="二维码会话过期后的进度")
             await drain(reporter)
             assert json.loads(await client.get(run_key))["username"] == "小鸣人"
+            record.daily_error_code = error_code
+            assert await queue.set_execution_status(record, terminal)
             reporter.emit(record, status=terminal, error_code=error_code)
             reporter.finish(record.id)
             await drain(reporter)
@@ -312,12 +323,12 @@ def test_run_username_survives_progress_terminal_and_missing_session(terminal, e
             assert final["status"] == terminal
             assert final["username"] == "小鸣人"
             assert final["finishedAt"] is not None
-            assert await client.exists(session_key) == 0
+            assert await client.exists(session_key) == 1
             assert record.id not in reporter._states
 
             logs = published(reporter, record.id)
             assert all("username" not in event for _, event in logs)
-            public = json.dumps([final, logs])
+            public = json.dumps(logs)
             for private_value in ("userId", "private-user-id", "tokenHash", "access_token", "accessToken"):
                 assert private_value not in public
         finally:
@@ -373,6 +384,7 @@ def test_publisher_backpressure_keeps_last_accepted_cursor_in_summary():
             reporter.emit(record, status="running_daily")
             cursor = publisher.events[record.id][-1][0]
             publisher.emit = lambda *args: None
+            assert await queue.set_execution_status(record, "completed")
             reporter.emit(record, status="completed")
             await drain(reporter)
             run_key, stream_key, _ = keys(cfg, record)
@@ -407,11 +419,12 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
             record.daily_started_at = datetime.now(timezone.utc).timestamp()
             reporter.emit(record, status="running_daily")
             await drain(reporter)
-            assert 0 < await client.pttl(session_key) <= before
+            assert await client.ttl(session_key) >= 604799
             assert 605398 <= await client.ttl(run_key) <= 605400
             assert await client.exists(stream_key) == 0
-            await client.delete(session_key)  # Simulate QR-session expiration while daily work continues.
+            record.expires_at_ms = 1  # Login lease expires, retained run remains.
             reporter.emit(record, message="daily after QR expiration")
+            assert await queue.set_execution_status(record, "completed")
             reporter.emit(record, status="completed")
             reporter.finish(record.id)
             await drain(reporter)
@@ -422,7 +435,7 @@ def test_progress_outlives_qr_session_and_terminal_retention_resets_independentl
             assert state["finishedAt"] is not None
             assert 604798 <= await client.ttl(run_key) <= 604800
             assert await client.exists(stream_key) == 0
-            assert await client.exists(session_key) == 0
+            assert await client.exists(session_key) == 1
             assert record.id not in reporter._states
         finally:
             await reporter.close()
@@ -451,9 +464,10 @@ def test_owner_handoff_rejects_old_owner_before_and_after_qr_session_expiration(
             old_update = first_reporter._pending[record.id][-1]
             await first_reporter._write(record.id, old_update)
             assert await client.get(run_key) == new_state
-            await client.delete(session_key)
+            record.expires_at_ms = 1
             await first_reporter._write(record.id, old_update)
             assert await client.get(run_key) == new_state
+            assert await second.set_execution_status(next_record, "completed")
             second_reporter.emit(next_record, status="completed")
             await second_reporter._write(record.id, second_reporter._pending[record.id][-1])
             state = json.loads(await client.get(run_key))
@@ -474,8 +488,6 @@ def test_interrupted_run_rejects_late_progress_without_an_active_claim(session_s
         record = await claim(client, queue)
         reporter = make_reporter(cfg, queue)
         try:
-            reporter.emit(record, status="interrupted", error_code="worker_stopped")
-            await reporter._write(record.id, reporter._pending[record.id][-1])
             run_key, stream_key, session_key = keys(cfg, record)
             if session_state == "missing":
                 await client.delete(session_key)
@@ -485,6 +497,8 @@ def test_interrupted_run_rejects_late_progress_without_an_active_claim(session_s
             else:
                 assert await queue.requeue(record)
             before = await client.get(run_key)
+            if session_state != "queued" and session_state != "missing":
+                assert json.loads(before)["status"] == "failed"
             reporter.emit(record, status="starting_emulator", message="late progress")
             await reporter._write(record.id, reporter._pending[record.id][-1])
             assert await client.get(run_key) == before
@@ -513,7 +527,8 @@ def test_progress_cannot_create_unclaimed_or_foreign_task_data():
             reporter.emit(unclaimed, status="running_daily")
             reporter.emit(claimed, status="running_daily")
             await drain(reporter)
-            assert await client.exists(*keys(cfg, unclaimed)[:2], *keys(cfg, claimed)[:2]) == 0
+            assert await client.exists(*keys(cfg, unclaimed)[:2]) == 0
+            assert await client.exists(*keys(cfg, claimed)[:2]) == 1
         finally:
             await reporter.close()
             await client.aclose()
@@ -565,6 +580,7 @@ def test_write_accepted_then_response_lost_retries_without_duplicate_stream_even
                     raise ConnectionError("redis://private:credential@private-host")
                 return result
 
+        assert await queue.set_execution_status(record, "completed")
         transport = LoseFirstReply()
         queue._client = transport
         reporter = make_reporter(cfg, queue)
@@ -625,6 +641,7 @@ def test_disconnection_has_bounded_nonblocking_buffers_and_recovers_final_state(
             await asyncio.wait_for(continue_game(), 0.5)
             assert marker == ["next action"]
             transport.offline = False
+            assert await queue.set_execution_status(records[0], "completed")
             await drain(reporter)
             run_key, stream_key, _ = keys(cfg, records[0])
             assert json.loads(await client.get(run_key))["status"] == "completed"
@@ -665,6 +682,7 @@ def test_slow_inflight_write_does_not_remove_a_newer_buffered_event():
             reporter.emit(record, status="completed", message="final event")
             reporter.finish(record.id)
             release.set()
+            assert await queue.set_execution_status(record, "completed")
             await drain(reporter)
             run_key, stream_key, _ = keys(cfg, record)
             assert json.loads(await client.get(run_key))["status"] == "completed"
@@ -844,7 +862,7 @@ def test_real_child_log_events_preserve_protocol_and_publish_terminal_after_clea
             assert state["status"] == ("failed" if cleanup_fails else "completed")
             if cleanup_fails:
                 assert state["errorCode"] == "instance_cleanup_failed"
-            assert json.loads(await client.get(session_key))["status"] == "qr_ready"
+            assert json.loads(await client.get(session_key))["status"] == state["status"]
             logs = [event for _, event in published(reporter, record.id)]
             assert any(event["message"] == "daily action" and event["actionTotal"] == 3 for event in logs)
             assert [event["message"] for event in logs] == [
@@ -994,6 +1012,8 @@ def test_redis_run_preserves_secret_completion_when_execution_stops(terminal, co
             running = json.loads(await client.get(run_key))
             assert running['status'] == 'running_daily'
             assert running['secretRealmCompletedAt'] == first
+            record.daily_error_code = code
+            assert await queue.set_execution_status(record, terminal)
             reporter.emit(record, status=terminal, error_code=code)
             await drain(reporter)
             final = json.loads(await client.get(run_key))
