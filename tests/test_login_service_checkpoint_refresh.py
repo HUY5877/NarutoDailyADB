@@ -122,6 +122,7 @@ def test_final_outcome_waits_for_an_inflight_checkpoint_and_is_not_lost(outcome,
             monkeypatch.setattr(queue, "_call", paused_call)
             reporter.refresh(record)
             await asyncio.wait_for(entered.wait(), 2)
+            assert await queue.set_execution_status(record, outcome)
             reporter.emit(record, status=outcome)
             final_cursor = reporter.log_publisher.events[record.id][-1][0]
             flushing = asyncio.create_task(reporter.flush(record.id))

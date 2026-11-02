@@ -166,8 +166,9 @@ def test_each_completed_refresh_notifies_once():
             await runtime._publish_qr(record, b'first-png')
             client = runtime._redis_queue._client
             import json
-            key = runtime._redis_queue._session_key(record)
+            key = runtime._redis_queue._run_key(record)
             session = json.loads(await client.get(key))
+            assert session['status'] == 'waiting_scan'
             request_id = '22222222-2222-4222-8222-222222222222'
             session['refreshRequestId'] = request_id
             await client.set(key, json.dumps(session), keepttl=True)
@@ -175,6 +176,7 @@ def test_each_completed_refresh_notifies_once():
                              json.dumps({'taskId': record.id, 'requestId': request_id}), ex=60)
             await runtime._publish_qr(record, b'refreshed-png', refresh_request_id=request_id)
             await runtime._publish_qr(record, b'refreshed-png', refresh_request_id=request_id)
+            assert json.loads(await client.get(key))['status'] == 'waiting_scan'
             await runtime.stop()
             assert sorted(notifications.messages) == [(record.id, '雪花', False), (record.id, '雪花', True)]
         finally:

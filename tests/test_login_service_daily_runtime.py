@@ -89,6 +89,14 @@ class RecordingRedis:
         self.requeued.append(record.id)
         return True
 
+    async def mark_authorized(self, record):
+        return True
+
+    async def set_execution_status(self, record, status):
+        if status in {'failed', 'interrupted'}:
+            return await self.finish_failed(record)
+        return True
+
     async def finish_failed(self, record):
         self.failed_sessions.append(record.id)
         record.status = 'failed'
@@ -500,7 +508,7 @@ def test_daily_continues_past_original_qr_deadline_and_expired_image_is_deleted(
             child = runtime._children[record.id]
             await eventually(lambda: time.time() * 1000 > record.expires_at_ms + 100)
             await runtime._sweep()
-            assert record.status == "expired"
+            assert record.status == "qr_ready"
             assert record.id not in storage.objects
             assert child.poll() is None
             assert record.daily_status == "running_daily"
@@ -580,7 +588,7 @@ def test_authorized_login_cleanup_can_cross_qr_expiry_without_killing_the_child(
             await eventually(lambda: time.time() * 1000 > record.expires_at_ms + 50)
             assert runtime._lookup(record.id) is record  # Lookup expiry must also preserve the authorized child.
             await runtime._sweep()
-            assert record.status == "expired" and record.id not in storage.objects
+            assert record.status == "qr_ready" and record.id not in storage.objects
             assert child.poll() is None and not work.done()
             assert record.daily_status == "finishing_login"
             login_gate.touch()
@@ -679,7 +687,7 @@ def test_failed_published_session_ends_only_after_instance_cleanup(monkeypatch, 
     asyncio.run(scenario())
 
 
-def test_failed_cleanup_does_not_release_login_session(monkeypatch, tmp_path):
+def test_failed_cleanup_persists_terminal_cleanup_error(monkeypatch, tmp_path):
     async def scenario():
         record = record_with_ttl()
         runtime, _, queue, pool = make_runtime(tmp_path, monkeypatch, record,
@@ -690,7 +698,7 @@ def test_failed_cleanup_does_not_release_login_session(monkeypatch, tmp_path):
 
         monkeypatch.setattr(pool, 'close', cannot_close)
         await runtime._process_record(record)
-        assert queue.failed_sessions == []
+        assert queue.failed_sessions == [record.id]
         assert record.daily_error_code == 'instance_cleanup_failed'
         assert not runtime._pending_session_failures
     asyncio.run(scenario())
@@ -718,8 +726,8 @@ def test_redis_failure_after_cleanup_is_retried_without_replaying_emulator(monke
             record.expires_at_ms = time.time() * 1000 - 1
         await runtime._sweep()
         assert not runtime._pending_session_failures
-        assert len(calls) == (1 if expires_before_retry else 2)
-        assert queue.failed_sessions == ([] if expires_before_retry else [record.id])
+        assert len(calls) == 2
+        assert queue.failed_sessions == [record.id]
         assert pool.closed == [record.id] and not queue.requeued
     asyncio.run(scenario())
 

@@ -53,7 +53,7 @@ def test_validation_failure_is_visible_without_reserving_an_instance_and_consume
             }
             session = {key: payload[key] for key in ("id", "createdAt", "expiresAt")}
             session.update(status="queued", simulation=True, tokenHash="ab" * 32)
-            await client.set(f"{config.redis_queue_key}:sessions:{task_id}", json.dumps(session), px=60_000)
+            await client.set(f"{config.redis_queue_key}:runs:{task_id}", json.dumps(session), px=60_000)
             await client.lpush(config.redis_queue_key, json.dumps(payload))
             return task_id
 
@@ -64,7 +64,7 @@ def test_validation_failure_is_visible_without_reserving_an_instance_and_consume
             assert rejected not in runtime._tasks
             assert runtime._children == {}
             prefix = config.redis_queue_key
-            session = json.loads(await client.get(f"{prefix}:sessions:{rejected}"))
+            session = json.loads(await client.get(f"{prefix}:runs:{rejected}"))
             run = json.loads(await client.get(f"{prefix}:runs:{rejected}"))
             logs = await client.xrange(f"{prefix}:logs:{rejected}")
             assert session["status"] == run["status"] == "failed"

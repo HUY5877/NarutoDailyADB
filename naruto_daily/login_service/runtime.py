@@ -250,23 +250,42 @@ class LoginRuntime:
         except RedisQueueError:
             logger.warning("Could not return task %s to Redis; create a new request if it expires", record.id)
 
-    async def _finish_failed_session(self, record: TaskRecord) -> None:
-        """Retry a cleanup-confirmed failure without replaying the emulator task."""
-        if record.expires_at_ms <= time.time() * 1000:
-            self._pending_session_failures.pop(record.id, None)
-            return
+    async def _finish_failed_session(self, record: TaskRecord) -> bool:
+        """Persist a final outcome; retry retained records beyond the QR deadline."""
         if self._redis_queue is None:
-            record.status = 'failed'
-            record.error = SAFE_DRIVER_ERRORS.get(record.daily_error_code, SAFE_TASK_ERROR)
-            return
+            if record.daily_status in {'failed', 'interrupted'}:
+                record.status = 'failed'
+                record.error = SAFE_DRIVER_ERRORS.get(record.daily_error_code, SAFE_TASK_ERROR)
+            return True
         try:
             # A false result means the lease/owner is gone; never recreate it.
-            await self._redis_queue.finish_failed(record)
+            changed = await self._redis_queue.set_execution_status(
+                record, record.daily_status if record.daily_status in RUN_TERMINAL_STATUSES else 'failed',
+            )
+            if changed and record.daily_status in {'failed', 'interrupted'}:
+                record.status = 'failed'
             self._pending_session_failures.pop(record.id, None)
+            if changed and not record._processing and record.daily_status in RUN_TERMINAL_STATUSES:
+                self._notify_task_finished(record, record.daily_status)
+            return changed
         except RedisQueueError:
             if record.id not in self._pending_session_failures:
-                logger.warning('Could not finish failed login session %s; will retry', record.id)
+                logger.warning('Could not persist terminal task state %s; will retry', record.id)
             self._pending_session_failures[record.id] = record
+            return False
+
+    async def _persist_execution(self, record: TaskRecord, status: str) -> None:
+        """Commit phase changes before accepting further child events."""
+        while self._redis_queue is not None:
+            self._check_interrupted(record)
+            try:
+                if not await self._redis_queue.set_execution_status(record, status):
+                    raise _TaskExpired
+                return
+            except RedisQueueError:
+                if self._stopping:
+                    raise _WorkerStopping from None
+                await self._retry_pause()
 
     @staticmethod
     def _kill(child: subprocess.Popen[bytes]) -> None:
@@ -277,6 +296,9 @@ class LoginRuntime:
                 pass
 
     def _expire(self, record: TaskRecord) -> None:
+        if record.authorized_at is not None or record.daily_started_at is not None:
+            self._pending_deletes.add(record.id)
+            return
         if record.status == "expired":
             return
         record.status = "expired"
@@ -511,13 +533,16 @@ class LoginRuntime:
                         record.authorized_at = record.execution_deadline - self.config.daily_timeout_seconds
                         timeout.reschedule(asyncio.get_running_loop().time()
                                            + max(0, record.execution_deadline - time.time()))
-                        if record.login_timeout_seconds and self._redis_queue is not None:
-                            # Success wins a race with a refresh click. The uploader
-                            # owns command deletion, also when no new QR is needed.
-                            try:
-                                await self._redis_queue.mark_authorized(record)
-                            except RedisQueueError:
-                                logger.warning('Task %s: authorization command cleanup unavailable', record.id)
+                        if self._redis_queue is not None:
+                            while True:
+                                try:
+                                    if not await self._redis_queue.mark_authorized(record):
+                                        raise _TaskExpired
+                                    break
+                                except RedisQueueError:
+                                    if self._stopping:
+                                        raise _WorkerStopping from None
+                                    await self._retry_pause()
                         refresh_id = None
                         self._set_daily_status(record, "finishing_login")
                     elif daily and event.get("type") == "logged_in":
@@ -527,9 +552,14 @@ class LoginRuntime:
                         record.daily_started_at = time.time()
                         if record.authorized_at is None:
                             # Older children combine authorization and final login.
+                            record.authorized_at = record.daily_started_at
                             record.execution_deadline = self._execution_deadline(event, record.daily_started_at)
+                            if self._redis_queue is not None:
+                                if not await self._redis_queue.mark_authorized(record):
+                                    raise _TaskExpired
                             timeout.reschedule(asyncio.get_running_loop().time()
                                                + max(0, record.execution_deadline - time.time()))
+                        await self._persist_execution(record, "running_daily")
                         self._set_daily_status(record, "running_daily")
                     elif daily and event.get('type') == 'arena_started':
                         if (record.user_options.get('mainTask') != 'arena_weekly'
@@ -542,6 +572,7 @@ class LoginRuntime:
                             raise ValueError('Invalid arena battle deadline')
                         arena_started = True
                         record.execution_deadline = float(deadline)
+                        await self._persist_execution(record, 'running_daily')
                         self._set_daily_status(record, 'running_daily')
                         timeout.reschedule(asyncio.get_running_loop().time()
                                            + max(0, deadline - time.time()))
@@ -897,7 +928,7 @@ class LoginRuntime:
         self, record: TaskRecord, status: str, *,
         error_code: str | None = None, action_count: int | None = None,
     ) -> None:
-        """Keep execution results beyond the independent Redis/QR session TTL."""
+        """Keep the local execution journal alongside the retained Redis task."""
         record.daily_status = status
         record.daily_error_code = error_code
         if self._run_reporter is not None and status not in RUN_TERMINAL_STATUSES:
@@ -1009,16 +1040,15 @@ class LoginRuntime:
             if not await self._cleanup_ldplayer(record.id):
                 self._set_daily_status(record, "failed", error_code="instance_cleanup_failed")
                 return False
+        await self._requeue(record)
         if self._run_reporter is not None:
             self._run_reporter.emit(
                 record, status="interrupted", error_code="worker_stopped", level="WARNING",
             )
-            # Finish this attempt while its session still authorizes the worker.
-            # After requeue, another consumer (even with the same owner) may
-            # immediately take over; the old finally must not emit or finish again.
+            # The queued root is authoritative after handoff. Old-attempt progress
+            # is rejected; finish its local log buffer without overwriting it.
             await self._run_reporter.flush(record.id)
             self._run_reporter.finish(record.id)
-        await self._requeue(record)
         return self._run_reporter is not None
 
     async def _consume(self) -> None:
@@ -1266,13 +1296,15 @@ class LoginRuntime:
                     if not released and (record.qr_published or record.daily_status == "interrupted"):
                         self._set_daily_status(record, "interrupted" if record._admin_interrupted else "failed",
                                                error_code="instance_cleanup_failed")
-                    elif (record.qr_published or record._admin_interrupted) and record.daily_status in {'failed', 'interrupted'}:
-                        await self._finish_failed_session(record)
             final_status = record.daily_status
             if final_status not in RUN_TERMINAL_STATUSES:
                 final_status = ("interrupted" if self._stopping else record.status
                                 if record.status in {"failed", "expired"} else
                                 "completed" if self.config.emulator_driver == "mock" else "failed")
+            committed = True
+            if not requeue_on_exit and not keep_ldplayer:
+                record.daily_status = final_status
+                committed = await self._finish_failed_session(record)
             if self._run_reporter is not None and not interruption_reported:
                 record.daily_status = final_status
                 self._run_reporter.emit(
@@ -1281,16 +1313,16 @@ class LoginRuntime:
                     level="ERROR" if final_status == "failed" else "WARNING" if final_status in {"interrupted", "expired"} else "INFO",
                     message="模拟二维码已生成" if self.config.emulator_driver == "mock" and final_status == "completed" else None,
                 )
-                delivered = True
+                delivered = committed
                 if isinstance(self._run_reporter, RedisRunReporter):
-                    delivered = await self._run_reporter.flush(task_id)
+                    delivered = await self._run_reporter.flush(task_id) and committed
                 if record._admin_interrupted:
                     final_status = record.daily_status
                     if record._instance_released and record.status != "failed":
                         await self._finish_failed_session(record)
                 self._run_reporter.finish(task_id)
             else:
-                delivered = True
+                delivered = committed
             record._processing = False
             if delivered and not cancelled and not requeue_on_exit and not keep_ldplayer:
                 self._notify_task_finished(record, final_status)

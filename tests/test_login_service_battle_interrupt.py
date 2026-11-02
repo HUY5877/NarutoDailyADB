@@ -130,8 +130,10 @@ time.sleep(60)
             assert not unrelated.killed and runtime._children == {"unrelated-task": unrelated}
             assert released == [record.id]
             assert await client.llen(cfg.redis_queue_key) == 0
-            assert await client.get(run_key) == interrupted_json
-            assert json.loads(await client.get(session_key))["status"] == "failed"
+            final = json.loads(await client.get(run_key))
+            assert final["status"] == "interrupted" and final["errorCode"] == "admin_interrupted"
+            assert final["attemptId"] == record.attempt_id
+            assert json.loads(await client.get(session_key))["status"] == "interrupted"
             assert not runtime._stopping and not runtime._stop_event.is_set()
         finally:
             info_gate.touch()

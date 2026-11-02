@@ -42,7 +42,7 @@ async def enqueue(client, queue, message, *, session_changes=None):
         "tokenHash": "ab" * 32, "status": "queued",
     }
     session.update(session_changes or {})
-    key = f"{queue.config.redis_queue_key}:sessions:{message['id']}"
+    key = f"{queue.config.redis_queue_key}:runs:{message['id']}"
     await client.set(key, json.dumps(session), px=30_000)
     await client.lpush(queue.config.redis_queue_key, json.dumps(message))
     return key
@@ -77,7 +77,7 @@ def test_same_worker_reclaim_generates_a_new_attempt_and_keeps_the_owner(monkeyp
             assert second_session["attemptId"] == second.attempt_id
             assert second_session["workerId"] == first_session["workerId"] == queue.owner
             assert second_session["tokenHash"] == first_session["tokenHash"]
-            assert 0 < await client.pttl(key) <= 30_000
+            assert await client.ttl(key) >= 604799
             assert sizes == [16, 16]
         finally:
             await queue.close()
@@ -162,9 +162,9 @@ def test_claim_still_restores_the_previous_sls_cursor():
         cursor = "1800000000000-3"
         try:
             key = await enqueue(client, queue, message)
-            await client.set(f"{queue.config.redis_queue_key}:runs:{message['id']}", json.dumps({
-                "taskId": message["id"], "status": "interrupted", "logCursor": cursor,
-            }))
+            state = json.loads(await client.get(key))
+            state["logCursor"] = cursor
+            await client.set(key, json.dumps(state), keepttl=True)
 
             record = await queue.pop()
 

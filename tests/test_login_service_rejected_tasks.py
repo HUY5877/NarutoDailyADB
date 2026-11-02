@@ -37,12 +37,13 @@ def message(*, ttl=60, created_delta=0, **changes):
 
 
 def task_keys(body):
-    return tuple(f"{configuration().redis_queue_key}:{kind}:{body['id']}" for kind in ("sessions", "runs", "logs"))
+    run = f"{configuration().redis_queue_key}:runs:{body['id']}"
+    return run, run, f"{configuration().redis_queue_key}:logs:{body['id']}"
 
 
-async def enqueue(redis, body, *, overrides=None, ttl=30_000):
+async def enqueue(redis, body, *, overrides=None, ttl=604_800_000):
     session = {
-        "id": body["id"], "createdAt": body["createdAt"], "expiresAt": body["expiresAt"],
+        "id": body["id"], "taskId": body["id"], "createdAt": body["createdAt"], "expiresAt": body["expiresAt"],
         "status": "queued", "tokenHash": "ab" * 32, "simulation": True,
         "userId": "private-user", "custom": {"preserved": True},
     } | (overrides or {})
@@ -61,6 +62,9 @@ async def read_failure(redis, body):
     assert run["errorCode"] == session["errorCode"]
     assert run["updatedAt"] == run["finishedAt"]
     assert run["logSource"] == "disabled"
+    assert run["id"] == run["taskId"] == body["id"]
+    assert run["tokenHash"] == "ab" * 32 and run["custom"] == {"preserved": True}
+    assert await redis.ttl(run_key) >= 604_799
     return session, run
 
 
@@ -92,10 +96,11 @@ def test_rejection_publishes_directly_only_after_authorization(authorized):
                 assert published[1][1]["message"] == SAFE_REJECTION_ERRORS["invalid_task_payload"]
                 assert published[1][1]["time"] == state["finishedAt"]
                 assert finished == [body["id"]]
-                assert 119 <= await redis.ttl(run_key) <= 120
+                assert 604_799 <= await redis.ttl(run_key) <= 604_800
             else:
                 assert published == finished == []
-                assert await redis.exists(run_key) == 0
+                state = json.loads(await redis.get(run_key))
+                assert state['status'] == 'queued' and state['workerId'] == 'other'
         finally:
             await redis.aclose()
     asyncio.run(scenario())
@@ -163,7 +168,7 @@ def test_clock_skew_keeps_task_queued_for_a_healthy_consumer(monkeypatch, offset
             assert await queue.pop() is None
             assert json.loads(await redis.get(session_key)) == original
             assert await redis.lrange(configuration().redis_queue_key, 0, -1) == [json.dumps(body)]
-            assert await redis.exists(run_key, log_key) == 0
+            assert await redis.exists(log_key) == 0
             assert 0 < await redis.pttl(session_key) <= original_ttl
             monkeypatch.setattr(models, 'time', time)
             healthy = RedisTaskQueue(configuration(), client=redis)
@@ -206,7 +211,7 @@ def test_invalid_producer_timestamps_stay_queued_without_failure_report(changes)
             assert await RedisTaskQueue(configuration(), client=redis).pop() is None
             assert json.loads(await redis.get(task_keys(body)[0])) == original
             assert await redis.lrange(configuration().redis_queue_key, 0, -1) == [json.dumps(body)]
-            assert await redis.exists(*task_keys(body)[1:]) == 0
+            assert await redis.exists(task_keys(body)[2]) == 0
         finally:
             await redis.aclose()
     asyncio.run(scenario())
@@ -219,11 +224,11 @@ def test_duplicate_rejections_from_two_consumers_are_atomic_and_do_not_refresh_e
             body = message(version=2)
             await enqueue(redis, body)
             await redis.lpush(configuration().redis_queue_key, json.dumps(body))
-            before = await redis.pttl(task_keys(body)[0])
             consumers = [RedisTaskQueue(configuration(), client=redis) for _ in range(2)]
             assert await asyncio.gather(*(worker.pop() for worker in consumers)) == [None, None]
             await read_failure(redis, body)
             snapshot = [await redis.get(key) for key in task_keys(body)[:2]]
+            before = await redis.pttl(task_keys(body)[0])
             first_log = await redis.xrange(task_keys(body)[2])
             await redis.lpush(configuration().redis_queue_key, json.dumps(body))
             assert await consumers[1].pop() is None
@@ -253,7 +258,7 @@ def test_rejection_never_overwrites_conflicting_claimed_or_terminal_sessions(ove
             original = await redis.get(session_key)
             assert await RedisTaskQueue(configuration(), client=redis).pop() is None
             assert await redis.get(session_key) == original
-            assert await redis.exists(run_key, log_key) == 0
+            assert await redis.exists(log_key) == 0
         finally:
             await redis.aclose()
     asyncio.run(scenario())
@@ -281,7 +286,7 @@ def test_rejection_cannot_recreate_expired_or_untrusted_sessions(kind):
             original = await redis.dump(session_key)
             assert await RedisTaskQueue(configuration(), client=redis).pop() is None
             assert await redis.dump(session_key) == original
-            assert await redis.exists(run_key, log_key) == 0
+            assert await redis.exists(log_key) == 0
         finally:
             await redis.aclose()
     asyncio.run(scenario())
@@ -300,6 +305,7 @@ def test_rejection_does_not_clobber_existing_terminal_or_foreign_run_data(kind):
             elif kind == "run_foreign":
                 await redis.set(run_key, json.dumps({"taskId": str(uuid4()), "status": "running_daily"}))
             elif kind == "run_wrong_type":
+                await redis.delete(run_key)
                 await redis.lpush(run_key, "reserved")
             elif kind == "run_invalid_json":
                 await redis.set(run_key, "broken JSON")

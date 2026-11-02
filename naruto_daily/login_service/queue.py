@@ -1,4 +1,4 @@
-"""FIFO queues and the shared Redis session ownership protocol."""
+"""FIFO queues and the shared Redis task ownership protocol."""
 
 from __future__ import annotations
 
@@ -52,24 +52,41 @@ class RedisQueueError(RuntimeError):
     """A transport error that cannot expose credentials or Redis payloads."""
 
 
-# Every write first validates the existing session. In particular, GET followed
-# by SET must never recreate a missing/expired session or replace its token hash.
-_SESSION_GUARD = """
+# Every write validates the retained task and execution attempt. Missing runs
+# are never recreated, and website identity/QR fields are never replaced.
+_RUN_GUARD = """
 local kind = redis.call('TYPE', KEYS[1]).ok
 if kind ~= 'string' then return 0 end
 local raw = redis.call('GET', KEYS[1])
 if not raw or #raw > 8192 then return 0 end
 local ok, session = pcall(cjson.decode, raw)
 if not ok or type(session) ~= 'table' then return 0 end
-if session.id ~= ARGV[1] or session.createdAt ~= ARGV[2]
-    or session.expiresAt ~= ARGV[3] or session.simulation ~= true then return 0 end
-if type(session.tokenHash) ~= 'string' or #session.tokenHash ~= 64
-    or not string.match(session.tokenHash, '^[0-9a-fA-F]+$') then return 0 end
+local legacy = session.id == nil and session.taskId == ARGV[1] and session.workerId == ARGV[5]
+if not legacy then
+    if session.id ~= ARGV[1] or session.createdAt ~= ARGV[2]
+        or session.expiresAt ~= ARGV[3] or session.simulation ~= true then return 0 end
+    if type(session.tokenHash) ~= 'string' or #session.tokenHash ~= 64
+        or not string.match(session.tokenHash, '^[0-9a-fA-F]+$') then return 0 end
+end
 local ttl = redis.call('PTTL', KEYS[1])
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + tonumber(clock[2]) / 1000
 local expires = tonumber(ARGV[4])
-if ttl <= 0 or not expires or expires <= now then return 0 end
+if ttl <= 0 then return 0 end
+local retention = math.max(redis.call('TTL', KEYS[1]), 604800)
+local function retainActive()
+    local prefix = string.match(KEYS[1], '^(.*):runs:[^:]+$')
+    if prefix and type(session.userId) == 'string' then
+        local activeKey = prefix .. ':users:' .. session.userId .. ':active'
+        if redis.call('TYPE', activeKey).ok == 'string' and redis.call('GET', activeKey) == ARGV[1] then
+            redis.call('EXPIRE', activeKey, retention)
+        end
+    end
+end
+"""
+
+_LOGIN_GUARD = _RUN_GUARD + """
+if legacy or not expires or expires <= now then return 0 end
 """
 
 # The Python timestamp check is read-only. Compare the exact FIFO head again
@@ -85,10 +102,12 @@ local function validTime(now)
 end
 if not validTime(tonumber(ARGV[8])) then return -1 end
 local function claim()
-""" + _SESSION_GUARD + """
+""" + _LOGIN_GUARD + """
 if not validTime(now) then return -1 end
 if session.status ~= 'queued' then return 0 end
 if session.workerId ~= nil and session.workerId ~= cjson.null then return 0 end
+session.taskId = session.id
+session.sequence = 0
 session.status = 'starting_emulator'
 session.workerId = ARGV[5]
 session.attemptId = ARGV[13]
@@ -101,10 +120,10 @@ if ARGV[9] ~= '' then
     session.loginStartedAt = ARGV[11]
     session.loginExpiresAt = ARGV[9]
     session.refreshSupported = true
-    redis.call('PEXPIRE', activeKey, math.floor(leaseExpiry - now))
-    redis.call('PEXPIRE', KEYS[1], math.floor(leaseExpiry - now))
+    redis.call('EXPIRE', activeKey, retention)
 end
-redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+redis.call('SET', KEYS[1], cjson.encode(session), 'EX', retention)
+retainActive()
 return 1
 end
 local result = claim()
@@ -129,6 +148,20 @@ if ARGV[2] ~= '' then
     local now = tonumber(clock[1]) * 1000 + tonumber(clock[2]) / 1000
     -- Clock skew on this worker never authorizes expiry cleanup.
     if tonumber(ARGV[2]) > now and redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
+    if tonumber(ARGV[2]) <= now and redis.call('TYPE', KEYS[2]).ok == 'string' then
+        local valid, task = pcall(cjson.decode, redis.call('GET', KEYS[2]))
+        if valid and type(task) == 'table' and task.id == ARGV[3] and task.createdAt == ARGV[4]
+            and task.expiresAt == ARGV[5] and task.status == 'queued' then
+            task.status = 'expired'
+            task.finishedAt = ARGV[6]
+            task.updatedAt = ARGV[6]
+            redis.call('SET', KEYS[2], cjson.encode(task), 'EX', math.max(redis.call('TTL', KEYS[2]), 604800))
+            local activeKey = KEYS[1] .. ':users:' .. tostring(task.userId) .. ':active'
+            if redis.call('TYPE', activeKey).ok == 'string' and redis.call('GET', activeKey) == task.id then
+                redis.call('DEL', activeKey)
+            end
+        end
+    end
 end
 redis.call('RPOP', KEYS[1])
 return 1
@@ -145,20 +178,26 @@ if session.status ~= 'starting_emulator' and session.status ~= 'opening_game'
     and session.status ~= 'preparing_qr' then return 0 end
 """
 
-_STATUS_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
+_STATUS_SCRIPT = _LOGIN_GUARD + _OWNER_GUARD + """
 -- A completed write whose response was lost is safe to acknowledge again.
 -- Do not rewrite a terminal session or refresh its original expiry.
-if session.status == ARGV[6] and (session.status == 'qr_ready'
+if session.status == ARGV[6] and (session.status == 'waiting_scan'
     or session.status == 'failed' or session.status == 'expired') then return 1 end
 """ + _ACTIVE_GUARD + """
 session.status = ARGV[6]
 session.error = nil
 if ARGV[7] ~= '' then session.error = ARGV[7] end
-redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+if session.status == 'failed' or session.status == 'expired' then
+    if ARGV[8] ~= '' then session.errorCode = ARGV[8] end
+    if session.finishedAt == nil or session.finishedAt == cjson.null then session.finishedAt = ARGV[9] end
+    session.updatedAt = ARGV[9]
+end
+redis.call('SET', KEYS[1], cjson.encode(session), 'EX', retention)
+retainActive()
 return 1
 """
 
-_REQUEUE_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + _ACTIVE_GUARD + """
+_REQUEUE_SCRIPT = _LOGIN_GUARD + _OWNER_GUARD + _ACTIVE_GUARD + """
 local kind = redis.call('TYPE', KEYS[2]).ok
 if kind ~= 'none' and kind ~= 'list' then return 0 end
 session.status = 'queued'
@@ -172,10 +211,10 @@ redis.call('SET', KEYS[1], encoded, 'KEEPTTL')
 return 1
 """
 
-_ACK_REFRESH_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
+_ACK_REFRESH_SCRIPT = _LOGIN_GUARD + _OWNER_GUARD + """
 if session.scanCaptured == true then return 0 end
 if session.qrRevision == ARGV[6] then return 1 end
-if session.status ~= 'preparing_qr' and session.status ~= 'qr_ready' then return 0 end
+if session.status ~= 'preparing_qr' and session.status ~= 'waiting_scan' then return 0 end
 if session.loginAuthorized == true or session.refreshRequestId ~= ARGV[6] then return 0 end
 local rawCommand = redis.call('GET', KEYS[2])
 if not rawCommand then return 0 end
@@ -183,55 +222,72 @@ local okCommand, command = pcall(cjson.decode, rawCommand)
 if not okCommand or command.taskId ~= session.id or command.requestId ~= ARGV[6] then return 0 end
 session.qrRevision = ARGV[6]
 session.refreshRequestId = nil
-session.status = 'qr_ready'
-redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+session.status = 'waiting_scan'
+redis.call('SET', KEYS[1], cjson.encode(session), 'EX', retention)
+retainActive()
 redis.call('DEL', KEYS[2])
 return 1
 """
 
-_SCAN_CAPTURED_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
-if session.status ~= 'preparing_qr' and session.status ~= 'qr_ready' then return 0 end
+_SCAN_CAPTURED_SCRIPT = _LOGIN_GUARD + _OWNER_GUARD + """
+if session.status ~= 'preparing_qr' and session.status ~= 'waiting_scan' then return 0 end
 session.scanCaptured = true
-session.status = 'qr_ready'
+if ARGV[6] ~= '' then session.scanCapturedAt = ARGV[6] end
+session.status = 'waiting_scan'
 session.refreshRequestId = nil
-redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+redis.call('SET', KEYS[1], cjson.encode(session), 'EX', retention)
+retainActive()
 redis.call('DEL', KEYS[2])
 return 1
 """
 
-_AUTHORIZE_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
-if session.status == 'failed' or session.status == 'expired' then return 0 end
+_AUTHORIZE_SCRIPT = _RUN_GUARD + _OWNER_GUARD + """
+if session.status ~= 'preparing_qr' and session.status ~= 'waiting_scan'
+    and session.status ~= 'finishing_login' then return 0 end
+if type(session.userId) ~= 'string' then return 0 end
+local activeKey = KEYS[3] .. ':users:' .. session.userId .. ':active'
+if redis.call('TYPE', activeKey).ok ~= 'string' or redis.call('GET', activeKey) ~= ARGV[1] then return 0 end
+local authorized = tonumber(ARGV[8])
+if not authorized or authorized > expires or authorized > now + 5000 then return 0 end
 session.loginAuthorized = true
+session.status = 'finishing_login'
+if ARGV[6] ~= '' then session.authorizedAt = ARGV[6] end
+if ARGV[7] ~= '' then session.executionDeadline = tonumber(ARGV[7]) end
 session.refreshRequestId = nil
-redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+redis.call('SET', KEYS[1], cjson.encode(session), 'EX', retention)
+retainActive()
 redis.call('DEL', KEYS[2])
 return 1
 """
 
-
-# QR publication ends preparation, not the emulator lifecycle. Only after the
-# runtime has closed the instance may its owner end an already published login.
-_FINISH_FAILED_SCRIPT = _SESSION_GUARD + _OWNER_GUARD + """
-if session.status ~= 'starting_emulator' and session.status ~= 'opening_game'
-    and session.status ~= 'preparing_qr' and session.status ~= 'qr_ready'
-    and session.status ~= 'failed' then return 0 end
-local activeKey = nil
-if type(session.userId) == 'string' and session.userId ~= '' then
-    activeKey = KEYS[3] .. ':users:' .. session.userId .. ':active'
-    local kind = redis.call('TYPE', activeKey).ok
-    if kind ~= 'none' and kind ~= 'string' then return 0 end
+# Execution uses the retained owner/attempt, never the old QR deadline.
+_EXECUTION_SCRIPT = _RUN_GUARD + _OWNER_GUARD + """
+local target = ARGV[6]
+if session.status == 'queued' then return 0 end
+local terminal = {completed=true, failed=true, interrupted=true, expired=true}
+if terminal[session.status] and session.status ~= target then return 0 end
+if session.status == 'interrupted' and session.errorCode == 'admin_interrupted'
+    and ARGV[7] ~= 'admin_interrupted' then return 0 end
+if not terminal[target] and session.loginAuthorized ~= true
+    and session.status ~= 'finishing_login' and session.status ~= 'running_daily' then return 0 end
+session.status = target
+session.updatedAt = ARGV[9]
+if ARGV[7] ~= '' then session.errorCode = ARGV[7] end
+if ARGV[8] ~= '' then session.error = ARGV[8] end
+if ARGV[10] ~= '' then session.startedAt = ARGV[10] end
+if ARGV[11] ~= '' then session.authorizedAt = ARGV[11] end
+if ARGV[12] ~= '' then session.executionDeadline = tonumber(ARGV[12]) end
+if terminal[target] then
+    if session.finishedAt == nil or session.finishedAt == cjson.null then session.finishedAt = ARGV[9] end
+    session.refreshRequestId = nil
+    redis.call('DEL', KEYS[2])
+    local activeKey = KEYS[3] .. ':users:' .. tostring(session.userId) .. ':active'
+    if redis.call('TYPE', activeKey).ok == 'string' and redis.call('GET', activeKey) == ARGV[1] then
+        redis.call('DEL', activeKey)
+    end
 end
-session.status = 'failed'
-session.errorCode = ARGV[6]
-session.error = ARGV[7]
-session.loginAuthorized = nil
-session.refreshRequestId = nil
-redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
-redis.call('DEL', KEYS[2])
--- A late cleanup or lost reply must never remove a newer task's account lock.
-if activeKey and redis.call('GET', activeKey) == session.id then
-    redis.call('DEL', activeKey)
-end
+redis.call('SET', KEYS[1], cjson.encode(session), 'EX', retention)
+if not terminal[target] then retainActive() end
 return 1
 """
 
@@ -255,21 +311,19 @@ local ttl = redis.call('PTTL', KEYS[1])
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + tonumber(clock[2]) / 1000
 if ttl <= 0 or tonumber(ARGV[4]) <= now then return 0 end
-local runKind = redis.call('TYPE', KEYS[2]).ok
-if runKind ~= 'none' then
-    if runKind ~= 'string' then return 0 end
-    local valid, previous = pcall(cjson.decode, redis.call('GET', KEYS[2]))
-    if not valid or type(previous) ~= 'table' or previous.taskId ~= ARGV[1] then return 0 end
-    if previous.status == 'completed' or previous.status == 'failed'
-        or previous.status == 'expired' or previous.status == 'interrupted' then return 0 end
-end
 session.status = 'failed'
 session.errorCode = ARGV[5]
 session.error = ARGV[6]
+local valid, patch = pcall(cjson.decode, ARGV[7])
+if not valid then return 0 end
+for key, value in pairs(patch) do session[key] = value end
 local encoded = cjson.encode(session)
-redis.call('SET', KEYS[2], ARGV[7], 'EX', ARGV[8])
-redis.call('SET', KEYS[1], encoded, 'KEEPTTL')
-return 1
+redis.call('SET', KEYS[1], encoded, 'EX', math.max(tonumber(ARGV[8]), 604800))
+local activeKey = ARGV[9] .. ':users:' .. tostring(session.userId) .. ':active'
+if redis.call('TYPE', activeKey).ok == 'string' and redis.call('GET', activeKey) == session.id then
+    redis.call('DEL', activeKey)
+end
+return encoded
 """
 
 
@@ -282,7 +336,7 @@ return 1
 
 
 class RedisTaskQueue:
-    """Consume TS task envelopes and update their existing, expiring sessions."""
+    """Consume TS envelopes and update their existing retained task records."""
 
     def __init__(self, config: ServiceConfig, *, client=None) -> None:
         self.config = config
@@ -306,10 +360,10 @@ class RedisTaskQueue:
         except Exception:
             raise RedisQueueError("Could not configure Redis transport") from None
 
-    def _session_key(self, record: TaskRecord) -> str:
-        return f"{self.config.redis_queue_key}:sessions:{record.id}"
+    def _run_key(self, record: TaskRecord) -> str:
+        return f"{self.config.redis_queue_key}:runs:{record.id}"
 
-    def _session_args(self, record: TaskRecord) -> tuple[str, ...]:
+    def _run_args(self, record: TaskRecord) -> tuple[str, ...]:
         return (
             record.id, record.created_at, record.queue_expires_at or record.expires_at,
             str(record.expires_at_ms), self.owner,
@@ -363,17 +417,21 @@ class RedisTaskQueue:
             encoded_run = json.dumps(run, ensure_ascii=False)
             try:
                 accepted = await self._call(
-                    "eval", _REJECT_SCRIPT, 2, f"{prefix}:sessions:{task_id}", run_key,
+                    "eval", _REJECT_SCRIPT, 1, run_key,
                     task_id, created_at, expires_at, str(expires_ms), code, message,
-                    encoded_run, str(self.config.run_log_retention_seconds),
+                    encoded_run, str(max(getattr(self.config, 'run_log_retention_seconds', 604800), 604800)), prefix,
                 )
             except RedisQueueError:
                 # A lost reply can follow a successful write. Only our exact
                 # snapshot authorizes publication; foreign/newer state does not.
-                if await self._call("get", run_key) != encoded_run:
+                current = await self._call('get', run_key)
+                saved = json.loads(current) if current else {}
+                if not all(saved.get(key) == run[key] for key in ('taskId', 'workerId', 'status', 'errorCode', 'finishedAt')):
                     raise
-                accepted = 1
+                accepted = current
             if accepted and self.log_publisher is not None:
+                encoded_run = accepted
+                run = json.loads(encoded_run)
                 self.log_publisher.emit(task_id, {
                     "time": created_at, "level": "INFO",
                     "message": "登录申请已提交，等待执行服务器领取任务。",
@@ -393,9 +451,12 @@ class RedisTaskQueue:
     async def _discard(self, payload: str | bytes, *, body: dict | None = None, expires_ms: float | None = None) -> bool:
         keys = [self.config.redis_queue_key]
         if expires_ms is not None:
-            keys.append(f"{self.config.redis_queue_key}:sessions:{body['id']}")
+            keys.append(f"{self.config.redis_queue_key}:runs:{body['id']}")
         return bool(await self._call('eval', _DISCARD_SCRIPT, len(keys), *keys, payload,
-                                     '' if expires_ms is None else str(expires_ms)))
+                                     '' if expires_ms is None else str(expires_ms),
+                                     '' if body is None else body['id'],
+                                     '' if body is None else body['createdAt'],
+                                     '' if body is None else body['expiresAt'], self._iso(models.time.time())))
 
     async def _defer_timestamps(self, payload: str, body: dict) -> None:
         try:
@@ -454,9 +515,9 @@ class RedisTaskQueue:
         lease_expiry_ms = lease_start_ms + 600_000
         attempt_id = secrets.token_hex(16)
         iso = lambda ms: datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
-        claimed = await self._call('eval', _CLAIM_SCRIPT, 3, self._session_key(record), self.config.redis_queue_key,
+        claimed = await self._call('eval', _CLAIM_SCRIPT, 3, self._run_key(record), self.config.redis_queue_key,
                                    f'{self.config.redis_queue_key}:runs:{record.id}',
-                                   *self._session_args(record), payload, str(models.timestamp_ms(record.created_at)),
+                                   *self._run_args(record), payload, str(models.timestamp_ms(record.created_at)),
                                    str(lease_start_ms),
                                    iso(lease_expiry_ms) if record.login_timeout_seconds else '',
                                    str(lease_expiry_ms), iso(lease_start_ms),
@@ -479,13 +540,13 @@ class RedisTaskQueue:
         return record
 
     async def notification_user_id(self, record: TaskRecord) -> str:
-        """Read identity only from this worker's existing, unexpired session."""
-        script = _SESSION_GUARD + _OWNER_GUARD + """
+        """Read identity only from this worker's retained task and current attempt."""
+        script = _RUN_GUARD + _OWNER_GUARD + """
 if type(session.userId) ~= 'string' then return '' end
 return session.userId
 """
-        value = await self._call('eval', script, 1, self._session_key(record),
-                                 *self._session_args(record), record.attempt_id or '')
+        value = await self._call('eval', script, 1, self._run_key(record),
+                                 *self._run_args(record), record.attempt_id or '')
         return value if isinstance(value, str) and UUID_PATTERN.fullmatch(value) else ''
 
     async def pending_refresh(self, record: TaskRecord, request_id: str) -> bool:
@@ -497,34 +558,54 @@ return session.userId
             return False
 
     async def complete_refresh(self, record: TaskRecord, request_id: str) -> bool:
-        return bool(await self._call('eval', _ACK_REFRESH_SCRIPT, 2, self._session_key(record),
+        return bool(await self._call('eval', _ACK_REFRESH_SCRIPT, 2, self._run_key(record),
                                     f'{self.config.redis_queue_key}:refresh:{record.id}',
-                                    *self._session_args(record), request_id, record.attempt_id or ''))
+                                    *self._run_args(record), request_id, record.attempt_id or ''))
 
     async def mark_authorized(self, record: TaskRecord) -> bool:
-        return bool(await self._call('eval', _AUTHORIZE_SCRIPT, 2, self._session_key(record),
-                                    f'{self.config.redis_queue_key}:refresh:{record.id}',
-                                    *self._session_args(record), record.attempt_id or ''))
+        return bool(await self._call('eval', _AUTHORIZE_SCRIPT, 3, self._run_key(record),
+                                    f'{self.config.redis_queue_key}:refresh:{record.id}', self.config.redis_queue_key,
+                                    *self._run_args(record), self._iso(record.authorized_at),
+                                    '' if record.execution_deadline is None else str(record.execution_deadline),
+                                    str((record.authorized_at or models.time.time()) * 1000),
+                                    record.attempt_id or ''))
 
     async def mark_scan_captured(self, record: TaskRecord) -> bool:
         """Close QR refresh after capture, without claiming that game login succeeded."""
-        return bool(await self._call('eval', _SCAN_CAPTURED_SCRIPT, 2, self._session_key(record),
+        return bool(await self._call('eval', _SCAN_CAPTURED_SCRIPT, 2, self._run_key(record),
                                     f'{self.config.redis_queue_key}:refresh:{record.id}',
-                                    *self._session_args(record), record.attempt_id or ''))
+                                    *self._run_args(record), self._iso(record.scan_captured_at), record.attempt_id or ''))
+
+    @staticmethod
+    def _iso(value: float | None) -> str:
+        if value is None:
+            return ''
+        return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+
+    async def set_execution_status(self, record: TaskRecord, status: str) -> bool:
+        if status not in {'finishing_login', 'running_daily', 'completed', 'failed', 'interrupted', 'expired'}:
+            raise ValueError('Invalid execution status')
+        code = record.daily_error_code or ''
+        if code not in SAFE_DRIVER_ERRORS and code not in {'protocol_error', 'instance_cleanup_failed'}:
+            code = ''
+        error = SAFE_DRIVER_ERRORS.get(code, '')
+        changed = await self._call(
+            'eval', _EXECUTION_SCRIPT, 3, self._run_key(record),
+            f'{self.config.redis_queue_key}:refresh:{record.id}', self.config.redis_queue_key,
+            *self._run_args(record), status, code, error,
+            self._iso(models.time.time()), self._iso(record.daily_started_at),
+            self._iso(record.authorized_at),
+            '' if record.execution_deadline is None else str(record.execution_deadline), record.attempt_id or '',
+        )
+        return bool(changed)
 
     async def finish_failed(self, record: TaskRecord) -> bool:
-        """End an owned failed login after instance cleanup, retaining its TTL and history."""
-        code = record.daily_error_code if record.daily_error_code in SAFE_DRIVER_ERRORS else 'unexpected_error'
-        changed = await self._call(
-            'eval', _FINISH_FAILED_SCRIPT, 3, self._session_key(record),
-            f'{self.config.redis_queue_key}:refresh:{record.id}', self.config.redis_queue_key,
-            *self._session_args(record), code, SAFE_DRIVER_ERRORS[code], record.attempt_id or '',
-        )
+        changed = await self.set_execution_status(record, 'interrupted' if record._admin_interrupted else 'failed')
         if changed:
             record.status = 'failed'
-            record.error = SAFE_DRIVER_ERRORS[code]
+            record.error = SAFE_DRIVER_ERRORS.get(record.daily_error_code, SAFE_TASK_ERROR)
             record._queue_payload = None
-        return bool(changed)
+        return changed
 
     async def set_status(self, record: TaskRecord, status: str, error: str | None = None) -> bool:
         if status not in STATUSES or status == "queued":
@@ -533,9 +614,13 @@ return session.userId
         if status == "failed" and error is not None:
             allowed_errors = {SAFE_TASK_ERROR, UNSUPPORTED_DRIVER_ERROR, *SAFE_DRIVER_ERRORS.values()}
             safe_error = error if error in allowed_errors else SAFE_TASK_ERROR
+        code = record.daily_error_code if record.daily_error_code in SAFE_DRIVER_ERRORS else ''
+        if status == "failed" and code:
+            safe_error = SAFE_DRIVER_ERRORS[code]
         changed = await self._call(
-            "eval", _STATUS_SCRIPT, 1, self._session_key(record),
-            *self._session_args(record), status, safe_error, record.attempt_id or '',
+            "eval", _STATUS_SCRIPT, 1, self._run_key(record),
+            *self._run_args(record), 'waiting_scan' if status == 'qr_ready' else status, safe_error,
+            code, self._iso(models.time.time()), record.attempt_id or '',
         )
         if changed:
             record.status = status
@@ -548,8 +633,8 @@ return session.userId
         if record.qr_published or record._queue_payload is None:
             return False
         changed = await self._call(
-            "eval", _REQUEUE_SCRIPT, 2, self._session_key(record), self.config.redis_queue_key,
-            *self._session_args(record), record._queue_payload, record.attempt_id or '',
+            "eval", _REQUEUE_SCRIPT, 2, self._run_key(record), self.config.redis_queue_key,
+            *self._run_args(record), record._queue_payload, record.attempt_id or '',
         )
         if changed:
             record.status = "queued"

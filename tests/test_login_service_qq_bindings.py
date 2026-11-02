@@ -1,6 +1,7 @@
 """QQ mentions use scoped bindings and re-read them for each notification."""
 
 import asyncio
+import json
 import traceback
 
 import pytest
@@ -119,7 +120,7 @@ class Bindings:
     ('daily', '日常任务全部搞定啦！辛苦啦～'),
     ('arena_weekly', '决斗场周胜任务结束啦！辛苦啦～'),
 ])
-def test_runtime_rereads_binding_after_session_expires_and_honors_unbind(monkeypatch, final_member, main_task, expected):
+def test_runtime_rereads_binding_after_login_deadline_and_honors_unbind(monkeypatch, final_member, main_task, expected):
     async def scenario():
         runtime, record, _, _, user_id = await ready_runtime()
         record.user_options['mainTask'] = main_task
@@ -134,7 +135,16 @@ def test_runtime_rereads_binding_after_session_expires_and_honors_unbind(monkeyp
             first = request_json(transport.requests[-1][0])
             assert first['markdown']['content'].startswith(f'<qqbot-at-user id="{MEMBER}" />')
             assert '雪花' not in first['markdown']['content']
-            await runtime._redis_queue._client.delete(runtime._redis_queue._session_key(record))
+            # Login expiry no longer deletes a separate session. The same retained
+            # run keeps the trusted identity while authorized work continues.
+            queue = runtime._redis_queue
+            key = queue._run_key(record)
+            run = json.loads(await queue._client.get(key))
+            run.update(loginExpiresAt='2000-01-01T00:00:00.000Z', loginAuthorized=True, status='running_daily')
+            await queue._client.set(key, json.dumps(run), keepttl=True)
+            record.expires_at_ms = 0
+            assert await queue.notification_user_id(record) == user_id
+            assert await queue._client.exists(key) == 1
             bindings.member = final_member
             record.daily_started_at = 1.0
             await runtime._send_task_notification(record, 'completed', None)

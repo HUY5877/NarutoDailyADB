@@ -51,59 +51,62 @@ SAFE_RUN_ERRORS = {
 
 # Retry is safe even when Redis accepted the write but its response was lost.
 # A new owner may take over only after the login queue has assigned it the task.
-# Once the QR session expires, the existing run still authorizes its own worker.
+# The login business deadline never expires an already authorized execution.
 _PUBLISH = """
-local runKind = redis.call('TYPE', KEYS[1]).ok
-local sessionKind = redis.call('TYPE', KEYS[2]).ok
-if runKind ~= 'none' and runKind ~= 'string' then return 0 end
-local old = nil
-if runKind == 'string' then
-    local ok, value = pcall(cjson.decode, redis.call('GET', KEYS[1]))
-    if not ok or type(value) ~= 'table' then return 0 end
-    old = value
-end
-local session = nil
-if sessionKind == 'string' then
-    local ok, value = pcall(cjson.decode, redis.call('GET', KEYS[2]))
-    if ok and type(value) == 'table' then session = value end
-end
-local ok, update = pcall(cjson.decode, ARGV[3])
-if not ok or type(update) ~= 'table' then return 0 end
-local ownsSession = session and session.workerId == ARGV[1]
--- Requeue can clear the owner before a buffered shutdown event is delivered.
--- Only the last recorded owner may finish that attempt, until a new claim.
-local requeuedStop = session and session.status == 'queued'
-    and (session.workerId == nil or session.workerId == cjson.null)
-    and old and old.workerId == ARGV[1] and update.status == 'interrupted'
-if session and not ownsSession and not requeuedStop then return 0 end
--- Each successful claim authorizes exactly one execution attempt, even when
--- the same worker reclaims the same UUID. Late writes cannot cancel its retry.
-if ownsSession and session.attemptId and session.attemptId ~= update.attemptId then return 0 end
-if (not old or old.workerId ~= ARGV[1])
-    and not ownsSession then return 0 end
-local newAttempt = ownsSession and session.attemptId
-    and session.attemptId == update.attemptId
-    and old and old.attemptId ~= update.attemptId
-if old and old.attemptId and old.attemptId ~= update.attemptId and not newAttempt then return 0 end
--- This check and SET run atomically. A manual interruption wins over progress
--- and final outcomes, including retries whose sequence was already observed.
-if old and old.status == 'interrupted' and not newAttempt then
+if redis.call('TYPE', KEYS[1]).ok ~= 'string' then return 0 end
+local ok, old = pcall(cjson.decode, redis.call('GET', KEYS[1]))
+local valid, update = pcall(cjson.decode, ARGV[3])
+if not ok or not valid or type(old) ~= 'table' or type(update) ~= 'table' then return 0 end
+if old.workerId ~= ARGV[1] then return 0 end
+if old.taskId and old.taskId ~= update.taskId then return 0 end
+if old.attemptId and old.attemptId ~= update.attemptId then return 0 end
+if old.status == 'interrupted' then
     if update.status == 'interrupted' then return 1 end
     return -1
 end
-if old and old.workerId == ARGV[1] and not newAttempt
-    and tonumber(old.sequence or 0) >= tonumber(ARGV[2]) then return 1 end
--- A deleted/expired/requeued session cannot authorize late progress to reopen
--- a stopped run. A fresh owned claim can legitimately begin another attempt.
-local activeClaim = ownsSession and (session.status == 'starting_emulator'
-    or session.status == 'opening_game' or session.status == 'preparing_qr'
-    or session.status == 'qr_ready')
-if old and old.workerId == ARGV[1] and not activeClaim and not newAttempt
-    and (old.status == 'completed' or old.status == 'failed'
-        or old.status == 'interrupted' or old.status == 'expired')
-    and update.status ~= 'completed' and update.status ~= 'failed'
-    and update.status ~= 'interrupted' and update.status ~= 'expired' then return 0 end
-redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[4])
+if tonumber(old.sequence or 0) >= tonumber(ARGV[2]) then return 1 end
+local terminal = {completed=true, failed=true, interrupted=true, expired=true}
+if terminal[old.status] and old.status ~= update.status then return 0 end
+if update.scanCapturedAt and not update.authorizedAt and update.status == 'opening_game' then
+    update.status = 'waiting_scan'
+    old.scanCaptured = true
+    old.refreshRequestId = nil
+    redis.call('DEL', KEYS[2])
+end
+local rank = {queued=0, starting_emulator=1, opening_game=2, preparing_qr=3,
+    waiting_scan=4, qr_ready=4, finishing_login=5, running_daily=6}
+-- Success requires synchronous cleanup confirmation. Failure remains visible
+-- during the diagnostic hold; late progress cannot reopen any terminal outcome.
+local statusAllowed = not terminal[old.status] or old.status == update.status
+if update.status == 'completed' and not terminal[old.status] then statusAllowed = false end
+if statusAllowed and not terminal[old.status] and not terminal[update.status]
+    and (rank[old.status] or 0) > (rank[update.status] or 0) then statusAllowed = false end
+local fields = {'username', 'startedAt', 'authorizedAt', 'scanCapturedAt',
+    'secretRealmCompletedAt', 'actionIndex', 'actionTotal',
+    'logSource', 'logCursor', 'updatedAt', 'sequence'}
+for _, key in ipairs(fields) do
+    if update[key] ~= nil and update[key] ~= cjson.null then old[key] = update[key] end
+end
+-- A delayed buffered execution snapshot cannot shorten a newer arena budget.
+if (old.executionDeadline == nil or old.executionDeadline == cjson.null)
+    and update.executionDeadline ~= nil then old.executionDeadline = update.executionDeadline end
+if old.startedAt == nil then old.startedAt = cjson.null end
+if statusAllowed then
+    old.status = update.status
+    if update.errorCode ~= nil then old.errorCode = update.errorCode end
+    if old.finishedAt == nil or old.finishedAt == cjson.null then
+        if update.finishedAt ~= nil then old.finishedAt = update.finishedAt end
+    end
+end
+local retention = math.max(tonumber(ARGV[4]), 604800)
+redis.call('SET', KEYS[1], cjson.encode(old), 'EX', retention)
+if not terminal[old.status] and type(old.userId) == 'string' then
+    local activeKey = ARGV[5] .. ':users:' .. old.userId .. ':active'
+    if redis.call('TYPE', activeKey).ok == 'string'
+        and redis.call('GET', activeKey) == (old.id or old.taskId) then
+        redis.call('EXPIRE', activeKey, retention)
+    end
+end
 return 1
 """
 
@@ -192,6 +195,8 @@ class RedisRunReporter:
             state.setdefault('secretRealmCompletedAt', record.secret_realm_completed_at)
         if record.authorized_at is not None:
             state["authorizedAt"] = iso_time(record.authorized_at)
+        if record.execution_deadline is not None:
+            state["executionDeadline"] = record.execution_deadline
         if record.scan_captured_at is not None:
             state.setdefault('scanCapturedAt', iso_time(record.scan_captured_at))
         if error_code is not None:
@@ -280,8 +285,8 @@ class RedisRunReporter:
             run_ttl += self.config.daily_timeout_seconds
         result = await self.queue._call(
             "eval", _PUBLISH, 2, f"{prefix}:runs:{task_id}",
-            f"{prefix}:sessions:{task_id}", self.queue.owner, str(update.snapshot["sequence"]),
-            json.dumps(update.snapshot, ensure_ascii=False), str(run_ttl),
+            f"{prefix}:refresh:{task_id}", self.queue.owner, str(update.snapshot["sequence"]),
+            json.dumps(update.snapshot, ensure_ascii=False), str(run_ttl), prefix,
         )
         if result == -1:
             attempt_id = update.snapshot.get("attemptId")
