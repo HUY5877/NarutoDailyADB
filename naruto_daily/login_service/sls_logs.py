@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from dataclasses import dataclass
 from datetime import datetime
 import logging
 import re
@@ -66,16 +65,6 @@ class SlsSdkWriter:
         await result
 
 
-@dataclass
-class _TaskLogs:
-    first_id: str
-    uploaded: int = 0
-    pending: int = 0
-    truncated: bool = False
-    finished: bool = False
-    marker: dict[str, str] | None = None
-
-
 class SlsLogPublisher:
     """emit() does no network/disk work; one background task batches and retries.
 
@@ -93,12 +82,8 @@ class SlsLogPublisher:
         self.retry_interval = max(0.001, retry_interval)
         self.buffer_limit = max(2, buffer_limit)
         self.byte_limit = max(1024, byte_limit)
-        self.batch_size = max(1, min(batch_size, self.buffer_limit // 2))
+        self.batch_size = max(1, min(200, batch_size, self.buffer_limit // 2))
         self._pending: deque[tuple[dict[str, str], int]] = deque()
-        self._tasks: dict[str, _TaskLogs] = {}
-        self._corrections: dict[str, dict[str, str]] = {}
-        self._uploading: set[str] = set()
-        self._inherited: set[str] = set()
         self._count = self._bytes = 0
         self._last_ms = 0
         self._sequence = secrets.randbits(52)
@@ -121,8 +106,8 @@ class SlsLogPublisher:
             except RuntimeError:
                 pass
 
-    def observe_cursor(self, cursor: str | None, *, task_id: str | None = None) -> None:
-        """Continue after the previous owner's watermark, even after clock skew."""
+    def observe_cursor(self, cursor: str | None) -> None:
+        """Generate IDs after the previous owner, even after clock skew."""
         if not isinstance(cursor, str) or not re.fullmatch(r"[0-9]{1,16}-[0-9]{1,16}", cursor):
             return
         ms, sequence = map(int, cursor.split("-"))
@@ -131,9 +116,6 @@ class SlsLogPublisher:
         with self._lock:
             self._last_ms = max(self._last_ms, ms)
             self._sequence = max(self._sequence, sequence)
-            if (cursor != '0-0' and task_id is not None and UUID_PATTERN.fullmatch(task_id)
-                    and task_id not in self._tasks and len(self._inherited) < self.config.max_tasks):
-                self._inherited.add(task_id)
 
     def _event(self, task_id: str, value: dict) -> dict[str, str] | None:
         if not isinstance(task_id, str) or not UUID_PATTERN.fullmatch(task_id) or not isinstance(value, dict):
@@ -165,41 +147,21 @@ class SlsLogPublisher:
         with self._lock:
             if self._closing or self._closed:
                 return None
-            state = self._tasks.get(task_id)
-            if state is None and len(self._tasks) >= self.config.max_tasks:
-                return None
             self._last_ms = max(self._last_ms, int(time.time() * 1000))
             self._sequence += 1
             if self._sequence >= 2**53:
                 self._last_ms += 1
                 self._sequence = 0
             item_id = f"{self._last_ms}-{self._sequence}"
-            fields.update(id=item_id, streamMs=str(self._last_ms), streamSeq=str(self._sequence),
-                          firstId=state.first_id if state is not None else item_id)
+            fields.update(id=item_id, streamMs=str(self._last_ms), streamSeq=str(self._sequence))
             size = sum(len(k.encode()) + len(v.encode()) for k, v in fields.items()) + 256
-            if state is None:
-                state = self._tasks[task_id] = _TaskLogs(item_id, truncated=task_id in self._inherited)
-                self._inherited.discard(task_id)
             if not self._reserve(task_id, size):
-                self._mark_gap(task_id)
-                self._notify()
                 return None
-            self._tasks[task_id] = state
-            state.pending += 1
-            state.finished = False
             self._pending.append((fields, size))
             self._count += 1
             self._bytes += size
         self._notify()
         return item_id
-
-    def finish(self, task_id: str) -> None:
-        with self._lock:
-            state = self._tasks.get(task_id)
-            if state is not None:
-                state.finished = True
-                if not state.pending and task_id not in self._corrections and task_id not in self._uploading:
-                    self._tasks.pop(task_id, None)
 
     def _reserve(self, task_id: str, size: int) -> bool:
         if self._count < self.buffer_limit and self._bytes + size <= self.byte_limit:
@@ -222,61 +184,34 @@ class SlsLogPublisher:
         kept = deque()
         for i, (event, event_size) in enumerate(self._pending):
             if i in removed:
-                self._mark_gap(event["taskId"])
-                self._release(event, event_size)
+                self._release(event_size)
             else:
                 kept.append((event, event_size))
         self._pending = kept
         return True
 
-    def _mark_gap(self, task_id: str) -> None:
-        state = self._tasks[task_id]
-        state.truncated = True
-        if state.marker is not None and state.marker["truncated"] != "true":
-            self._corrections[task_id] = dict(state.marker, truncated="true")
-
-    def _release(self, event: dict, size: int) -> None:
+    def _release(self, size: int) -> None:
         self._count -= 1
         self._bytes -= size
-        state = self._tasks[event["taskId"]]
-        state.pending -= 1
-        if (state.finished and not state.pending and event["taskId"] not in self._corrections
-                and event["taskId"] not in self._uploading):
-            self._tasks.pop(event["taskId"], None)
 
     def _take_batch(self):
         with self._lock:
-            batch = [self._pending.popleft() for _ in range(min(self.batch_size, len(self._pending)))]
-            grouped: dict[str, list[dict[str, str]]] = {}
-            for event, _ in batch:
-                grouped.setdefault(event["taskId"], []).append(event)
-            markers = []
-            for task_id in list(self._corrections):
-                if task_id not in grouped:
-                    markers.append(self._corrections.pop(task_id))
-            for task_id, events in grouped.items():
-                state, last = self._tasks[task_id], events[-1]
-                self._corrections.pop(task_id, None)
-                markers.append({"kind": "checkpoint", "taskId": task_id, "environment": self.config.app_env,
-                                "id": last["id"], "streamMs": last["streamMs"], "streamSeq": last["streamSeq"],
-                                "time": last["time"], "firstId": state.first_id, "throughId": last["id"],
-                                "entryCount": str(state.uploaded + len(events)), "truncated": str(state.truncated).lower()})
-            self._uploading = set(grouped) | {marker["taskId"] for marker in markers}
-            return batch, [event for event, _ in batch] + markers
+            return [self._pending.popleft() for _ in range(min(self.batch_size, len(self._pending)))]
 
     async def _upload_loop(self) -> None:
         batch, records = [], []
         while True:
             if not records:
-                if not self._pending and not self._corrections:
+                if not self._pending:
                     if self._closing:
                         return
                     self._wake.clear()
-                    if not self._pending and not self._corrections:
+                    if not self._pending:
                         await self._wake.wait()
                 if not self._closing:
                     await asyncio.sleep(self.interval)
-                batch, records = self._take_batch()
+                batch = self._take_batch()
+                records = [event for event, _ in batch]
                 if not records:
                     continue
             try:
@@ -288,21 +223,8 @@ class SlsLogPublisher:
                 await asyncio.sleep(self.retry_interval)
                 continue
             with self._lock:
-                for marker in records:
-                    if marker["kind"] == "checkpoint":
-                        state = self._tasks[marker["taskId"]]
-                        state.marker = marker
-                        if state.truncated and marker["truncated"] != "true":
-                            self._mark_gap(marker["taskId"])
-                        elif marker["truncated"] == "true":
-                            self._corrections.pop(marker["taskId"], None)
-                for event, size in batch:
-                    self._tasks[event["taskId"]].uploaded += 1
-                    self._release(event, size)
-                self._uploading.clear()
-                for task_id, state in list(self._tasks.items()):
-                    if state.finished and not state.pending and task_id not in self._corrections:
-                        self._tasks.pop(task_id, None)
+                for _, size in batch:
+                    self._release(size)
             batch, records = [], []
 
     async def close(self) -> None:
@@ -330,10 +252,6 @@ class SlsLogPublisher:
         with self._lock:
             self._closed = True
             self._pending.clear()
-            self._tasks.clear()
-            self._corrections.clear()
-            self._uploading.clear()
-            self._inherited.clear()
             self._count = self._bytes = 0
         LOGGER.info("SLS 内存日志已全部上报")
         if cancelled:

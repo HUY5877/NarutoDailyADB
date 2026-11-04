@@ -44,6 +44,12 @@ def event(message="正常任务节点", **fields):
     return {"time": "2026-10-20T09:00:00.000Z", "level": "INFO", "message": message, **fields}
 
 
+def assert_only_events(writer):
+    rows = [row for batch in writer.batches for row in batch]
+    assert rows and all(row["kind"] == "event" for row in rows)
+    assert all(not ({"firstId", "throughId", "entryCount", "truncated"} & row.keys()) for row in rows)
+
+
 def events(writer):
     return [row for batch in writer.batches for row in batch if row["kind"] == "event"]
 
@@ -57,23 +63,19 @@ def test_emit_only_enqueues_and_close_uploads_without_redis_or_disk(tmp_path):
         last = publisher.emit(task_id, event("任务完成", actionIndex=1, actionTotal=1))
         assert writer.batches == []
         assert first != last
-        publisher.finish(task_id)
         publisher.start()
         await publisher.close()
         rows = events(writer)
         assert [row["id"] for row in rows] == [first, last]
-        assert all(row.get("firstId") == first for row in rows)
+        assert_only_events(writer)
         assert [row["message"] for row in rows] == ["任务开始", "任务完成"]
         assert all(row["environment"] == "test" for row in rows)
-        marker = writer.batches[-1][-1]
-        assert marker["firstId"] == first and marker["throughId"] == last
-        assert marker["entryCount"] == "2" and marker["truncated"] == "false"
         assert list(tmp_path.iterdir()) == files_before
         assert publisher.emit(task_id, event()) is None
     asyncio.run(scenario())
 
 
-def test_failed_or_ambiguous_batch_retries_identical_ids_and_marker(tmp_path):
+def test_failed_or_ambiguous_batch_retries_identical_events(tmp_path):
     async def scenario():
         writer, publisher = producer(tmp_path, retry_interval=0.01)
         writer.fail = True
@@ -86,22 +88,33 @@ def test_failed_or_ambiguous_batch_retries_identical_ids_and_marker(tmp_path):
         writer.fail = False
         await publisher.close()
         assert writer.batches[0] == writer.batches[1]
-        assert writer.batches[-1][-1]["entryCount"] == "2"
+        assert [row["message"] for row in writer.batches[-1]] == ["第二条"]
+        assert_only_events(writer)
     asyncio.run(scenario())
 
 
-def test_overflow_keeps_latest_and_marks_gap_in_checkpoint(tmp_path):
+def test_overflow_keeps_latest_events_without_uploading_gap_markers(tmp_path):
     async def scenario():
         writer, publisher = producer(tmp_path, buffer_limit=3, batch_size=2)
         task_id = str(uuid4())
         ids = [publisher.emit(task_id, event(str(i))) for i in range(8)]
-        publisher.finish(task_id)
         publisher.start()
         await publisher.close()
         assert [row["message"] for row in events(writer)] == ["5", "6", "7"]
-        assert writer.batches[-1][-1]["throughId"] == ids[-1]
-        assert writer.batches[-1][-1]["entryCount"] == "3"
-        assert writer.batches[-1][-1]["truncated"] == "true"
+        assert events(writer)[-1]["id"] == ids[-1]
+        assert_only_events(writer)
+    asyncio.run(scenario())
+
+
+def test_upload_batches_never_exceed_200_events(tmp_path):
+    async def scenario():
+        writer, publisher = producer(tmp_path, batch_size=1000)
+        task_id = str(uuid4())
+        accepted = [publisher.emit(task_id, event(str(i))) for i in range(405)]
+        await publisher.close()
+        assert [len(batch) for batch in writer.batches] == [200, 200, 5]
+        assert [row["id"] for row in events(writer)] == accepted
+        assert_only_events(writer)
     asyncio.run(scenario())
 
 
@@ -181,7 +194,6 @@ def test_repeated_shutdown_cancellation_is_deferred_until_all_batches_are_upload
         task_id = str(uuid4())
         for message in ("第一条", "第二条", "最后一条"):
             publisher.emit(task_id, event(message))
-        publisher.finish(task_id)
         closing = asyncio.create_task(publisher.close())
         try:
             await asyncio.wait_for(entered.wait(), 0.5)
@@ -194,7 +206,7 @@ def test_repeated_shutdown_cancellation_is_deferred_until_all_batches_are_upload
             with pytest.raises(asyncio.CancelledError):
                 await closing
         assert [row["message"] for row in events(writer)] == ["第一条", "第二条", "最后一条"]
-        assert writer.batches[-1][-1]["entryCount"] == "3"
+        assert_only_events(writer)
         await publisher.close()
     asyncio.run(scenario())
 
@@ -224,14 +236,16 @@ def test_new_owner_observes_old_cursor_before_generating_logs(tmp_path, monkeypa
         observe(bad)
 
 
-def test_reclaimed_task_marks_unknown_previous_uploads_as_truncated(tmp_path):
+def test_reclaimed_task_only_uses_previous_cursor_for_unique_ids(tmp_path):
     async def scenario():
         writer, publisher = producer(tmp_path)
         task_id = str(uuid4())
-        publisher.observe_cursor("1800000000000-1", task_id=task_id)
-        publisher.emit(task_id, event())
+        publisher.observe_cursor("1800000000000-1")
+        accepted = publisher.emit(task_id, event())
         await publisher.close()
-        assert writer.batches[-1][-1]["truncated"] == "true"
+        assert [row["id"] for row in events(writer)] == [accepted]
+        assert tuple(map(int, accepted.split("-"))) > (1800000000000, 1)
+        assert_only_events(writer)
     asyncio.run(scenario())
 
 
@@ -247,11 +261,11 @@ def test_byte_bound_and_invalid_events_do_not_escape_logger(tmp_path):
         assert publisher.emit(task_id, event("tail"))
         await publisher.close()
         assert [row["message"] for row in events(writer)] == ["tail"]
-        assert writer.batches[-1][-1]["truncated"] == "true"
+        assert_only_events(writer)
     asyncio.run(scenario())
 
 
-def test_inflight_events_survive_overflow_and_completed_task_can_be_reused(tmp_path):
+def test_inflight_events_survive_overflow_and_same_task_can_log_after_drain(tmp_path):
     async def scenario():
         writer, publisher = producer(tmp_path, buffer_limit=4, batch_size=2)
         entered, release = asyncio.Event(), asyncio.Event()
@@ -269,22 +283,19 @@ def test_inflight_events_survive_overflow_and_completed_task_can_be_reused(tmp_p
         await asyncio.wait_for(entered.wait(), 0.5)
         for i in range(5):
             publisher.emit(first, event(f"first-{i}"))
-        publisher.finish(first)
-        publisher.finish(second)
         release.set()
         while len(events(writer)) < 4:
             await asyncio.sleep(0.001)
         assert [row["message"] for row in events(writer)] == ["first-a", "second-a", "first-3", "first-4"]
         restarted_id = publisher.emit(first, event("reclaimed"))
-        publisher.finish(first)
         await publisher.close()
-        marker = writer.batches[-1][-1]
-        assert marker["firstId"] == restarted_id and marker["entryCount"] == "1"
+        assert events(writer)[-1]["id"] == restarted_id
+        assert_only_events(writer)
         assert events(writer)[-1]["message"] == "reclaimed"
     asyncio.run(scenario())
 
 
-def test_overflow_after_batch_started_publishes_corrected_gap_marker(tmp_path):
+def test_rejected_oversized_event_does_not_upload_extra_records(tmp_path):
     async def scenario():
         writer, publisher = producer(tmp_path, byte_limit=1024)
         entered, release = asyncio.Event(), asyncio.Event()
@@ -300,13 +311,12 @@ def test_overflow_after_batch_started_publishes_corrected_gap_marker(tmp_path):
         publisher.start()
         await asyncio.wait_for(entered.wait(), 0.5)
         assert publisher.emit(task_id, event("文" * 1000)) is None
-        publisher.finish(task_id)
         release.set()
         await publisher.close()
         assert events(writer)[0]["id"] == last
-        marker = writer.batches[-1][-1]
-        assert marker["throughId"] == last and marker["entryCount"] == "1"
-        assert marker["truncated"] == "true"
+        assert len(writer.batches) == 1
+        assert len(events(writer)) == 1
+        assert_only_events(writer)
     asyncio.run(scenario())
 
 
@@ -326,7 +336,6 @@ def test_other_tasks_cannot_evict_an_accepted_final_log(tmp_path):
         publisher.start()
         await asyncio.wait_for(entered.wait(), 0.5)
         tail = publisher.emit(first, event("first-finish"))
-        publisher.finish(first)
         publisher.emit(second, event("second-start"))
         publisher.emit(second, event("second-finish"))
         release.set()

@@ -75,14 +75,14 @@ def test_rejection_publishes_directly_only_after_authorization(authorized):
         try:
             body = message(version=2)
             await enqueue(redis, body, overrides={} if authorized else {"workerId": "other"})
-            published, finished = [], []
+            published = []
 
             def emit(task_id, event):
                 published.append((task_id, event))
                 return f"1800000000000-{len(published)}"
 
             queue = RedisTaskQueue(configuration(), client=redis)
-            queue.log_publisher = SimpleNamespace(emit=emit, finish=finished.append)
+            queue.log_publisher = SimpleNamespace(emit=emit)
             assert await queue.pop() is None
             session_key, run_key, log_key = task_keys(body)
             assert await redis.exists(log_key) == 0
@@ -95,10 +95,9 @@ def test_rejection_publishes_directly_only_after_authorization(authorized):
                 assert published[1][1]["level"] == "ERROR"
                 assert published[1][1]["message"] == SAFE_REJECTION_ERRORS["invalid_task_payload"]
                 assert published[1][1]["time"] == state["finishedAt"]
-                assert finished == [body["id"]]
                 assert 604_799 <= await redis.ttl(run_key) <= 604_800
             else:
-                assert published == finished == []
+                assert published == []
                 state = json.loads(await redis.get(run_key))
                 assert state['status'] == 'queued' and state['workerId'] == 'other'
         finally:
@@ -126,7 +125,7 @@ def test_rejection_cursor_cas_cannot_overwrite_a_newer_run():
                     return await redis.eval(*args)
 
             queue = RedisTaskQueue(configuration(), client=RacingTransport())
-            queue.log_publisher = SimpleNamespace(emit=lambda *args: "1800000000000-1", finish=lambda _: None)
+            queue.log_publisher = SimpleNamespace(emit=lambda *args: "1800000000000-1")
             assert await queue.pop() is None
             assert await redis.get(run_key) == newer
             assert 29 <= await redis.ttl(run_key) <= 30

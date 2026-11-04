@@ -77,7 +77,6 @@ async def eventually(predicate, *, timeout=5):
 class RecordingPublisher:
     def __init__(self):
         self.events = {}
-        self.finished = []
         self.sequence = 0
         self.observed = []
 
@@ -87,11 +86,8 @@ class RecordingPublisher:
         self.events.setdefault(task_id, []).append((cursor, dict(event)))
         return cursor
 
-    def finish(self, task_id):
-        self.finished.append(task_id)
-
-    def observe_cursor(self, cursor, *, task_id=None):
-        self.observed.append((cursor, task_id))
+    def observe_cursor(self, cursor):
+        self.observed.append(cursor)
 
 
 def make_reporter(cfg, queue, **kwargs):
@@ -124,7 +120,6 @@ def test_direct_publication_does_not_wait_for_redis_and_coalesces_summaries():
             snapshot = reporter._pending[record.id][0].snapshot
             assert snapshot["logSource"] == "sls"
             assert snapshot["logCursor"] == publisher.events[record.id][-1][0]
-            assert publisher.finished == [record.id]
             reporter.start()
             await drain(reporter)
             run_key, stream_key, _ = keys(cfg, record)
@@ -211,7 +206,7 @@ def test_claim_seeds_publisher_from_previous_attempt_cursor():
         queue.log_publisher = RecordingPublisher()
         claimed = await queue.pop()
         assert claimed is not None and claimed.id == record.id
-        assert queue.log_publisher.observed == [(cursor, record.id)]
+        assert queue.log_publisher.observed == [cursor]
         assert queue.log_publisher.events == {}
         await client.aclose()
     asyncio.run(scenario())
