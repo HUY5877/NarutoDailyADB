@@ -36,9 +36,47 @@ def test_repeated_sigint_keeps_worker_alive_until_sls_recovers_and_all_logs_uplo
     assert report["outage_during_shutdown_seconds"] >= 2.1
     assert report["failed_upload_attempts"] >= 2
     assert report["uploaded_events"] == report["accepted_events"] == 6
-    assert report["final_checkpoint_counts"] == [1, 5]
+    assert report["uploaded_records"] == report["uploaded_events"]
     assert report["stop_reporter_calls"] == report["redis_close_calls"] == 1
     assert report["pending_after_exit"] == 0
+
+
+def test_cancelled_blocked_sdk_upload_does_not_hold_process_exit(tmp_path):
+    child_env = {key: os.environ[key] for key in (
+        "PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC", "PATHEXT",
+    ) if key in os.environ}
+    source = """
+import asyncio
+from pathlib import Path
+import sys
+import threading
+sys.path.insert(0, sys.argv[1])
+from naruto_daily.common import environment
+environment.PROJECT_ROOT = Path.cwd()
+environment._initialized = True
+from naruto_daily.login_service.sls_logs import SlsSdkWriter
+entered, blocked = threading.Event(), threading.Event()
+writer = object.__new__(SlsSdkWriter)
+def put_forever(records):
+    entered.set()
+    blocked.wait()
+writer._put = put_forever
+async def main():
+    task = asyncio.create_task(writer.put([]))
+    async with asyncio.timeout(2):
+        while not entered.is_set():
+            await asyncio.sleep(0.001)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+asyncio.run(main())
+print("cancelled-and-exited", flush=True)
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", source, str(Path(__file__).resolve().parents[1])],
+        cwd=tmp_path, env=child_env, capture_output=True, text=True, timeout=8,
+    )
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip() == "cancelled-and-exited"
 
 
 async def _signal_child(state_dir):
@@ -122,8 +160,6 @@ async def _signal_child(state_dir):
         async def close(self):
             self.close_calls += 1
             emit(task_ids[0], "last-record-during-shutdown")
-            for task_id in task_ids:
-                runtime._log_publisher.finish(task_id)
 
     queue, reporter = Queue(), Reporter()
     real_runtime, real_publisher = runtime_module.LoginRuntime, sls_logs.SlsLogPublisher
@@ -166,21 +202,15 @@ async def _signal_child(state_dir):
     uploaded = [row for row in writer.uploaded if row["kind"] == "event"]
     assert [(row["taskId"], row["id"], row["message"]) for row in uploaded] == expected
     assert len({row["id"] for row in uploaded}) == len(expected)
-    markers = {row["taskId"]: row for row in writer.uploaded if row["kind"] == "checkpoint"}
-    assert len(markers) == 2
-    for task_id, marker in markers.items():
-        task_events = [row for row in uploaded if row["taskId"] == task_id]
-        assert marker["entryCount"] == str(len(task_events))
-        assert marker["firstId"] == task_events[0]["id"]
-        assert marker["throughId"] == task_events[-1]["id"]
-        assert marker["truncated"] == "false"
+    assert len(writer.uploaded) == len(uploaded)
+    assert all(not ({"firstId", "throughId", "entryCount", "truncated"} & row.keys()) for row in uploaded)
     assert runtime._log_publisher._closed and not runtime._log_publisher._pending
     assert runtime._log_publisher._task.done()
     print(json.dumps({
         "signals": ["SIGINT", "SIGINT"], "alive_while_sls_failed": True,
         "outage_during_shutdown_seconds": elapsed, "failed_upload_attempts": writer.failed_attempts,
         "uploaded_events": len(uploaded), "accepted_events": len(expected),
-        "final_checkpoint_counts": sorted(int(row["entryCount"]) for row in markers.values()),
+        "uploaded_records": len(writer.uploaded),
         "stop_reporter_calls": reporter.close_calls, "redis_close_calls": queue.close_calls,
         "pending_after_exit": runtime._log_publisher._count,
     }), flush=True)

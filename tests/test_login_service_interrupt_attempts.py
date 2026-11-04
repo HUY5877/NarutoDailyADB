@@ -154,8 +154,8 @@ def test_claim_still_restores_the_previous_sls_cursor():
         observed = []
 
         class Publisher:
-            def observe_cursor(self, cursor, *, task_id):
-                observed.append((cursor, task_id))
+            def observe_cursor(self, cursor):
+                observed.append(cursor)
 
         queue.log_publisher = Publisher()
         message = body()
@@ -170,7 +170,7 @@ def test_claim_still_restores_the_previous_sls_cursor():
 
             assert record is not None and re.fullmatch(r"[0-9a-f]{32}", record.attempt_id)
             assert json.loads(await client.get(key))["attemptId"] == record.attempt_id
-            assert observed == [(cursor, message["id"])]
+            assert observed == [cursor]
         finally:
             await queue.close()
 

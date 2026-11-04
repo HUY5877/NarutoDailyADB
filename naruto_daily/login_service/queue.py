@@ -437,7 +437,6 @@ class RedisTaskQueue:
                     "message": "登录申请已提交，等待执行服务器领取任务。",
                 })
                 cursor = self.log_publisher.emit(task_id, event)
-                self.log_publisher.finish(task_id)
                 if cursor is not None:
                     await self._call(
                         "eval", _REJECT_LOG_CURSOR, 1, run_key, encoded_run,
@@ -525,7 +524,7 @@ class RedisTaskQueue:
         if isinstance(claimed, (list, tuple)):
             claimed, cursor = claimed
             if claimed == 1 and cursor and self.log_publisher is not None:
-                self.log_publisher.observe_cursor(cursor, task_id=record.id)
+                self.log_publisher.observe_cursor(cursor)
         if claimed == -1:
             await self._defer_timestamps(payload, body)
         if claimed != 1:

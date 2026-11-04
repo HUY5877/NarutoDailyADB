@@ -252,8 +252,6 @@ class RedisRunReporter:
 
     def finish(self, task_id: str) -> None:
         """Release local buffers once all accepted updates have been delivered."""
-        if self.log_publisher is not None:
-            self.log_publisher.finish(task_id)
         self._finished.add(task_id)
         self._discard_finished(task_id)
 
