@@ -164,7 +164,9 @@ class LDPlayerManager:
         except OSError:
             raise LDPlayerError(f"Could not run LDPlayer {action}; check the configured installation.") from None
         if result.returncode not in accepted_returncodes:
-            raise LDPlayerError(f"LDPlayer {action} failed; check the emulator and retry.")
+            raise LDPlayerError(
+                f"LDPlayer {action} failed (exit code {result.returncode}); check the emulator and retry."
+            )
         return result
 
     @contextmanager
@@ -853,6 +855,57 @@ class LDPlayerManager:
                 "game launch",
             )
 
+    def _wait_pool_stopped(self, expected: _ListedInstance, deadline: float) -> None:
+        reason = "Shutdown has not been confirmed."
+        while True:
+            try:
+                self._remaining(deadline)
+            except LDPlayerError:
+                raise LDPlayerError(
+                    f"Could not confirm shutdown before the LDPlayer cleanup deadline: {reason}"
+                ) from None
+            try:
+                rows = self._list(deadline)
+            except LDPlayerError as error:
+                reason = str(error)
+            else:
+                current = next((row for row in rows if row.index == expected.index), None)
+                if current is None:
+                    reason = "Bound LDPlayer pool instance disappeared during cleanup."
+                else:
+                    if current.name != expected.name:
+                        raise LDPlayerError("Bound LDPlayer pool instance was renamed during cleanup.")
+                    if not current.running:
+                        return
+                    reason = "Bound LDPlayer pool instance is still running."
+            time.sleep(min(0.2, max(0, deadline - time.time())))
+
+    def _close_pool_instance(self, current: _ListedInstance, deadline: float) -> None:
+        close_error = None
+        confirmation_error = None
+        try:
+            self._run(
+                [self.console_path, "quit", "--name", current.name], deadline, "instance close",
+            )
+        except LDPlayerError as error:
+            close_error = error
+            logging.getLogger(__name__).warning(
+                "LDPlayer pool instance %d close command failed; checking final state: %s",
+                current.index, error,
+            )
+        finally:
+            # quit can report failure (or consume its entire deadline) while
+            # shutdown continues asynchronously. Always verify with a fresh,
+            # bounded budget under the same binding lock before releasing it.
+            try:
+                self._wait_pool_stopped(current, time.time() + self.command_timeout)
+            except LDPlayerError as error:
+                # Do not replace an unexpected exception or interruption from
+                # quit; only reconcile the expected driver errors below.
+                confirmation_error = error
+        if confirmation_error is not None:
+            raise confirmation_error from close_error
+
     def close(self, task_id: str) -> None:
         task_id, expected_name = self._task(task_id)
         deadline = time.time() + self.command_timeout
@@ -865,21 +918,7 @@ class LDPlayerManager:
                 index = int(key)
                 current = next(row for row in rows if row.index == index)
                 if current.running:
-                    self._run(
-                        [self.console_path, "quit", "--name", current.name],
-                        deadline,
-                        "instance close",
-                    )
-                    while True:
-                        current = next((row for row in self._list(deadline)
-                                        if row.index == index), None)
-                        if current is None:
-                            raise LDPlayerError("Bound LDPlayer pool instance disappeared during cleanup.")
-                        if current.name != binding["name"]:
-                            raise LDPlayerError("Bound LDPlayer pool instance was renamed during cleanup.")
-                        if not current.running:
-                            break
-                        time.sleep(min(0.2, self._remaining(deadline)))
+                    self._close_pool_instance(current, deadline)
                 binding["state"] = "idle"
                 binding["taskId"] = None
                 self._save_state(bindings, pool=True)

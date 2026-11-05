@@ -24,6 +24,17 @@ def row(index, name, running=0):
     return f"{index},{name},0,0,{running},0,0,1920,1080,280"
 
 
+class Clock:
+    def __init__(self):
+        self.now = time.time()
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
 class Result:
     def __init__(self, stdout=b"", stderr=b"", returncode=0):
         self.stdout = stdout

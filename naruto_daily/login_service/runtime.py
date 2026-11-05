@@ -999,8 +999,13 @@ class LoginRuntime:
         try:
             await asyncio.to_thread(self._close_ldplayer, task_id)
             return True
-        except Exception:
-            logger.warning("Could not close the LDPlayer login instance for task %s", task_id)
+        except Exception as error:
+            reason = type(error).__name__
+            if isinstance(error, LDPlayerError):
+                reason = f"{reason}: {error}"
+            logger.warning(
+                "Could not close the LDPlayer login instance for task %s: %s", task_id, reason,
+            )
             return False
 
     async def _hold_failed_ldplayer(self, record: TaskRecord) -> None:
