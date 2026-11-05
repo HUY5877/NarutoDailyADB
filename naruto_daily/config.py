@@ -268,8 +268,8 @@ def _normalize_action(action: Any, task_name: str) -> Any:
         if isinstance(close_target, dict):
             normalized_close_target = dict(close_target)
             threshold = normalized_close_target.get("threshold")
-            if isinstance(threshold, (int, float)) and not isinstance(threshold, bool) and threshold < 0.95:
-                normalized_close_target["threshold"] = 0.95
+            if isinstance(threshold, (int, float)) and not isinstance(threshold, bool) and threshold < 0.90:
+                normalized_close_target["threshold"] = 0.90
             normalized["close_target"] = normalized_close_target
         LOGGER.info("检测到旧版回主界面配置，已增加主界面识别并提高关闭阈值")
         return normalized
@@ -442,8 +442,8 @@ def _validate_action(action: Any, width: int, height: int, context: str) -> None
             and close_target["bottom"] <= 300
         ):
             raise ConfigError(f"{context} 的关闭按钮搜索区域必须限制在右上角")
-        if close_target["threshold"] < 0.95:
-            raise ConfigError(f"{context} 的关闭按钮阈值不能低于 0.95")
+        if close_target["threshold"] < 0.90:
+            raise ConfigError(f"{context} 的关闭按钮阈值不能低于 0.90")
         if "dismiss_popup" in action:
             popup = action["dismiss_popup"]
             popup_context = f"{context}.dismiss_popup"

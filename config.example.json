@@ -75,7 +75,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         },
         "dismiss_popup": {
           "marker": {
@@ -115,7 +115,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       },
       {
@@ -180,7 +180,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       }
     ],
@@ -207,7 +207,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       },
       {
@@ -274,7 +274,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       }
     ],
@@ -382,7 +382,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       },
       {
@@ -462,7 +462,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       },
       {
@@ -595,7 +595,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       },
       {
@@ -726,7 +726,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       }
     ],
@@ -756,7 +756,7 @@
             "top": 0,
             "right": 1920,
             "bottom": 300,
-            "threshold": 0.95
+            "threshold": 0.9
           }
         },
         "reward_button": {
@@ -938,7 +938,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       }
     ],
@@ -968,7 +968,7 @@
             "top": 0,
             "right": 1920,
             "bottom": 300,
-            "threshold": 0.95
+            "threshold": 0.9
           }
         },
         "swipe": {
@@ -1012,7 +1012,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       },
       {
@@ -1156,7 +1156,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       }
     ],
@@ -1183,7 +1183,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       },
       {
@@ -1311,7 +1311,7 @@
           "top": 0,
           "right": 1920,
           "bottom": 300,
-          "threshold": 0.95
+          "threshold": 0.9
         }
       }
     ],
@@ -1377,7 +1377,7 @@
             "top": 0,
             "right": 1920,
             "bottom": 300,
-            "threshold": 0.95
+            "threshold": 0.9
           }
         }
       },

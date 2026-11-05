@@ -211,7 +211,7 @@ def test_arena_matchmaking_accepts_local_targets_and_nested_return(tmp_path, scr
     (lambda a: a.update(return_to_main=[]), 'return_to_main.*动作'),
     (lambda a: a['return_to_main'].update(type='back'), 'return_to_main.*动作'),
     (lambda a: a['return_to_main']['close_target'].update(left=1400), '右上角'),
-    (lambda a: a['return_to_main']['close_target'].update(threshold=.94), '关闭按钮阈值'),
+    (lambda a: a['return_to_main']['close_target'].update(threshold=.89), '关闭按钮阈值'),
     (lambda a: a.update(swipe={}), '未知字段'),
     (lambda a: a.update(multimodal={}), '未知字段'),
 ])
@@ -375,7 +375,7 @@ def test_return_to_main_accepts_ten_round_close_settings(tmp_path):
             "name": "通用关闭按钮",
             "template": "assets/promo_close.png",
             "left": 1700, "top": 0, "right": 1920, "bottom": 180,
-            "threshold": 0.95,
+            "threshold": 0.90,
         },
     }]
 
@@ -383,7 +383,7 @@ def test_return_to_main_accepts_ten_round_close_settings(tmp_path):
 
     assert settings.tasks["login"][0]["max_rounds"] == 10
     assert settings.tasks["login"][0]["main_page_marker"]["threshold"] == 0.90
-    assert settings.tasks["login"][0]["close_target"]["threshold"] == 0.95
+    assert settings.tasks["login"][0]["close_target"]["threshold"] == 0.90
 
 
 def test_return_to_main_rejects_close_threshold_below_safe_margin(tmp_path):
@@ -404,11 +404,11 @@ def test_return_to_main_rejects_close_threshold_below_safe_margin(tmp_path):
             "name": "通用关闭按钮",
             "template": "assets/promo_close.png",
             "left": 1700, "top": 0, "right": 1920, "bottom": 180,
-            "threshold": 0.94,
+            "threshold": 0.89,
         },
     }]
 
-    with pytest.raises(ConfigError, match="关闭按钮阈值不能低于 0.95"):
+    with pytest.raises(ConfigError, match="关闭按钮阈值不能低于 0.90"):
         load_settings(write_config(tmp_path, payload))
 
 
@@ -483,7 +483,7 @@ def test_old_return_to_main_action_is_migrated_to_safe_settings(tmp_path):
     settings = load_settings(write_config(tmp_path, payload))
 
     action = settings.tasks["login"][0]
-    assert action["close_target"]["threshold"] == 0.95
+    assert action["close_target"]["threshold"] == 0.90
     assert action["main_page_marker"] == {
         "name": "主界面奖励入口",
         "template": "assets/reward_entry.png",
