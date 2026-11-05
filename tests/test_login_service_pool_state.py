@@ -6,7 +6,7 @@ from uuid import UUID
 import pytest
 
 from naruto_daily.login_service.ldplayer import LDPlayerError, LDPlayerManager
-from test_login_service_ldplayer import FakeLDPlayer, TASK_ID, pool_manager
+from test_login_service_ldplayer import Clock, FakeLDPlayer, TASK_ID, pool_manager
 
 
 SECOND_TASK = "22222222-2222-4222-8222-222222222222"
@@ -322,6 +322,7 @@ def test_cleanup_refuses_to_release_owner_if_instance_changes_after_quit(tmp_pat
         return result
 
     monkeypatch.setattr("naruto_daily.login_service.ldplayer.subprocess.run", changing_instance)
+    monkeypatch.setattr("naruto_daily.login_service.ldplayer.time", Clock())
 
     with pytest.raises(LDPlayerError):
         service.close(TASK_ID)

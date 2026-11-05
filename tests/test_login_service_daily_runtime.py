@@ -15,7 +15,7 @@ import pytest
 from oss_fakes import OSS_ENV
 
 from naruto_daily.login_service.config import PROJECT_ROOT, ServiceConfig, load_config
-from naruto_daily.login_service.ldplayer import LDPlayerPoolFull
+from naruto_daily.login_service.ldplayer import LDPlayerError, LDPlayerPoolFull
 from naruto_daily.login_service.models import parse_submission
 from naruto_daily.login_service import runtime as runtime_module
 from naruto_daily.login_service.runtime import LoginRuntime
@@ -687,7 +687,7 @@ def test_failed_published_session_ends_only_after_instance_cleanup(monkeypatch, 
     asyncio.run(scenario())
 
 
-def test_failed_cleanup_persists_terminal_cleanup_error(monkeypatch, tmp_path):
+def test_failed_cleanup_persists_terminal_cleanup_error(monkeypatch, tmp_path, caplog):
     async def scenario():
         record = record_with_ttl()
         runtime, _, queue, pool = make_runtime(tmp_path, monkeypatch, record,
@@ -702,6 +702,24 @@ def test_failed_cleanup_persists_terminal_cleanup_error(monkeypatch, tmp_path):
         assert record.daily_error_code == 'instance_cleanup_failed'
         assert not runtime._pending_session_failures
     asyncio.run(scenario())
+    assert "RuntimeError" in caplog.text
+    assert "private driver exception" not in caplog.text
+
+
+def test_cleanup_logs_safe_ldplayer_error_reason(monkeypatch, tmp_path, caplog):
+    async def scenario():
+        record = record_with_ttl()
+        runtime, _, _, pool = make_runtime(tmp_path, monkeypatch, record, [])
+
+        def cannot_close(task_id):
+            raise LDPlayerError("LDPlayer instance close timed out; retry or close the login task.")
+
+        monkeypatch.setattr(pool, "close", cannot_close)
+        assert not await runtime._cleanup_ldplayer(record.id)
+
+    asyncio.run(scenario())
+    assert "LDPlayerError" in caplog.text
+    assert "instance close timed out" in caplog.text
 
 
 @pytest.mark.parametrize('expires_before_retry', [False, True])
