@@ -737,6 +737,7 @@ def test_capture_package_fallback_never_bypasses_task_ownership_or_deadline(monk
 
     console, runner, probes = package_probe_boundary(monkeypatch, tmp_path, probe, [])
     manager = LDPlayerManager(console, '', tmp_path / 'state', pool_indices=(7,))
+    manager.reset_pool()
     instance = manager.allocate(TASK, deadline)
     manager.start(instance, deadline)
     if invalid == 'owner':

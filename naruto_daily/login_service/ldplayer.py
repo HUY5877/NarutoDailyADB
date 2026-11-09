@@ -330,8 +330,8 @@ class LDPlayerManager:
                 }
             self._save_state(bindings, pool=True)
 
-    def _pool_state(self, deadline: float) -> tuple[dict[str, dict[str, Any]], list[_ListedInstance]]:
-        """Read/migrate slots while the caller holds bindings.lock; never discard an active owner."""
+    def _read_pool_slots(self) -> tuple[dict[str, dict[str, Any]], int | None]:
+        """Read and validate persisted owners while the caller holds bindings.lock."""
         try:
             document = (json.loads(self._state_path.read_text("utf-8"), object_pairs_hook=_binding_object)
                         if self._state_path.exists() else {"bindings": {}})
@@ -381,7 +381,18 @@ class LDPlayerManager:
                         raise LDPlayerError("An active LDPlayer slot is outside the configured pool; release it before changing pool indices.")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
             raise LDPlayerError("LDPlayer pool binding state is invalid; restore the service state backup.") from None
+        return slots, version
 
+    def _registered_pool_slots(self) -> dict[str, dict[str, Any]]:
+        """Use startup registration for admission without invoking the emulator console."""
+        slots, version = self._read_pool_slots()
+        if version != 2 or set(slots) != {str(index) for index in self.pool_indices}:
+            raise LDPlayerError("LDPlayer pool is not initialized; restart the login worker to register its instances.")
+        return slots
+
+    def _pool_state(self, deadline: float) -> tuple[dict[str, dict[str, Any]], list[_ListedInstance]]:
+        """Reconcile real instances for device operations, preserving active owners."""
+        slots, version = self._read_pool_slots()
         rows = self._list(deadline)
         rows_by_index = {row.index: row for row in rows}
         configured: dict[str, dict[str, Any]] = {}
@@ -485,32 +496,31 @@ class LDPlayerManager:
         task_id: str,
         deadline: float,
     ) -> LDPlayerInstance:
-        bindings, rows = self._pool_state(deadline)
-        rows_by_index = {row.index: row for row in rows}
+        bindings = self._registered_pool_slots()
         key, binding = self._pool_task(bindings, task_id)
         if binding is not None:
-            row = rows_by_index[int(key)]
-            return LDPlayerInstance(row.name, row.index, binding.get("serial"), task_id)
+            return LDPlayerInstance(binding["name"], int(key), binding.get("serial"), task_id)
 
         free = [index for index in self.pool_indices if bindings[str(index)]["state"] == "idle"]
         if not free:
             raise LDPlayerPoolFull("All LDPlayer login instances are busy; retry later.")
-        row = rows_by_index[free[0]]
-        bindings[str(row.index)] = {
-            "name": row.name,
+        index = free[0]
+        name = bindings[str(index)]["name"]
+        bindings[str(index)] = {
+            "name": name,
             "serial": None,
             "taskId": task_id,
             "state": "reserved",
         }
         self._save_state(bindings, pool=True)
-        return LDPlayerInstance(row.name, row.index, None, task_id)
+        return LDPlayerInstance(name, index, None, task_id)
 
     def has_capacity(self) -> bool:
         if not self.pool_indices:
             return True
         deadline = time.time() + self.command_timeout
         with self._exclusive(deadline):
-            bindings, _ = self._pool_state(deadline)
+            bindings = self._registered_pool_slots()
             return any(slot["state"] == "idle" for slot in bindings.values())
 
     def pool_status(self) -> list[dict[str, object]]:
@@ -538,7 +548,7 @@ class LDPlayerManager:
         task_id, _ = self._task(task_id)
         deadline = time.time() + self.command_timeout
         with self._exclusive(deadline):
-            bindings, _ = self._pool_state(deadline)
+            bindings = self._registered_pool_slots()
             _, binding = self._pool_task(bindings, task_id)
             if binding is None:
                 raise LDPlayerError("Login task has no active LDPlayer pool binding.")

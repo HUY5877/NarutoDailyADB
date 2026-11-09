@@ -172,6 +172,7 @@ def test_pool_allocates_distinct_fixed_instances_and_reports_full(tmp_path, monk
     fake = FakeLDPlayer(console)
     fake.instances = {"existing-zero": [0, 0], "installed-template": [2, 0]}
     service = pool_manager(tmp_path, monkeypatch, fake)
+    service.reset_pool()
     second_task = "22222222-2222-4222-8222-222222222222"
     third_task = "33333333-3333-4333-8333-333333333333"
 
@@ -196,6 +197,7 @@ def test_pool_ready_binding_survives_restart_and_remains_reserved(tmp_path, monk
     fake = FakeLDPlayer(console)
     fake.instances = {"existing-zero": [0, 0]}
     service = pool_manager(tmp_path, monkeypatch, fake, (0,))
+    service.reset_pool()
     instance = service.allocate(TASK_ID, time.time() + 10)
 
     service.mark_ready(TASK_ID)
@@ -213,6 +215,7 @@ def test_pool_close_releases_only_after_quit_and_old_task_cannot_reacquire_taken
     fake = FakeLDPlayer(console)
     fake.instances = {"existing-zero": [0, 1]}
     service = pool_manager(tmp_path, monkeypatch, fake, (0,))
+    service.reset_pool()
     service.allocate(TASK_ID, time.time() + 10)
 
     service.close(TASK_ID)
@@ -235,6 +238,7 @@ def test_pool_release_clears_owner_without_retaining_task_history(tmp_path, monk
     fake = FakeLDPlayer(console)
     fake.instances = {"existing-zero": [0, 1]}
     service = pool_manager(tmp_path, monkeypatch, fake, (0,))
+    service.reset_pool()
     service.allocate(TASK_ID, time.time() + 10)
     if qr_ready:
         service.mark_ready(TASK_ID)
@@ -252,6 +256,7 @@ def test_old_pool_instance_object_cannot_control_slot_after_reassignment(tmp_pat
     fake = FakeLDPlayer(console)
     fake.instances = {"existing-zero": [0, 0]}
     service = pool_manager(tmp_path, monkeypatch, fake, (0,))
+    service.reset_pool()
     second_task = "22222222-2222-4222-8222-222222222222"
     old_instance = service.allocate(TASK_ID, time.time() + 10)
     service.close(TASK_ID)
@@ -283,6 +288,7 @@ def test_pool_start_allows_configured_index_zero_and_tracks_serial(tmp_path, mon
     fake = FakeLDPlayer(console)
     fake.instances = {"existing-zero": [0, 0]}
     service = pool_manager(tmp_path, monkeypatch, fake, (0,))
+    service.reset_pool()
     instance = service.allocate(TASK_ID, time.time() + 10)
 
     assert service.start(instance, time.time() + 10) == "emulator-5570"
@@ -296,6 +302,7 @@ def test_launch_game_requires_serial_before_any_force_stop_or_runapp(tmp_path, m
     fake = FakeLDPlayer(console)
     fake.instances = {"existing-zero": [0, 1]}
     service = pool_manager(tmp_path, monkeypatch, fake, (0,))
+    service.reset_pool()
     instance = service.allocate(TASK_ID, time.time() + 10)
     calls_before = len(fake.calls)
 
@@ -322,6 +329,7 @@ def test_list2_starting_state_two_is_busy_until_adb_reports_ready(tmp_path, monk
     fake = StartingFake(console)
     fake.instances = {"existing-zero": [0, 0]}
     service = pool_manager(tmp_path, monkeypatch, fake, (0,))
+    service.reset_pool()
     instance = service.allocate(TASK_ID, time.time() + 10)
 
     assert service.start(instance, time.time() + 10) == "emulator-5570"
@@ -334,6 +342,7 @@ def test_close_quits_list2_starting_state_two_and_waits_for_zero(tmp_path, monke
     fake = FakeLDPlayer(console)
     fake.instances = {"existing-zero": [0, 2]}
     service = pool_manager(tmp_path, monkeypatch, fake, (0,))
+    service.reset_pool()
     service.allocate(TASK_ID, time.time() + 10)
 
     service.close(TASK_ID)
@@ -349,7 +358,7 @@ def test_list2_rejects_unknown_runtime_state(tmp_path, monkeypatch):
     service = pool_manager(tmp_path, monkeypatch, fake, (0,))
 
     with pytest.raises(LDPlayerError, match="invalid instance information"):
-        service.allocate(TASK_ID, time.time() + 10)
+        service.reset_pool()
 
 
 def test_pool_status_reports_each_slot_and_ignores_released_history(tmp_path, monkeypatch):
@@ -357,6 +366,7 @@ def test_pool_status_reports_each_slot_and_ignores_released_history(tmp_path, mo
     fake = FakeLDPlayer(console)
     fake.instances = {"existing-zero": [0, 0], "installed-template": [2, 0]}
     service = pool_manager(tmp_path, monkeypatch, fake)
+    service.reset_pool()
     second_task = "22222222-2222-4222-8222-222222222222"
     service.allocate(TASK_ID, time.time() + 10)
     service.allocate(second_task, time.time() + 10)
@@ -424,6 +434,7 @@ def test_three_threads_allocate_distinct_pool_slots_without_losing_bindings(tmp_
     monkeypatch.setattr("naruto_daily.login_service.ldplayer.subprocess.run", fake)
     services = [LDPlayerManager(console, "", tmp_path / "state", pool_indices=(0, 1, 2))
                 for _ in range(3)]
+    services[0].reset_pool()
     task_ids = [TASK_ID, "22222222-2222-4222-8222-222222222222",
                 "33333333-3333-4333-8333-333333333333"]
     gate = threading.Barrier(3)
