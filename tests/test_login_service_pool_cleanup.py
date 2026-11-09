@@ -15,6 +15,7 @@ def bound_pool(tmp_path, monkeypatch):
     service, fake = fake_pool(tmp_path, monkeypatch, (4, 17))
     for values in fake.instances.values():
         values[1] = 1
+    service.reset_pool()
     for task_id in (TASK_ID, SECOND_TASK):
         service.allocate(task_id, time.time() + 10)
         service.mark_ready(task_id)

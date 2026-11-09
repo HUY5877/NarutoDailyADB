@@ -62,6 +62,7 @@ def installed_apps(tmp_path, monkeypatch):
 
     monkeypatch.setattr("naruto_daily.login_service.ldplayer.subprocess.run", run)
     manager = LDPlayerManager(console, "", tmp_path / "state", pool_indices=(7, 8))
+    manager.reset_pool()
     instance = manager.allocate(TASK, time.time() + 20)
     manager.start(instance, time.time() + 20)
     apk = tmp_path / "download.apk"

@@ -47,8 +47,9 @@ def legacy_binding(index, name, state="reserved", serial=None):
 
 
 @pytest.mark.parametrize("first_operation", ["has_capacity", "pool_status", "allocate"])
-def test_first_pool_access_persists_every_configured_slot(tmp_path, monkeypatch, first_operation):
+def test_registered_pool_access_retains_every_configured_slot(tmp_path, monkeypatch, first_operation):
     service, fake = fake_pool(tmp_path, monkeypatch)
+    service.reset_pool()
 
     if first_operation == "allocate":
         service.allocate(TASK_ID, time.time() + 10)
@@ -64,6 +65,8 @@ def test_first_pool_access_persists_every_configured_slot(tmp_path, monkeypatch,
         expected["4"].update(taskId=TASK_ID, state="reserved")
     assert document == {"version": 2, "bindings": expected}
     assert fake.copy_count == 0
+    expected_listings = 2 if first_operation == "pool_status" else 1
+    assert fake.calls == [(fake.console, "list2")] * expected_listings
     assert not list((tmp_path / "state").glob(".bindings-*.tmp"))
 
 
@@ -98,6 +101,7 @@ def test_repository_idle_template_syncs_to_this_machine_without_device_operation
 
 def test_two_hundred_tasks_reuse_fixed_slots_without_accumulating_history(tmp_path, monkeypatch):
     service, fake = fake_pool(tmp_path, monkeypatch)
+    service.reset_pool()
     service.has_capacity()
     expected_indices = {"4", "17", "39"}
 
@@ -132,6 +136,7 @@ def test_legacy_history_migrates_to_slots_and_preserves_active_owner_and_serial(
     history[SECOND_TASK] = legacy_binding(39, "现有实例丙", "reserved")
     write_state(tmp_path, {"bindings": history})
 
+    service.pool_status()
     assert service.has_capacity()
 
     assert read_state(tmp_path) == {
@@ -186,7 +191,7 @@ def test_invalid_state_or_migration_conflict_never_overwrites_source(tmp_path, m
         original = state_path(tmp_path).read_bytes()
 
     with pytest.raises(LDPlayerError):
-        service.has_capacity()
+        service.pool_status()
 
     assert state_path(tmp_path).read_bytes() == original
     assert all(call == (fake.console, "list2") for call in fake.calls)
@@ -222,6 +227,7 @@ def test_duplicate_json_keys_reject_migration_without_dropping_owner(tmp_path, m
 
 def test_configuration_change_removes_only_idle_slots_and_adds_real_named_slots(tmp_path, monkeypatch):
     service, fake = fake_pool(tmp_path, monkeypatch)
+    service.reset_pool()
     service.allocate(TASK_ID, time.time() + 10)
     fake.instances.pop("手机 - 备用乙")
     fake.instances.pop("现有实例丙")
@@ -244,6 +250,7 @@ def test_configuration_change_removes_only_idle_slots_and_adds_real_named_slots(
 
 def test_configuration_cannot_remove_an_active_slot(tmp_path, monkeypatch):
     service, fake = fake_pool(tmp_path, monkeypatch)
+    service.reset_pool()
     service.allocate(TASK_ID, time.time() + 10)
     original = state_path(tmp_path).read_bytes()
     restarted = LDPlayerManager(Path(fake.console), "", tmp_path / "state",
@@ -259,7 +266,7 @@ def test_configuration_cannot_remove_an_active_slot(tmp_path, monkeypatch):
 
 def test_idle_rename_refreshes_from_real_listing_but_active_rename_is_rejected(tmp_path, monkeypatch):
     service, fake = fake_pool(tmp_path, monkeypatch)
-    service.has_capacity()
+    service.reset_pool()
     fake.instances["后来修改的名字"] = fake.instances.pop("日常登录甲")
 
     assert service.pool_status()[0]["name"] == "后来修改的名字"
@@ -269,13 +276,14 @@ def test_idle_rename_refreshes_from_real_listing_but_active_rename_is_rejected(t
     fake.instances["占用期间再次改名"] = fake.instances.pop("后来修改的名字")
 
     with pytest.raises(LDPlayerError):
-        service.has_capacity()
+        service.pool_status()
 
     assert state_path(tmp_path).read_bytes() == original
 
 
 def test_late_operations_from_old_task_cannot_change_new_owner_or_control_device(tmp_path, monkeypatch):
     service, fake = fake_pool(tmp_path, monkeypatch, (4,))
+    service.reset_pool()
     old_instance = service.allocate(TASK_ID, time.time() + 10)
     service.start(old_instance, time.time() + 10)
     service.close(TASK_ID)
@@ -305,6 +313,7 @@ def test_late_operations_from_old_task_cannot_change_new_owner_or_control_device
 @pytest.mark.parametrize("change_after_quit", ["renamed_and_stopped", "missing"])
 def test_cleanup_refuses_to_release_owner_if_instance_changes_after_quit(tmp_path, monkeypatch, change_after_quit):
     service, fake = fake_pool(tmp_path, monkeypatch, (4,))
+    service.reset_pool()
     fake.instances["日常登录甲"][1] = 1
     service.allocate(TASK_ID, time.time() + 10)
     service.mark_ready(TASK_ID)
@@ -395,6 +404,7 @@ def test_reset_pool_rejects_clone_manager_without_device_operations(tmp_path, mo
 
 def test_new_manager_and_task_allocation_do_not_reset_existing_owner(tmp_path, monkeypatch):
     service, fake = fake_pool(tmp_path, monkeypatch)
+    service.reset_pool()
     service.allocate(TASK_ID, time.time() + 10)
     service.mark_ready(TASK_ID)
     original = state_path(tmp_path).read_bytes()
