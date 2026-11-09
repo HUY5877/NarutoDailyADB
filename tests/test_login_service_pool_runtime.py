@@ -45,6 +45,8 @@ class FakeRedisQueue:
 
     async def pop(self):
         self.pop_count += 1
+        # The real Redis queue yields while waiting for work, including when empty.
+        await asyncio.sleep(0.01)
         return self.records.popleft() if self.records else None
 
     async def set_status(self, record, status, error=None):
@@ -97,37 +99,32 @@ async def eventually(predicate, timeout=2):
             await asyncio.sleep(0.01)
 
 
-def test_full_pool_leaves_redis_task_unclaimed(monkeypatch, tmp_path):
-    class FullPool:
-        checks = 0
-
-        def has_capacity(self):
-            self.checks += 1
-            return False
-
+def test_empty_queue_keeps_consuming_without_accessing_pool(monkeypatch, tmp_path):
     async def scenario():
-        queue = FakeRedisQueue([record()])
+        queue = FakeRedisQueue()
         runtime = LoginRuntime(config(tmp_path), MemoryStorage(), redis_queue=queue)
-        pool = FullPool()
-        monkeypatch.setattr(runtime, "_ldplayer_manager", lambda: pool)
+
+        def unavailable_pool():
+            raise LDPlayerError("The binding file is locked by a device operation")
+
+        monkeypatch.setattr(runtime, "_ldplayer_manager", unavailable_pool)
         await runtime.start()
         try:
-            await eventually(lambda: pool.checks > 0)
-            assert queue.pop_count == 0
+            await eventually(lambda: queue.pop_count >= 3)
+            assert all(not worker.done() for worker in runtime._workers)
         finally:
             await runtime.stop()
     asyncio.run(scenario())
 
 
-def test_admission_lock_prevents_two_workers_from_claiming_the_last_slot(monkeypatch, tmp_path):
+def test_two_consumers_reserve_last_slot_once_and_requeue_other_task(monkeypatch, tmp_path):
     class OneSlotPool:
         def __init__(self):
             self.allocated = []
 
-        def has_capacity(self):
-            return not self.allocated
-
         def allocate(self, task_id, _deadline):
+            if self.allocated:
+                raise LDPlayerPoolFull("The last slot is already reserved")
             self.allocated.append(task_id)
 
     async def scenario():
@@ -136,17 +133,19 @@ def test_admission_lock_prevents_two_workers_from_claiming_the_last_slot(monkeyp
         runtime = LoginRuntime(config(tmp_path), MemoryStorage(), redis_queue=queue)
         pool = OneSlotPool()
         monkeypatch.setattr(runtime, "_ldplayer_manager", lambda: pool)
+        processed = []
 
-        async def hold_active(_record):
+        async def hold_active(current):
+            processed.append(current.id)
             await runtime._stop_event.wait()
 
         monkeypatch.setattr(runtime, "_process_record", hold_active)
         await runtime.start()
         try:
-            await eventually(lambda: len(pool.allocated) == 1)
-            await asyncio.sleep(0.05)
-            assert queue.pop_count == 1
-            assert len(queue.records) == 1
+            await eventually(lambda: len(queue.requeued) == 1)
+            assert pool.allocated == processed == [records[0].id]
+            assert queue.requeued == [records[1].id]
+            assert records[1].id not in runtime._tasks
         finally:
             await runtime.stop()
     asyncio.run(scenario())
@@ -173,6 +172,7 @@ def test_cross_worker_pool_full_requeues_without_cleanup(monkeypatch, tmp_path):
         try:
             await eventually(lambda: queue.requeued == [task.id])
             assert task.status == "queued"
+            assert task.id not in runtime._tasks
             assert processed == []
             assert cleaned == []
         finally:
@@ -180,17 +180,18 @@ def test_cross_worker_pool_full_requeues_without_cleanup(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
-def test_capacity_probe_error_retries_without_losing_consumer(monkeypatch, tmp_path):
-    class RecoveringPool:
+@pytest.mark.parametrize("capacity", ["full", "unavailable"])
+def test_task_is_allocated_without_capacity_precheck(monkeypatch, tmp_path, capacity):
+    class Pool:
         def __init__(self):
             self.checks = 0
             self.allocated = []
 
         def has_capacity(self):
             self.checks += 1
-            if self.checks == 1:
-                raise LDPlayerError("private console output")
-            return True
+            if capacity == "unavailable":
+                raise LDPlayerError("The binding file is locked by a device operation")
+            return False
 
         def allocate(self, task_id, _deadline):
             self.allocated.append(task_id)
@@ -199,7 +200,7 @@ def test_capacity_probe_error_retries_without_losing_consumer(monkeypatch, tmp_p
         task = record()
         queue = FakeRedisQueue([task])
         runtime = LoginRuntime(config(tmp_path, concurrency=1), MemoryStorage(), redis_queue=queue)
-        pool = RecoveringPool()
+        pool = Pool()
         monkeypatch.setattr(runtime, "_ldplayer_manager", lambda: pool)
 
         async def finish(_record):
@@ -210,7 +211,7 @@ def test_capacity_probe_error_retries_without_losing_consumer(monkeypatch, tmp_p
         await runtime.start()
         try:
             await eventually(lambda: pool.allocated == [task.id])
-            assert pool.checks >= 2
+            assert pool.checks == 0
             assert queue.pop_count == 1
         finally:
             await runtime.stop()

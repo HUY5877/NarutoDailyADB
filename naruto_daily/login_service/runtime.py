@@ -1082,31 +1082,22 @@ class LoginRuntime:
                 redis_contacted = False
                 if self.config.emulator_driver == "ldplayer" and self.config.ldplayer_pool_indices:
                     async with self._admission_lock:
-                        manager = self._ldplayer_manager()
-                        try:
-                            has_capacity = await asyncio.to_thread(manager.has_capacity)
-                        except LDPlayerError:
-                            logger.warning("LDPlayer pool capacity is unavailable; retrying")
-                            has_capacity = False
-                        if not has_capacity:
-                            record = None
-                            wait_for_capacity = True
-                        else:
-                            redis_contacted = True
-                            record = await self._redis_queue.pop()
-                            if record is not None:
-                                try:
-                                    await asyncio.to_thread(
-                                        manager.allocate, record.id, record.expires_at_ms / 1000,
-                                    )
-                                except LDPlayerPoolFull:
-                                    await self._requeue(record)
-                                    record = None
-                                    wait_for_capacity = True
-                                except LDPlayerError:
-                                    # The isolated child retries the idempotent allocation and
-                                    # converts any persistent driver failure to a safe task error.
-                                    logger.warning("LDPlayer pool reservation failed; retrying in task worker")
+                        redis_contacted = True
+                        record = await self._redis_queue.pop()
+                        if record is not None:
+                            manager = self._ldplayer_manager()
+                            try:
+                                await asyncio.to_thread(
+                                    manager.allocate, record.id, record.expires_at_ms / 1000,
+                                )
+                            except LDPlayerPoolFull:
+                                await self._requeue(record)
+                                record = None
+                                wait_for_capacity = True
+                            except LDPlayerError:
+                                # The isolated child retries the idempotent allocation and
+                                # converts any persistent driver failure to a safe task error.
+                                logger.warning("LDPlayer pool reservation failed; retrying in task worker")
                 else:
                     redis_contacted = True
                     record = await self._redis_queue.pop()
