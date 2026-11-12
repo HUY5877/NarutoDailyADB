@@ -7,11 +7,39 @@ from typing import Callable
 
 from naruto_daily.common.adb_client import AdbClient
 from naruto_daily.common.recognition import ImageRecognition
-from naruto_daily.common.visual import VisualError, find_template_in_png
+from naruto_daily.common.visual import VisualError, _decode_png, find_template_in_png
 from naruto_daily.common.results import PopupCleanupSummary
 
 
 LOGGER = logging.getLogger("naruto_daily")
+
+
+def dismiss_announcement(
+    client, png: bytes, *, target: dict | None = None,
+    template_matcher: Callable = find_template_in_png,
+    asset_root: Path = Path("."), sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    """识别失败时仅补查公告；观察到后丢弃原帧，由调用者重新识别页面。"""
+    target = target if target is not None else {
+        "name": "公告关闭按钮", "template": "assets/announcement_close.png",
+        "left": 1450, "top": 50, "right": 1700, "bottom": 240, "threshold": .85,
+    }
+    def match_landscape(frame_png, path, roi, threshold):
+        # 复查时可能已切到竖屏授权页，不能继续套用游戏横屏区域。
+        if _decode_png(frame_png).shape[:2] != (1080, 1920):
+            return None, 0.0
+        return template_matcher(frame_png, path, roi, threshold)
+
+    images = ImageRecognition(client, match_landscape, asset_root, sleep)
+    if images.match(png, target)[0] is None:
+        return False
+    LOGGER.info("未识别到预期登录界面，复用公告关闭动作后重新识别")
+    cleanup_popups(client, {
+        "rounds": 1, "idle_rounds": 1, "wait_seconds": 0,
+        "pre_click_wait_seconds": 1, "post_click_wait_seconds": 1,
+        "targets": [target],
+    }, template_matcher=match_landscape, asset_root=asset_root, sleep=sleep)
+    return True
 
 
 def cleanup_popups(

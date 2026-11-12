@@ -277,7 +277,8 @@ class QQCaptureSession:
 
     def _open_login_channel(self):
         from .qr_navigation import (QRNavigationError, cancel_wechat_qr, choose_action,
-                                    find_startup_ad_close, qq_authorization_page, wechat_qr_page)
+                                    dismiss_login_announcement, find_startup_ad_close,
+                                    qq_authorization_page, wechat_qr_page)
         expected = {'android_qq': 'qq_android', 'ios_qq': 'qq_ios'}[self.device.login_type]
         selected_at = None
         cancelled_unselected = False
@@ -351,6 +352,9 @@ class QQCaptureSession:
             action = choose_action(frame, '', self.device.login_type)
             if action is None:
                 action = choose_action(frame, self.device.hierarchy(), self.device.login_type)
+            if action is None and dismiss_login_announcement(
+                    self.device, frame, clock=self._clock, sleep=self._sleep):
+                continue
             if qq_cancelled_at is not None and (action is None or action.name in (
                     'scan_login', 'add_account', 'other_login', 'switch_account')):
                 if self._clock() - qq_cancelled_at >= 10:
