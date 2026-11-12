@@ -20,6 +20,7 @@ SERVICE_TEMPLATES = {
 PACKAGED_TEMPLATES = {
     **SHARED_TEMPLATES,
     **{name: f"login_{name}.png" for name in SERVICE_TEMPLATES},
+    "announcement_close": "announcement_close.png",
 }
 
 
@@ -136,6 +137,23 @@ assert qr_navigation.choose_action(
 assert qr_navigation.choose_action(
     frame_with(('start_game', 700, 820), ('game_back', 1680, 30)), ''
 ).name == 'game_back'
+
+announcement = np.full((1080, 1920, 3), 255, np.uint8)
+needle = cv2.imdecode(np.frombuffer(
+    (installed_root / 'naruto_daily/assets/announcement_close.png').read_bytes(), np.uint8), 1)
+h, w = needle.shape[:2]
+announcement[90:90+h, 1530:1530+w] = needle
+
+class Device:
+    deadline = 100
+    taps = []
+    def screenshot(self): return announcement.copy()
+    def tap(self, x, y): self.taps.append((x, y))
+
+device = Device()
+assert qr_navigation.dismiss_login_announcement(device, announcement,
+                                                clock=lambda: 0, sleep=lambda _: None)
+assert device.taps == [(1530+w//2, 90+h//2)]
 """,
         unrelated_cwd,
         installed_root,

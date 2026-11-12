@@ -21,6 +21,7 @@ from naruto_daily.common.recognition import ImageRecognition
 from naruto_daily.common.visual import find_template_in_png
 from naruto_daily.battle import run_duel_battle
 from naruto_daily.config import ConfigError, load_settings
+from naruto_daily.login import popups
 from naruto_daily.runner import ActionRunner
 from naruto_daily.tasks import build_all, build_task
 from .user_options import ARENA_WEEKLY_SECONDS, UserOptions, parse_user_options
@@ -40,6 +41,28 @@ def _templates(value):
     elif isinstance(value, list):
         for child in value:
             yield from _templates(child)
+
+
+class _StartGameClient:
+    """仅在开始游戏点击前检查截图，其余设备操作沿用原客户端。"""
+
+    def __init__(self, client, screenshot: Callable[[], bytes]):
+        self._client = client
+        self._screenshot = screenshot
+        self._waiting_for_start = True
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+    def screenshot(self):
+        if self._waiting_for_start:
+            return self._screenshot()
+        return self._client.screenshot()
+
+    def tap(self, *args, **kwargs):
+        result = self._client.tap(*args, **kwargs)
+        self._waiting_for_start = False
+        return result
 
 
 class DailySession:
@@ -64,6 +87,11 @@ class DailySession:
         self._login_actions = deepcopy(self.settings.tasks["login"])
         if not self._login_actions or self._login_actions[0]['type'] != 'required_template_tap':
             raise ConfigError('扫码登录必须以 required_template_tap 配置开始游戏按钮')
+        self._announcement_target = next((
+            target for action in self._login_actions if action['type'] == 'popup_cleanup'
+            for target in action['targets']
+            if Path(target['template']).name == 'announcement_close.png'
+        ), None)
         selected_settings = self.settings
         skipped_tasks = {}
         weekly = self.user_options.get('mainTask') == 'arena_weekly'
@@ -170,6 +198,30 @@ class DailySession:
         return ActionRunner(self.client, sleep=self._sleep, template_matcher=self._match,
                             asset_root=self.asset_root, user_options=self.user_options)
 
+    def _dismiss_login_announcement(self, png: bytes) -> bool:
+        if self._announcement_target is None:
+            return False
+        return popups.dismiss_announcement(
+            self.client, png, target=self._announcement_target,
+            template_matcher=self._match, asset_root=self.asset_root, sleep=self._sleep,
+        )
+
+    def _login_screenshot(self) -> bytes:
+        self._remaining()
+        png = self.client.screenshot()
+        self._remaining()
+        frame = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR) if png else None
+        # 微信页面仍由扫码流程处理；公告目标只适用于游戏横屏。
+        if frame is None or frame.shape[0] > frame.shape[1]:
+            return png
+        images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
+        center, _ = images.match(png, self._login_actions[0], timeout_seconds=self._remaining())
+        if center is None and self._dismiss_login_announcement(png):
+            # 公告仅作为未识别开始游戏时的回退；处理后重新截图再识别按钮。
+            png = self.client.screenshot()
+            self._remaining()
+        return png
+
     def wait_for_authorization(self, deadline: float, *, on_wait=None) -> None:
         """只以开始游戏按钮确认扫码授权，按钮操作留给登录收尾。"""
         with execution_scope(deadline, clock=self._clock, sleep=self._sleep_impl):
@@ -193,6 +245,8 @@ class DailySession:
                     self._authorized = True
                     LOGGER.info("已确认扫码授权，识别到开始游戏按钮，立即结束二维码等待")
                     return True
+                if frame is not None:
+                    self._dismiss_login_announcement(png)
                 return False
 
             while True:
@@ -217,7 +271,9 @@ class DailySession:
             # 开始游戏与后续清理共用扫码后的日常总截止时间。
             actions[0]['timeout_seconds'] = self._remaining()
             LOGGER.info("开始扫码登录收尾，执行登录收尾动作；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
-            self._runner().run(actions)
+            runner = self._runner()
+            runner.client = _StartGameClient(self.client, self._login_screenshot)
+            runner.run(actions)
             LOGGER.info("登录收尾动作已完成，额外复核主界面；外围剩余时间 %.2f 秒", max(0.0, deadline - self._clock()))
             images = ImageRecognition(self.client, self._match, self.asset_root, self._sleep)
             with module_scope('return_to_main'):

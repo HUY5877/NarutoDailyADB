@@ -363,6 +363,57 @@ def find_startup_ad_close(frame: np.ndarray) -> LoginAction | None:
     return LoginAction('startup_ad_close', *best_point) if best_point else None
 
 
+def dismiss_login_announcement(device: LoginDevice, frame: np.ndarray, *, clock=None, sleep=None) -> bool:
+    """仅供未识别到登录步骤时调用，沿用公告模板与清理动作。"""
+    from naruto_daily.login.popups import dismiss_announcement
+
+    clock, sleep = clock or time.time, sleep or time.sleep
+    if frame.shape[:2] != (1080, 1920) or authorization_page(frame):
+        return False
+
+    def remaining():
+        value = device.deadline - clock()
+        if value <= 0:
+            raise QRNavigationError('Login task deadline expired')
+        return value
+
+    def encode(image):
+        remaining()
+        success, data = cv2.imencode('.png', image)
+        if not success:
+            raise QRNavigationError('Login screenshot could not be encoded')
+        return data.tobytes()
+
+    class SurfaceChanged(Exception):
+        pass
+
+    class PopupClient:
+        def screenshot(self):
+            remaining()
+            current = device.screenshot()
+            if current.shape[:2] != (1080, 1920) or authorization_page(current):
+                raise SurfaceChanged
+            return encode(current)
+
+        def tap(self, x, y):
+            remaining()
+            if getattr(device, 'is_huy_login_activity', lambda: False)():
+                raise SurfaceChanged
+            device.tap(x, y)
+
+    def pause(seconds):
+        sleep(min(max(0, seconds), remaining()))
+        remaining()
+
+    package_root = Path(__file__).resolve().parents[1]
+    asset_root = package_root if (package_root / 'assets').is_dir() else package_root.parent
+    try:
+        return dismiss_announcement(PopupClient(), encode(frame), asset_root=asset_root, sleep=pause)
+    except SurfaceChanged:
+        # 已切换到授权页；丢弃公告旧帧，由原登录流程重新识别。
+        return True
+
+
 def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1,
                    is_authorized: Callable[[], bool] | None = None,
                    allow_startup_ads: bool = True,
@@ -469,6 +520,9 @@ def fetch_login_qr(device: LoginDevice, *, poll_seconds: float = 1,
             if png:
                 return png
             action = choose_action(frame, xml, login_type)
+        if (action is None and qr_wait_until is None
+                and dismiss_login_announcement(device, frame)):
+            continue
         if not channel_selected and qq_context and action is None:
             # The requested channel can be WeChat while the old native QQ
             # request is still returning through its own account menus.

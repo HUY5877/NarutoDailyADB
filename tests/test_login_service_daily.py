@@ -60,7 +60,8 @@ def config_file(tmp_path, *, change=None):
     for name in _templates(payload):
         template = tmp_path / name
         template.parent.mkdir(parents=True, exist_ok=True)
-        template.write_bytes(b"template fixture")
+        template.write_bytes((PROJECT_ROOT / 'assets/announcement_close.png').read_bytes()
+                             if Path(name).name == 'announcement_close.png' else b"template fixture")
     return path
 
 
@@ -437,6 +438,241 @@ def test_authorization_returns_on_start_game_without_clicks_or_fixed_waits(tmp_p
     assert not any("tap" in command for command, _ in calls)
     with pytest.raises(RuntimeError, match="先完成扫码登录"):
         session.run_daily(clock() + 300)
+
+
+def login_frame(value=0):
+    return cv2.imencode('.png', np.full((1080, 1920, 3), value, np.uint8))[1].tobytes()
+
+
+def test_authorization_dismisses_only_configured_announcement_before_reading_new_frame(tmp_path, monkeypatch):
+    def change(payload):
+        target = payload['tasks']['login'][2]['targets'][0]
+        target.update(template='custom/announcement_close.png',
+                      left=1400, top=40, right=1710, bottom=250, threshold=.93)
+
+    def match(png, path, roi, threshold):
+        value = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)[0, 0, 0]
+        if path.name == 'announcement_close.png':
+            assert roi == (1400, 40, 1710, 250)
+            assert threshold == .93
+            return {1: ((1500, 100), 1), 2: ((1580, 130), 1)}.get(value, (None, 0))
+        assert path.name == 'start_game_button.png', '扫码授权前不能执行领取或其余弹窗动作'
+        return ((900, 900), 1) if value == 3 else (None, 0)
+
+    session, clock, calls = session_for(tmp_path, change=change, matcher=match)
+    frames = iter([login_frame(1), login_frame(1), login_frame(2), login_frame(3)])
+    monkeypatch.setattr(session.client, 'screenshot', lambda: next(frames))
+
+    session.wait_for_authorization(clock() + 20)
+
+    assert session._authorized and not session._logged_in
+    assert [command[-2:] for command, _ in calls if 'tap' in command] == [['1580', '130']]
+    assert current_execution() is None
+
+
+@pytest.mark.parametrize('method', ['wait_for_authorization', 'finish_login'])
+def test_visible_start_marker_does_not_probe_announcement_even_if_present(tmp_path, monkeypatch, method):
+    state = {'started': False}
+
+    monkeypatch.setattr('naruto_daily.login.popups.dismiss_announcement',
+                        lambda *args, **kwargs: pytest.fail('已有开始游戏标记时不能触发公告检测'),
+                        raising=False)
+
+    def match(png, path, roi, threshold):
+        if path.name == 'start_game_button.png':
+            return (900, 900), 1
+        if path.name == 'announcement_close.png':
+            assert state['started'], '已识别开始游戏时不能先检测或关闭公告'
+        return ((1800, 500), 1) if path.name == 'main_reward_label.png' else (None, 0)
+
+    session, clock, calls = session_for(tmp_path, matcher=match)
+    session._authorized = method == 'finish_login'
+    monkeypatch.setattr(session.client, 'screenshot', lambda: login_frame())
+    original_tap = session.client.tap
+
+    def tap(x, y):
+        assert (x, y) == (900, 900)
+        original_tap(x, y)
+        state['started'] = True
+
+    monkeypatch.setattr(session.client, 'tap', tap)
+    before = clock()
+    getattr(session, method)(before + 60)
+
+    assert session._authorized
+    assert [command[-2:] for command, _ in calls if 'tap' in command] == (
+        [['900', '900']] if method == 'finish_login' else []
+    )
+    if method == 'wait_for_authorization':
+        assert clock() == before
+
+
+def test_dismissing_announcement_without_start_marker_never_confirms_authorization(tmp_path, monkeypatch):
+    state = {'closed': False}
+
+    def match(png, path, roi, threshold):
+        if path.name == 'announcement_close.png':
+            return (None, 0) if state['closed'] else ((1580, 130), 1)
+        assert path.name == 'start_game_button.png', '授权观察不能提前领取登录奖励'
+        return None, 0
+
+    session, clock, calls = session_for(tmp_path, matcher=match)
+    monkeypatch.setattr(session.client, 'screenshot', lambda: login_frame())
+    original_tap = session.client.tap
+
+    def tap(x, y):
+        original_tap(x, y)
+        state['closed'] = True
+
+    monkeypatch.setattr(session.client, 'tap', tap)
+    deadline = clock() + 4
+    with pytest.raises(DailyDeadlineExceeded):
+        session.wait_for_authorization(deadline)
+
+    assert state['closed']
+    assert not session._authorized
+    assert clock() == deadline
+    assert [command[-2:] for command, _ in calls if 'tap' in command] == [['1580', '130']]
+    assert current_execution() is None
+
+
+def test_unconfigured_announcement_keeps_original_authorization_wait_deadline(tmp_path, monkeypatch):
+    matches = []
+
+    def match(png, path, roi, threshold):
+        assert path.name == 'start_game_button.png', '未配置公告目标时不能新增公告模板依赖'
+        matches.append(path.name)
+        return None, 0
+
+    session, clock, calls = session_for(
+        tmp_path,
+        change=lambda payload: payload['tasks']['login'][2]['targets'].pop(0),
+        matcher=match,
+    )
+    monkeypatch.setattr(session.client, 'screenshot', lambda: login_frame())
+    deadline = clock() + 1
+
+    with pytest.raises(DailyDeadlineExceeded):
+        session.wait_for_authorization(deadline)
+
+    assert matches == ['start_game_button.png', 'start_game_button.png']
+    assert clock() == deadline
+    assert not session._authorized
+    assert calls == []
+    assert current_execution() is None
+
+
+def test_landscape_without_announcement_keeps_single_authorization_observation(tmp_path, monkeypatch):
+    session, clock, calls = session_for(tmp_path)
+    screenshots = []
+
+    def screenshot():
+        screenshots.append(clock())
+        return login_frame()
+
+    monkeypatch.setattr(session.client, 'screenshot', screenshot)
+    before = clock()
+    session.wait_for_authorization(before + 5)
+
+    assert session._authorized
+    assert screenshots == [before]
+    assert clock() == before
+    assert calls == []
+
+
+@pytest.mark.parametrize('appears_during_pre_click_wait', [False, True])
+def test_finish_login_dismisses_announcement_before_start_click_using_fresh_center(
+    tmp_path, monkeypatch, appears_during_pre_click_wait,
+):
+    state = {'announcement': not appears_during_pre_click_wait, 'closed': False, 'started': False}
+
+    def change(payload):
+        payload['tasks']['login'][0].update(pre_click_wait_seconds=2, post_click_wait_seconds=0)
+        payload['tasks']['login'][1]['seconds'] = 0
+        payload['tasks']['login'][2].update(rounds=1, wait_seconds=0,
+                                         pre_click_wait_seconds=0, post_click_wait_seconds=0)
+
+    def match(png, path, roi, threshold):
+        if path.name == 'announcement_close.png':
+            return ((1580, 130), 1) if state['announcement'] else (None, 0)
+        if path.name == 'start_game_button.png':
+            if state['announcement']:
+                return None, 0
+            return ((1050, 930), 1) if state['closed'] else ((900, 900), 1)
+        assert state['started'], '领取和主界面动作必须等开始游戏点击后执行'
+        return ((1800, 500), 1) if path.name == 'main_reward_label.png' else (None, 0)
+
+    session, clock, calls = session_for(tmp_path, change=change, matcher=match)
+    session._authorized = True
+    monkeypatch.setattr(session.client, 'screenshot', lambda: login_frame())
+    original_tap = session.client.tap
+
+    def tap(x, y):
+        original_tap(x, y)
+        if (x, y) == (1580, 130):
+            state.update(announcement=False, closed=True)
+        else:
+            assert (x, y) == (1050, 930), '关闭公告后不能点击开始游戏的旧帧坐标'
+            assert not state['announcement']
+            state['started'] = True
+
+    def sleep(seconds):
+        clock.sleep(seconds)
+        if appears_during_pre_click_wait and seconds == 2 and not state['closed']:
+            state['announcement'] = True
+
+    monkeypatch.setattr(session.client, 'tap', tap)
+    session._sleep_impl = sleep
+    deadline = clock() + 30
+    session.finish_login(deadline)
+
+    assert session._logged_in
+    assert [command[-2:] for command, _ in calls if 'tap' in command] == [
+        ['1580', '130'], ['1050', '930'],
+    ]
+    assert session._deadline == deadline
+    assert current_execution() is None
+
+
+@pytest.mark.parametrize('method', ['wait_for_authorization', 'finish_login'])
+def test_announcement_cleanup_cannot_click_after_original_deadline(tmp_path, monkeypatch, method):
+    def match(png, path, roi, threshold):
+        return ((1580, 130), 1) if path.name == 'announcement_close.png' else (None, 0)
+
+    session, clock, calls = session_for(tmp_path, matcher=match)
+    session._authorized = method == 'finish_login'
+    monkeypatch.setattr(session.client, 'screenshot', lambda: login_frame())
+    deadline = clock() + .5
+
+    with pytest.raises(DailyDeadlineExceeded):
+        getattr(session, method)(deadline)
+
+    assert clock() == deadline
+    assert not any('tap' in command for command, _ in calls)
+    assert not session._logged_in
+    assert current_execution() is None
+
+
+@pytest.mark.parametrize('method', ['wait_for_authorization', 'finish_login'])
+def test_announcement_cleanup_propagates_stop_before_click(tmp_path, monkeypatch, method):
+    stopped = InterruptedError('任务已停止')
+
+    def match(png, path, roi, threshold):
+        if path.name == 'announcement_close.png':
+            raise stopped
+        return None, 0
+
+    session, clock, calls = session_for(tmp_path, matcher=match)
+    session._authorized = method == 'finish_login'
+    monkeypatch.setattr(session.client, 'screenshot', lambda: login_frame())
+
+    with pytest.raises(InterruptedError) as caught:
+        getattr(session, method)(clock() + 30)
+
+    assert caught.value is stopped
+    assert not any('tap' in command for command, _ in calls)
+    assert not session._logged_in
+    assert current_execution() is None
 
 
 def test_disappeared_qr_or_unknown_loading_page_does_not_confirm_authorization(tmp_path):
