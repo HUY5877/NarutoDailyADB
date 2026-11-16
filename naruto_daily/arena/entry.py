@@ -138,11 +138,8 @@ def enter_arena(client, action, *, template_matcher=find_template_in_png,
         LOGGER.info('从左向右查找决斗场，已滑动 %d/%d 次', swipes, max_swipes)
         center, size = _observe_entry(flow)
         if center is not None:
-            flow.images.sleep(min(action['pre_click_wait_seconds'], flow.remaining()))
-            center, size = _observe_entry(flow)
-            if center is not None:
-                flow.tap(center)
-                break
+            flow.tap(center)
+            break
         if swipes >= max_swipes:
             raise VisualError(f'从左向右滑动 {max_swipes} 次后仍未确认决斗场入口，已停止')
         _swipe_scene(flow, size, right=False)
