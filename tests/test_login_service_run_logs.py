@@ -15,7 +15,7 @@ from oss_fakes import OSS_ENV
 
 from naruto_daily.login_service.config import ServiceConfig, load_config
 from naruto_daily.login_service.models import parse_queue_task
-from naruto_daily.login_service.queue import RedisTaskQueue, SAFE_DRIVER_ERRORS
+from naruto_daily.login_service.queue import RedisQueueError, RedisTaskQueue, SAFE_DRIVER_ERRORS
 from naruto_daily.login_service.run_logs import RedisRunReporter, SAFE_RUN_ERRORS, STAGE_MESSAGES, iso_time
 from naruto_daily.login_service.runtime import LoginRuntime, _WorkerError
 
@@ -48,12 +48,15 @@ def keys(cfg, record):
     return tuple(f"{cfg.redis_queue_key}:{kind}:{record.id}" for kind in ("runs", "logs", "runs"))
 
 
-async def claim(client, queue, *, session_ttl=30_000):
+async def claim(client, queue, *, session_ttl=30_000, main_task=None):
     message = body()
     session = {
         "id": message["id"], "createdAt": message["createdAt"], "expiresAt": message["expiresAt"],
         "simulation": True, "tokenHash": "ab" * 32, "status": "queued", "userId": "private-user-id",
     }
+    if main_task is not None:
+        message["userOptions"] = {"mainTask": main_task}
+        session["userOptions"] = message["userOptions"]
     await client.set(f"{queue.config.redis_queue_key}:runs:{message['id']}", json.dumps(session), px=session_ttl)
     await client.set(f"{queue.config.redis_queue_key}:users:{session['userId']}:active", message['id'], ex=604800)
     await client.lpush(queue.config.redis_queue_key, json.dumps(message))
@@ -98,6 +101,96 @@ def make_reporter(cfg, queue, **kwargs):
 def published(reporter, task_id):
     return [(cursor, event) for cursor, event in reporter.log_publisher.events.get(task_id, [])
             if event["message"] != "登录申请已提交，等待执行服务器领取任务。"]
+
+
+def test_completed_achievement_counts_daily_and_weekly_once_in_each_namespace():
+    async def scenario():
+        client = fake_client()
+        cfg = config(emulator_driver="ldplayer")
+        other = replace(cfg, redis_queue_key="test:other-worker")
+        queue = RedisTaskQueue(cfg, client=client)
+        other_queue = RedisTaskQueue(other, client=client)
+        reporter = make_reporter(cfg, queue)
+        reporter.start()
+        try:
+            daily = await claim(client, queue)
+            daily.daily_started_at = datetime.now(timezone.utc).timestamp()
+            assert all(await asyncio.gather(*(queue.set_execution_status(daily, "completed") for _ in range(8))))
+            reporter.emit(daily, status="completed")
+            assert await reporter.flush(daily.id)
+            run_key, _, _ = keys(cfg, daily)
+            assert json.loads(await client.get(run_key))["completedAchievementCounted"] is True
+            assert await queue.set_execution_status(daily, "completed")
+
+            weekly = await claim(client, queue, main_task="arena_weekly")
+            weekly.daily_started_at = datetime.now(timezone.utc).timestamp()
+            assert await queue.set_execution_status(weekly, "completed")
+            other_daily = await claim(client, other_queue, main_task="daily")
+            other_daily.daily_started_at = datetime.now(timezone.utc).timestamp()
+            assert await other_queue.set_execution_status(other_daily, "completed")
+
+            await client.delete(run_key)
+            assert not await queue.set_execution_status(daily, "completed")
+            assert await client.hgetall("test:run-logs:achievements:completed") == {"daily": "1", "arena_weekly": "1"}
+            assert await client.ttl("test:run-logs:achievements:completed") == -1
+            assert await client.hgetall("test:other-worker:achievements:completed") == {"daily": "1"}
+        finally:
+            await reporter.close()
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("outcome,driver,started", [
+    ("failed", "ldplayer", True), ("interrupted", "ldplayer", True), ("expired", "ldplayer", True),
+    ("completed", "ldplayer", False), ("completed", "mock", True),
+])
+def test_completed_achievement_excludes_non_successes_and_qr_only(outcome, driver, started):
+    async def scenario():
+        client, cfg = fake_client(), config(emulator_driver=driver)
+        queue = RedisTaskQueue(cfg, client=client)
+        try:
+            record = await claim(client, queue)
+            if started:
+                record.daily_started_at = datetime.now(timezone.utc).timestamp()
+            stale = replace(record, attempt_id="0" * 32)
+            assert not await queue.set_execution_status(stale, "completed")
+            assert await queue.set_execution_status(record, outcome)
+            if outcome != "completed":
+                assert not await queue.set_execution_status(record, "completed")
+            run_key, _, _ = keys(cfg, record)
+            run = json.loads(await client.get(run_key))
+            assert run["status"] == outcome and "completedAchievementCounted" not in run
+            assert await client.exists("test:run-logs:achievements:completed") == 0
+        finally:
+            await client.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("invalid_count", ["invalid-count", "-1"])
+def test_completed_achievement_count_error_preserves_active_run_for_retry(invalid_count):
+    async def scenario():
+        client, cfg = fake_client(), config(emulator_driver="ldplayer")
+        queue = RedisTaskQueue(cfg, client=client)
+        try:
+            record = await claim(client, queue)
+            record.daily_started_at = datetime.now(timezone.utc).timestamp()
+            run_key, _, _ = keys(cfg, record)
+            count_key = "test:run-logs:achievements:completed"
+            await client.hset(count_key, "daily", invalid_count)
+            before = await client.get(run_key)
+
+            with pytest.raises(RedisQueueError):
+                await queue.set_execution_status(record, "completed")
+            assert await client.get(run_key) == before
+            assert await client.get("test:run-logs:users:private-user-id:active") == record.id
+            assert await client.hget(count_key, "daily") == invalid_count
+
+            await client.hset(count_key, "daily", "3")
+            assert await queue.set_execution_status(record, "completed")
+            assert await client.hget(count_key, "daily") == "4"
+        finally:
+            await client.aclose()
+    asyncio.run(scenario())
 
 
 def test_direct_publication_does_not_wait_for_redis_and_coalesces_summaries():
@@ -787,6 +880,7 @@ def test_mock_completed_run_is_not_overwritten_when_its_qr_later_expires(monkeyp
             completed_snapshot = await client.get(run_key)
             completed_logs = published(reporter, record.id)
             assert json.loads(completed_snapshot)["status"] == "completed"
+            assert await client.exists(f"{cfg.redis_queue_key}:achievements:completed") == 0
             assert completed_logs[-1][1]["message"] == "模拟二维码已生成"
             assert all(event["message"] != STAGE_MESSAGES["completed"] for _, event in completed_logs)
             runtime._expire(record)
@@ -850,11 +944,14 @@ def test_real_child_log_events_preserve_protocol_and_publish_terminal_after_clea
             run_key, stream_key, session_key = keys(cfg, record)
             state = json.loads(await client.get(run_key))
             assert state["status"] == "running_daily" and state["finishedAt"] is None
+            count_key = f"{cfg.redis_queue_key}:achievements:completed"
+            assert await client.hgetall(count_key) == {}
             release.set()
             await asyncio.wait_for(work, 5)
             await drain(reporter)
             state = json.loads(await client.get(run_key))
             assert state["status"] == ("failed" if cleanup_fails else "completed")
+            assert await client.hgetall(count_key) == ({} if cleanup_fails else {"daily": "1"})
             if cleanup_fails:
                 assert state["errorCode"] == "instance_cleanup_failed"
             assert json.loads(await client.get(session_key))["status"] == state["status"]

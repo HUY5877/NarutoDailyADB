@@ -270,6 +270,7 @@ if session.status == 'interrupted' and session.errorCode == 'admin_interrupted'
     and ARGV[7] ~= 'admin_interrupted' then return 0 end
 if not terminal[target] and session.loginAuthorized ~= true
     and session.status ~= 'finishing_login' and session.status ~= 'running_daily' then return 0 end
+local firstCompletion = target == 'completed' and session.status ~= 'completed'
 session.status = target
 session.updatedAt = ARGV[9]
 if ARGV[7] ~= '' then session.errorCode = ARGV[7] end
@@ -280,13 +281,33 @@ if ARGV[12] ~= '' then session.executionDeadline = tonumber(ARGV[12]) end
 if terminal[target] then
     if session.finishedAt == nil or session.finishedAt == cjson.null then session.finishedAt = ARGV[9] end
     session.refreshRequestId = nil
+end
+local mainTask = ARGV[13]
+local countCompletion = firstCompletion and mainTask ~= '' and session.completedAchievementCounted ~= true
+    and type(session.startedAt) == 'string' and session.startedAt ~= ''
+if countCompletion then session.completedAchievementCounted = true end
+local encoded = cjson.encode(session)
+-- Redis scripts do not undo writes on error. Validate the increment before
+-- committing the run, and undo it if writing the run fails.
+if countCompletion then
+    local current = redis.call('HGET', KEYS[4], mainTask)
+    if current and string.sub(current, 1, 1) == '-' then
+        return redis.error_reply('ERR Achievement count must be nonnegative')
+    end
+    redis.call('HINCRBY', KEYS[4], mainTask, 1)
+end
+local saved = redis.pcall('SET', KEYS[1], encoded, 'EX', retention)
+if saved.err then
+    if countCompletion then redis.call('HINCRBY', KEYS[4], mainTask, -1) end
+    return saved
+end
+if terminal[target] then
     redis.call('DEL', KEYS[2])
     local activeKey = KEYS[3] .. ':users:' .. tostring(session.userId) .. ':active'
     if redis.call('TYPE', activeKey).ok == 'string' and redis.call('GET', activeKey) == ARGV[1] then
         redis.call('DEL', activeKey)
     end
 end
-redis.call('SET', KEYS[1], cjson.encode(session), 'EX', retention)
 if not terminal[target] then retainActive() end
 return 1
 """
@@ -588,13 +609,17 @@ return session.userId
         if code not in SAFE_DRIVER_ERRORS and code not in {'protocol_error', 'instance_cleanup_failed'}:
             code = ''
         error = SAFE_DRIVER_ERRORS.get(code, '')
+        prefix = self.config.redis_queue_key
+        main_task = ''
+        if status == 'completed' and getattr(self.config, 'emulator_driver', None) == 'ldplayer':
+            main_task = record.user_options.get('mainTask', 'daily')
         changed = await self._call(
-            'eval', _EXECUTION_SCRIPT, 3, self._run_key(record),
-            f'{self.config.redis_queue_key}:refresh:{record.id}', self.config.redis_queue_key,
+            'eval', _EXECUTION_SCRIPT, 4, self._run_key(record),
+            f'{prefix}:refresh:{record.id}', prefix, f'{prefix}:achievements:completed',
             *self._run_args(record), status, code, error,
             self._iso(models.time.time()), self._iso(record.daily_started_at),
             self._iso(record.authorized_at),
-            '' if record.execution_deadline is None else str(record.execution_deadline), record.attempt_id or '',
+            '' if record.execution_deadline is None else str(record.execution_deadline), main_task, record.attempt_id or '',
         )
         return bool(changed)
 
