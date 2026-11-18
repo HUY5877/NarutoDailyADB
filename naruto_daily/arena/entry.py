@@ -1,4 +1,4 @@
-"""先用 JEV 筛选主界面，再定位决斗场；确认忍术对战后交还战斗循环。"""
+"""先用 JEV 判断决斗场入口是否可见，再定位；确认忍术对战后交还战斗循环。"""
 from __future__ import annotations
 
 import logging
@@ -57,13 +57,12 @@ def _observe_entry(flow, *, locate=True):
         try:
             png = flow.client.screenshot()
             size = _frame_size(png)
-            with model_request_context('决斗场主界面入口筛选'):
+            with model_request_context('决斗场入口可见性筛选'):
                 gate = flow.model.complete_json(png, ARENA_ENTRY_PROMPT,
                                                 timeout_seconds=flow.remaining())
             flow.remaining()  # 丢弃迟到结果，不能继续滑动或点击。
-            if (not isinstance(gate, dict) or gate.get('page') != 'main'
-                    or type(gate.get('arena_visible')) is not bool):
-                raise VisualError('JEV 未确认无遮挡主界面，暂不滑动或点击')
+            if not isinstance(gate, dict) or type(gate.get('arena_visible')) is not bool:
+                raise VisualError('JEV 未返回有效的入口可见性结果，暂不滑动或点击')
             LOGGER.info('JEV 决斗场入口筛选：%s', '清楚可见' if gate['arena_visible'] else '未发现')
             if not locate or not gate['arena_visible']:
                 return None, size
@@ -126,7 +125,7 @@ def enter_arena(client, action, *, template_matcher=find_template_in_png,
     """右滑五次归位，至多左滑十五次搜索，只在好友切磋可见时成功返回。"""
     flow = ModelWorkflow(client, action, model=model, template_matcher=template_matcher,
                          asset_root=asset_root, sleep=sleep)
-    # 确认仍在登录收尾后的主界面，再发送归位手势。
+    # 主界面已由前置流程确认；这里只检查入口可见性结果和画面尺寸。
     _, size = _observe_entry(flow, locate=False)
     for index in range(RESET_SWIPES):
         LOGGER.info('主界面向右滑动归位 %d/%d', index + 1, RESET_SWIPES)

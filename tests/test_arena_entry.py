@@ -14,8 +14,8 @@ from naruto_daily.multimodal.client import MultimodalRequestError
 from naruto_daily.multimodal.prompt_jev import ARENA_ENTRY_PROMPT
 
 
-ABSENT = {'page': 'main', 'arena_visible': False}
-VISIBLE = {'page': 'main', 'arena_visible': True}
+ABSENT = {'arena_visible': False}
+VISIBLE = {'arena_visible': True}
 
 
 def entry_position(x=950, y=550):
@@ -159,11 +159,15 @@ def test_search_caps_at_fifteen_swipes_and_observes_the_last_frame(monkeypatch, 
 
 @pytest.mark.parametrize('after_reset', [False, True])
 @pytest.mark.parametrize('uncertain', [
-    {'page': 'unknown', 'arena_visible': False},
-    {'page': 'main', 'arena_visible': None},
-    {'page': 'main', 'arena_visible': 0},
+    None,
+    [],
+    {},
+    {'arena_visible': None},
+    {'arena_visible': 0},
+    {'arena_visible': 1},
+    {'arena_visible': 'false'},
 ])
-def test_unknown_never_authorizes_scene_swipes_or_generation(monkeypatch, after_reset, uncertain):
+def test_invalid_visibility_never_authorizes_scene_swipes_or_generation(monkeypatch, after_reset, uncertain):
     observations = [('gate', 'initial', ABSENT)] if after_reset else []
     observations.extend([('gate', 'unknown-1', uncertain), ('gate', 'unknown-2', uncertain)])
     replay = Replay(monkeypatch, observations, action=action_config(multimodal={'max_calls': 2}))

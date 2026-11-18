@@ -10,12 +10,11 @@ from naruto_daily.multimodal.prompt_jev import ARENA_ENTRY_PROMPT, ChoicePrompt
 from naruto_daily.multimodal.prompts import arena_entry_prompt
 
 
-def test_arena_visibility_choices_authorize_only_confirmed_main_entry():
+def test_arena_visibility_choices_only_answer_whether_entry_is_visible():
     assert isinstance(ARENA_ENTRY_PROMPT, ChoicePrompt)
     assert list(ARENA_ENTRY_PROMPT.choices.values()) == [
-        {'page': 'main', 'arena_visible': True},
-        {'page': 'main', 'arena_visible': False},
-        {'page': 'unknown', 'arena_visible': False},
+        {'arena_visible': True},
+        {'arena_visible': False},
     ]
     assert all('center' not in result for result in ARENA_ENTRY_PROMPT.choices.values())
 
@@ -57,7 +56,7 @@ def test_arena_visibility_then_coordinate_requests_use_separate_protocols(
         }]}).encode())
 
     model = MultimodalClient({'timeout_seconds': 10}, open_request=open_request)
-    assert model.complete_json(frame, ARENA_ENTRY_PROMPT) == {'page': 'main', 'arena_visible': True}
+    assert model.complete_json(frame, ARENA_ENTRY_PROMPT) == {'arena_visible': True}
     assert configured_environment.value == 0
     assert model.complete_json(frame, arena_entry_prompt(160, 90)) == {
         'page': 'main', 'name': '决斗场', 'center': [80, 45],
