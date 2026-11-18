@@ -69,13 +69,12 @@ PostgreSQL 复用同一主机、端口和账号，仅 URL 中的数据库名不�
 | 用户活动任务锁 | `${REDIS_QUEUE_KEY}:users:<userId>:active` |
 | 二维码刷新命令 | `${REDIS_QUEUE_KEY}:refresh:<taskId>` |
 | 统一扫码与执行状态 | `${REDIS_QUEUE_KEY}:runs:<taskId>` |
-| 成功任务累计次数 | `${REDIS_QUEUE_KEY}:achievements:completed` |
 | 执行日志 Stream | `${REDIS_QUEUE_KEY}:logs:<taskId>` |
 | OSS 二维码 | `${OSS_KEY_PREFIX}/<taskId>/qr.png` |
 
 消息字段、状态机和保存期限沿用[worker 协议](../naruto_daily/login_service/README.md#redis-消息和状态)。客户端先创建带有 `id/taskId`、`tokenHash`、`simulation: true`、`queued` 状态、`userId` 和原时间戳的统一 `runs` 记录及用户活动索引，再 `LPUSH` 到所选队列。worker 原子领取，客户端不消费队列。扫码仍限领取后 10 分钟；记录与活动索引至少保留 7 天，已授权任务的占用持续到执行结束。两端须按 worker 协议中的升级顺序协调切换，不得混跑旧版 `sessions` worker。
 
-成功任务累计使用无过期时间的 Redis Hash。网站读取 `daily` 和 `arena_weekly` 两个十进制整数字段并相加，缺失字段视为零。计数从新版 worker 开始，同一任务首次成功结束时加一，缺省任务类型记为 `daily`。测试站和正式站各从自己的队列前缀读取。
+全站累计刷游戏次数由网站查询 PostgreSQL 中的日常和决斗场周胜申请记录并合计，部署网站即可更新此统计，worker 按现有协议处理任务。
 
 ```json
 {
