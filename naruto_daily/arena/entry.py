@@ -1,4 +1,4 @@
-"""先用 JEV 判断决斗场入口是否可见，再定位；确认忍术对战后交还战斗循环。"""
+"""逐屏定位决斗场入口；确认忍术对战后交还战斗循环。"""
 from __future__ import annotations
 
 import logging
@@ -9,11 +9,9 @@ import cv2
 import numpy as np
 
 from naruto_daily.common.model_workflow import ModelWorkflow
-from naruto_daily.common.execution import current_execution
 from naruto_daily.common.visual import NonRetryableVisualError, VisualError, find_template_in_png
 from naruto_daily.multimodal.client import MultimodalRequestError
 from naruto_daily.multimodal.diagnostics import model_request_context
-from naruto_daily.multimodal.prompt_jev import ARENA_ENTRY_PROMPT
 from naruto_daily.multimodal.prompts import arena_entry_prompt
 
 LOGGER = logging.getLogger('naruto_daily')
@@ -48,46 +46,28 @@ def _frame_size(png):
     return width, height
 
 
-def _observe_entry(flow, *, locate=True):
-    """一帧内先筛选再定位；观察失败时重新截图重做两阶段。"""
-    attempts = flow.action['multimodal']['max_calls']
-    attempt = 1
-    while True:
-        flow.remaining()
-        try:
-            png = flow.client.screenshot()
-            size = _frame_size(png)
-            with model_request_context('决斗场入口可见性筛选'):
-                gate = flow.model.complete_json(png, ARENA_ENTRY_PROMPT,
-                                                timeout_seconds=flow.remaining())
-            flow.remaining()  # 丢弃迟到结果，不能继续滑动或点击。
-            if not isinstance(gate, dict) or type(gate.get('arena_visible')) is not bool:
-                raise VisualError('JEV 未返回有效的入口可见性结果，暂不滑动或点击')
-            LOGGER.info('JEV 决斗场入口筛选：%s', '清楚可见' if gate['arena_visible'] else '未发现')
-            if not locate or not gate['arena_visible']:
-                return None, size
-            # 不单独刷新第二阶段图片，避免沿用上一帧的 JEV 授权。
-            with model_request_context('决斗场主界面入口坐标'):
-                result = flow.model.complete_json(png, arena_entry_prompt(*size),
-                                                  timeout_seconds=flow.remaining())
-            flow.remaining()
-            center = parse_arena_center(result, *size)
-            LOGGER.info('模型定位决斗场入口：(%d, %d)', *center)
-            return center, size
-        except NonRetryableVisualError:
+def _observe_entry(flow):
+    """当前搜索位置只定位一次，未取得安全坐标则继续搜索。"""
+    flow.remaining()
+    png = flow.client.screenshot()
+    size = _frame_size(png)
+    remaining = flow.remaining()
+    center = None
+    try:
+        with model_request_context('决斗场主界面入口坐标'):
+            result = flow.model.complete_json(png, arena_entry_prompt(*size), timeout_seconds=remaining)
+        center = parse_arena_center(result, *size)
+        LOGGER.info('模型定位决斗场入口：(%d, %d)', *center)
+    except NonRetryableVisualError:
+        raise
+    except MultimodalRequestError as exc:
+        if not exc.retryable:
             raise
-        except MultimodalRequestError as exc:
-            if current_execution() is None or not exc.retryable:
-                raise
-            LOGGER.warning('决斗场入口接口暂时失败，10 秒后重新截图并重做 JEV 筛选：%s', exc,
-                           extra={'backend_only': True})
-            flow.images.sleep(min(10, flow.remaining()))
-        except VisualError as exc:
-            if attempt == attempts:
-                raise VisualError('决斗场入口多次识别未确认，已停止操作') from exc
-            LOGGER.info('决斗场入口观察 %d/%d 未确认：%s；等待后重新截图', attempt, attempts, exc)
-            flow.images.sleep(min(flow.action['poll_seconds'], flow.remaining()))
-            attempt += 1
+        LOGGER.warning('本屏决斗场入口坐标请求失败：%s', exc, extra={'backend_only': True})
+    except VisualError as exc:
+        LOGGER.info('本屏未取得决斗场入口坐标：%s', exc)
+    flow.remaining()  # 迟到的响应不能触发点击或滑动。
+    return center, size
 
 
 def _swipe_scene(flow, size, *, right):
@@ -125,8 +105,8 @@ def enter_arena(client, action, *, template_matcher=find_template_in_png,
     """右滑五次归位，至多左滑十五次搜索，只在好友切磋可见时成功返回。"""
     flow = ModelWorkflow(client, action, model=model, template_matcher=template_matcher,
                          asset_root=asset_root, sleep=sleep)
-    # 主界面已由前置流程确认；这里只检查入口可见性结果和画面尺寸。
-    _, size = _observe_entry(flow, locate=False)
+    # 主界面已由前置流程确认，归位前只检查画面尺寸。
+    size = _frame_size(client.screenshot())
     for index in range(RESET_SWIPES):
         LOGGER.info('主界面向右滑动归位 %d/%d', index + 1, RESET_SWIPES)
         _swipe_scene(flow, size, right=True)

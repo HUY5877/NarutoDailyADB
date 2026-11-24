@@ -1,4 +1,4 @@
-"""决斗场入口逐帧观察、直接点击和操作边界，不连接设备或模型服务。"""
+"""决斗场入口逐帧定位和操作边界，不连接设备或模型服务。"""
 from collections import deque
 from pathlib import Path
 
@@ -8,17 +8,13 @@ import pytest
 
 from naruto_daily.arena.entry import enter_arena
 from naruto_daily.common import model_workflow
-from naruto_daily.common.execution import execution_scope
+from naruto_daily.common.execution import DailyDeadlineExceeded, execution_scope
 from naruto_daily.common.visual import NonRetryableVisualError, VisualError
 from naruto_daily.multimodal.client import MultimodalRequestError
-from naruto_daily.multimodal.prompt_jev import ARENA_ENTRY_PROMPT
+from naruto_daily.multimodal.prompt_jev import ChoicePrompt
 
 
-ABSENT = {'arena_visible': False}
-VISIBLE = {'arena_visible': True}
-
-
-def entry_position(x=950, y=550):
+def entry_position(x=1000, y=600):
     return {'page': 'main', 'name': '决斗场', 'center': [x, y]}
 
 
@@ -34,14 +30,14 @@ def action_config(**overrides):
 
 
 class Replay:
-    """每次截图取得新帧；两阶段识别必须使用同一个 PNG 对象。"""
+    """为归位、搜索和到达校验提供独立画面，并记录设备动作。"""
 
     def __init__(self, monkeypatch, observations, *, frames=(), matches=None, action=None):
         self.action = action or action_config()
         self.clock = 0.0
-        self.events, self.calls, self.taps, self.swipes = [], [], [], []
+        self.events, self.taps, self.swipes = [], [], []
         self.observations = deque(observations)
-        self.frames = deque([name for phase, name, result in observations if phase == 'gate'] + list(frames))
+        self.frames = deque(['initial', *(name for name, _ in observations), *frames])
         self.matches = matches or {}
         self.images = {}
         self.names = {}
@@ -59,19 +55,17 @@ class Replay:
     def screenshot(self):
         if self.frames:
             self.last_frame = self.frames.popleft()
-        assert self.last_frame is not None, '流程截图超出脚本范围'
         png = self.png(self.last_frame)
         self.events.append(('screen', self.last_frame))
         return png
 
     def complete_json(self, png, prompt, *, timeout_seconds):
         assert timeout_seconds > 0
-        assert self.observations, '发生未授权的额外模型调用'
-        phase = 'gate' if prompt == ARENA_ENTRY_PROMPT else 'locate'
-        expected_phase, expected_frame, result = self.observations.popleft()
-        assert (phase, self.names[png]) == (expected_phase, expected_frame)
-        self.events.append((phase, expected_frame))
-        self.calls.append((phase, expected_frame, png))
+        assert not isinstance(prompt, ChoicePrompt), '查找入口只需调用坐标模型'
+        assert self.observations, '发生额外的模型调用'
+        expected_frame, result = self.observations.popleft()
+        assert self.names[png] == expected_frame
+        self.events.append(('locate', expected_frame))
         if isinstance(result, Exception):
             raise result
         return result(self) if callable(result) else result
@@ -99,47 +93,73 @@ class Replay:
                            template_matcher=self.matcher, sleep=self.sleep)
 
 
-def direct_observations():
-    return [('gate', 'initial', ABSENT),
-            ('gate', 'found', VISIBLE), ('locate', 'found', entry_position(1000, 600))]
-
-
 def ready_matches():
     return {('battle-old', 'arena_ninjutsu_battle.png'): (280, 960),
             ('battle-new', 'arena_ninjutsu_battle.png'): (310, 950),
             ('friendly', 'arena_friendly_match.png'): (1750, 480)}
 
 
-def test_resets_then_gates_each_scene_and_rechecks_ninjutsu_click(monkeypatch):
-    observations = [('gate', 'initial', VISIBLE), ('gate', 'empty', ABSENT), *direct_observations()[1:]]
-    replay = Replay(monkeypatch, observations, frames=['battle-old', 'battle-new', 'friendly'],
-                    matches=ready_matches())
-    replay.run()
+READY_FRAMES = ('battle-old', 'battle-new', 'friendly')
 
-    significant = [event for event in replay.events if event[0] in {'gate', 'locate', 'swipe', 'tap'}]
-    assert significant == [
-        ('gate', 'initial'), *[('swipe', 'right')] * 5,
-        ('gate', 'empty'), ('swipe', 'left'),
-        ('gate', 'found'), ('locate', 'found'),
-        ('tap', (1000, 600)), ('tap', (310, 950)),
+
+def test_first_search_frame_uses_only_coordinate_model(monkeypatch):
+    replay = Replay(monkeypatch, [('found', entry_position())],
+                    frames=READY_FRAMES, matches=ready_matches(),
+                    action=action_config(pre_click_wait_seconds=.5))
+    replay.run()
+    actions = [event for event in replay.events if event[0] != 'sleep']
+    assert actions[:9] == [
+        ('screen', 'initial'), *[('swipe', 'right')] * 5,
+        ('screen', 'found'), ('locate', 'found'), ('tap', (1000, 600)),
     ]
-    gate, locate = replay.calls[2:4]
-    assert gate[2] is locate[2]
+    located = replay.events.index(('locate', 'found'))
+    assert replay.events[located + 1] == ('tap', (1000, 600))
     assert replay.taps == [(1000, 600), (310, 950)]
     assert ('match', 'friendly', 'arena_friendly_match.png') in replay.events
+    assert not replay.frames and not replay.observations
     for x1, y1, x2, y2, duration in replay.swipes:
-        assert abs(x2 - x1) >= 1920 * .3 and duration >= 600
+        assert x2 - x1 >= 1920 * .3 and duration >= 600
         assert y1 == y2 and 1080 * .7 < y1 < 1080 * .85
+
+
+@pytest.mark.parametrize('unconfirmed', [
+    pytest.param({'page': 'unknown'}, id='unknown'),
+    pytest.param(entry_position() | {'page': 'unknown'}, id='wrong-page-with-coordinate'),
+    pytest.param(entry_position() | {'name': '丰饶之间'}, id='wrong-name'),
+    pytest.param({'page': 'main', 'name': '决斗场'}, id='missing-center'),
+    pytest.param(entry_position() | {'center': None}, id='null-center'),
+    pytest.param(entry_position() | {'center': [950]}, id='incomplete-coordinate'),
+    pytest.param(entry_position(True, 550), id='boolean-x'),
+    pytest.param(entry_position(950, False), id='boolean-y'),
+    pytest.param(entry_position(950.0, 550), id='float-x'),
+    pytest.param(entry_position(950, 550.5), id='float-y'),
+    pytest.param(entry_position(20, 550), id='left-edge'),
+    pytest.param(entry_position(1900, 550), id='right-toolbar'),
+    pytest.param(entry_position(950, 50), id='top-toolbar'),
+    pytest.param(entry_position(950, 1000), id='bottom-toolbar'),
+])
+def test_unconfirmed_position_swipes_left_then_locates_on_new_frame(monkeypatch, unconfirmed):
+    replay = Replay(monkeypatch, [('missed', unconfirmed), ('next', entry_position(1111, 601))],
+                    frames=READY_FRAMES, matches=ready_matches())
+    replay.run()
+    start = replay.events.index(('locate', 'missed'))
+    actions = [event for event in replay.events[start:] if event[0] != 'sleep']
+    assert actions[:5] == [
+        ('locate', 'missed'), ('swipe', 'left'), ('screen', 'next'),
+        ('locate', 'next'), ('tap', (1111, 601)),
+    ]
+    assert replay.taps == [(1111, 601), (310, 950)]
+    assert len(replay.swipes) == 6 and not replay.observations
+    x1, y1, x2, y2, duration = replay.swipes[-1]
+    assert x1 - x2 >= 1920 * .3 and duration >= 600
+    assert y1 == y2 and 1080 * .7 < y1 < 1080 * .85
 
 
 @pytest.mark.parametrize('last_scene_visible', [False, True])
 def test_search_caps_at_fifteen_swipes_and_observes_the_last_frame(monkeypatch, last_scene_visible):
-    observations = [('gate', 'initial', ABSENT)]
-    observations.extend(('gate', f'scene-{index}', ABSENT) for index in range(15))
-    observations.append(('gate', 'scene-15', VISIBLE if last_scene_visible else ABSENT))
-    if last_scene_visible:
-        observations.append(('locate', 'scene-15', entry_position(1000, 600)))
-    replay = Replay(monkeypatch, observations, frames=['battle-old', 'battle-new', 'friendly'],
+    observations = [(f'scene-{index}', {'page': 'unknown'}) for index in range(15)]
+    observations.append(('scene-15', entry_position() if last_scene_visible else {'page': 'unknown'}))
+    replay = Replay(monkeypatch, observations, frames=READY_FRAMES,
                     matches=ready_matches(), action=action_config(max_swipes=100))
     if last_scene_visible:
         replay.run()
@@ -150,125 +170,61 @@ def test_search_caps_at_fifteen_swipes_and_observes_the_last_frame(monkeypatch, 
         assert replay.taps == []
     assert len(replay.swipes) == 20
     assert sum(x1 > x2 for x1, _, x2, _, _ in replay.swipes) == 15
-    assert ('gate', 'scene-15') in replay.events
-    for index, event in enumerate(replay.events):
-        if event == ('swipe', 'left'):
-            assert replay.events[index - 1][0] == 'gate'
+    assert ('locate', 'scene-15') in replay.events
     assert not replay.observations
 
 
-@pytest.mark.parametrize('after_reset', [False, True])
-@pytest.mark.parametrize('uncertain', [
-    None,
-    [],
-    {},
-    {'arena_visible': None},
-    {'arena_visible': 0},
-    {'arena_visible': 1},
-    {'arena_visible': 'false'},
-])
-def test_invalid_visibility_never_authorizes_scene_swipes_or_generation(monkeypatch, after_reset, uncertain):
-    observations = [('gate', 'initial', ABSENT)] if after_reset else []
-    observations.extend([('gate', 'unknown-1', uncertain), ('gate', 'unknown-2', uncertain)])
-    replay = Replay(monkeypatch, observations, action=action_config(multimodal={'max_calls': 2}))
-    with pytest.raises(VisualError, match='识别未确认'):
+def test_respects_smaller_configured_search_distance(monkeypatch):
+    replay = Replay(monkeypatch, [('first', {'page': 'unknown'}), ('last', {'page': 'unknown'})],
+                    action=action_config(max_swipes=1))
+    with pytest.raises(VisualError, match='1'):
         replay.run()
-    assert len(replay.swipes) == (5 if after_reset else 0)
-    assert all(x1 < x2 for x1, _, x2, _, _ in replay.swipes)
-    assert replay.taps == []
-    assert all(phase == 'gate' for phase, _, _ in replay.calls)
-    assert not replay.observations
+    assert replay.swipes[-1][0] > replay.swipes[-1][2]
+    assert len(replay.swipes) == 6 and not replay.observations and replay.taps == []
 
 
-@pytest.mark.parametrize('center', [
-    [True, 550], [950, False], [950.0, 550], [950, 550.5],
-    [20, 550], [1900, 550], [950, 50], [950, 1000],
-])
-def test_invalid_or_toolbar_coordinates_never_reach_adb(monkeypatch, center):
-    observations = direct_observations()[:3]
-    observations[-1] = ('locate', 'found', entry_position() | {'center': center})
-    replay = Replay(monkeypatch, observations)
-    with pytest.raises(VisualError, match='识别未确认'):
+def test_retryable_coordinate_request_moves_to_next_scene_without_backoff(monkeypatch):
+    error = MultimodalRequestError('model timed out', retryable=True)
+    replay = Replay(monkeypatch, [('request-failed', error), ('next', entry_position())],
+                    frames=READY_FRAMES, matches=ready_matches())
+    with execution_scope(50, clock=lambda: replay.clock, sleep=replay.sleep):
         replay.run()
-    assert len(replay.swipes) == 5 and replay.taps == []
-
-
-def test_valid_location_clicks_without_another_frame_model_call_or_pre_click_sleep(monkeypatch):
-    replay = Replay(monkeypatch, direct_observations(),
-                    frames=['battle-old', 'battle-new', 'friendly'], matches=ready_matches(),
-                    action=action_config(pre_click_wait_seconds=.5))
-    replay.run()
-
-    locate_index = replay.events.index(('locate', 'found'))
-    tap_index = replay.events.index(('tap', (1000, 600)))
-    assert replay.events[locate_index:tap_index + 1] == [
-        ('locate', 'found'), ('tap', (1000, 600)),
+    start = replay.events.index(('locate', 'request-failed'))
+    assert replay.events[start:start + 5] == [
+        ('locate', 'request-failed'), ('swipe', 'left'), ('sleep', .01),
+        ('screen', 'next'), ('locate', 'next'),
     ]
-    assert [phase for phase, _, _ in replay.calls] == ['gate', 'gate', 'locate']
-    assert replay.calls[1][2] is replay.calls[2][2]
     assert replay.taps == [(1000, 600), (310, 950)]
-    assert not replay.observations and not replay.frames
 
 
-@pytest.mark.parametrize('unconfirmed', [
-    pytest.param({'page': 'unknown'}, id='unknown'),
-    pytest.param({'page': 'main', 'name': '决斗场'}, id='missing-center'),
-    pytest.param(entry_position(1900, 550), id='outside-scene'),
-])
-def test_unconfirmed_location_retries_gate_and_locate_on_new_frame_before_click(monkeypatch, unconfirmed):
-    observations = [
-        ('gate', 'initial', ABSENT),
-        ('gate', 'failed', VISIBLE), ('locate', 'failed', unconfirmed),
-        ('gate', 'recovered', VISIBLE), ('locate', 'recovered', entry_position(1111, 601)),
-    ]
-    replay = Replay(monkeypatch, observations, frames=['battle-old', 'battle-new', 'friendly'],
-                    matches=ready_matches(), action=action_config(multimodal={'max_calls': 2}))
-    replay.run()
-
-    failed_index = replay.events.index(('locate', 'failed'))
-    assert replay.events[failed_index:failed_index + 6] == [
-        ('locate', 'failed'), ('sleep', .01),
-        ('screen', 'recovered'), ('gate', 'recovered'), ('locate', 'recovered'),
-        ('tap', (1111, 601)),
-    ]
-    assert replay.calls[1][2] is replay.calls[2][2]
-    assert replay.calls[3][2] is replay.calls[4][2]
-    assert replay.calls[2][2] != replay.calls[3][2]
-    assert len(replay.swipes) == 5 and replay.taps == [(1111, 601), (310, 950)]
-    assert not replay.observations
-
-
-@pytest.mark.parametrize('unconfirmed', [
-    pytest.param({'page': 'unknown'}, id='unknown'),
-    pytest.param({'page': 'main', 'name': '决斗场'}, id='missing-center'),
-    pytest.param(entry_position(1900, 550), id='outside-scene'),
-])
-def test_unconfirmed_location_exhaustion_never_clicks(monkeypatch, unconfirmed):
-    observations = [
-        ('gate', 'initial', ABSENT),
-        ('gate', 'failed-1', VISIBLE), ('locate', 'failed-1', unconfirmed),
-        ('gate', 'failed-2', VISIBLE), ('locate', 'failed-2', unconfirmed),
-    ]
-    replay = Replay(monkeypatch, observations, action=action_config(multimodal={'max_calls': 2}))
-    with pytest.raises(VisualError, match='识别未确认'):
-        replay.run()
-
-    assert [(phase, frame) for phase, frame, _ in replay.calls] == [
-        ('gate', 'initial'), ('gate', 'failed-1'), ('locate', 'failed-1'),
-        ('gate', 'failed-2'), ('locate', 'failed-2'),
-    ]
-    assert replay.calls[1][2] is replay.calls[2][2]
-    assert replay.calls[3][2] is replay.calls[4][2]
-    assert replay.calls[2][2] != replay.calls[3][2]
+def test_nonretryable_request_stops_without_advancing(monkeypatch):
+    error = MultimodalRequestError('request stopped', retryable=False)
+    replay = Replay(monkeypatch, [('first', error)])
+    with execution_scope(50, clock=lambda: replay.clock, sleep=replay.sleep):
+        with pytest.raises(MultimodalRequestError):
+            replay.run()
+    assert replay.events[-1] == ('locate', 'first')
     assert len(replay.swipes) == 5 and replay.taps == []
-    assert not any(event[0] == 'match' for event in replay.events)
-    assert not replay.observations
+
+
+@pytest.mark.parametrize('answer', [entry_position(), {'page': 'unknown'}])
+def test_result_after_daily_deadline_never_causes_input(monkeypatch, answer):
+    def late(replay):
+        replay.clock += 6
+        return answer
+
+    replay = Replay(monkeypatch, [('late', late)])
+    with pytest.raises(DailyDeadlineExceeded):
+        with execution_scope(5, clock=lambda: replay.clock, sleep=replay.sleep):
+            replay.run()
+    assert len(replay.swipes) == 5 and replay.taps == []
+    assert replay.events[-1] == ('locate', 'late')
 
 
 def test_disappearing_ninjutsu_icon_is_observed_again_before_click(monkeypatch):
     matches = ready_matches() | {('battle-again', 'arena_ninjutsu_battle.png'): (350, 940),
                                  ('battle-again-check', 'arena_ninjutsu_battle.png'): (370, 930)}
-    replay = Replay(monkeypatch, direct_observations(),
+    replay = Replay(monkeypatch, [('found', entry_position())],
                     frames=['battle-old', 'gone', 'battle-again', 'battle-again-check', 'friendly'],
                     matches=matches)
     replay.run()
@@ -276,28 +232,10 @@ def test_disappearing_ninjutsu_icon_is_observed_again_before_click(monkeypatch):
     assert ('match', 'gone', 'arena_ninjutsu_battle.png') in replay.events
 
 
-@pytest.mark.parametrize('call_index', [0, 1, 2])
-@pytest.mark.parametrize('failure', ['late', 'timeout'])
-def test_late_or_timed_out_model_cannot_trigger_followup_actions(monkeypatch, call_index, failure):
-    observations = direct_observations()
-    phase, frame, answer = observations[call_index]
-    def late(replay):
-        replay.clock += replay.action['timeout_seconds'] + 1
-        return answer
-    observations[call_index] = (phase, frame, late if failure == 'late' else TimeoutError('model timeout'))
-    replay = Replay(monkeypatch, observations)
-    with pytest.raises((VisualError, TimeoutError)):
-        replay.run()
-    assert replay.taps == []
-    assert len(replay.swipes) == (0 if call_index == 0 else 5)
-    assert len(replay.calls) == call_index + 1
-    assert not any(event[0] == 'match' for event in replay.events)
-
-
 def test_missing_friendly_match_does_not_report_entry_success(monkeypatch):
     matches = ready_matches()
     matches.pop(('friendly', 'arena_friendly_match.png'))
-    replay = Replay(monkeypatch, direct_observations(), frames=['battle-old', 'battle-new', 'friendly'],
+    replay = Replay(monkeypatch, [('found', entry_position())], frames=READY_FRAMES,
                     matches=matches, action=action_config(timeout_seconds=.25))
     with pytest.raises(VisualError, match='超时'):
         replay.run()
@@ -309,38 +247,9 @@ def test_missing_friendly_match_does_not_report_entry_success(monkeypatch):
 
 @pytest.mark.parametrize('width,height', [(1600, 900), (1080, 1920)])
 def test_wrong_screen_size_stops_before_any_model_or_input(monkeypatch, width, height):
-    replay = Replay(monkeypatch, direct_observations())
+    replay = Replay(monkeypatch, [])
     frame = np.zeros((height, width, 3), dtype=np.uint8)
     replay.images['initial'] = cv2.imencode('.png', frame)[1].tobytes()
     with pytest.raises(NonRetryableVisualError, match='1920×1080'):
         replay.run()
-    assert replay.calls == [] and replay.swipes == [] and replay.taps == []
     assert replay.events == [('screen', 'initial')]
-
-
-def test_generation_network_retry_waits_and_requires_a_new_jev_authorization(monkeypatch):
-    observations = [
-        ('gate', 'initial', ABSENT),
-        ('gate', 'failed', VISIBLE),
-        ('locate', 'failed', MultimodalRequestError('connection lost', retryable=True)),
-        ('gate', 'recovered-negative', ABSENT),
-        ('gate', 'found', VISIBLE), ('locate', 'found', entry_position(1000, 600)),
-    ]
-    replay = Replay(monkeypatch, observations, frames=['battle-old', 'battle-new', 'friendly'],
-                    matches=ready_matches(), action=action_config(multimodal={'max_calls': 1}))
-    with execution_scope(50, clock=lambda: replay.clock, sleep=replay.sleep):
-        replay.run()
-
-    failed_index = replay.events.index(('locate', 'failed'))
-    assert replay.events[failed_index:failed_index + 6] == [
-        ('locate', 'failed'), ('sleep', 10),
-        ('screen', 'recovered-negative'), ('gate', 'recovered-negative'),
-        ('swipe', 'left'), ('sleep', .01),
-    ]
-    assert not any(phase == 'locate' and frame == 'recovered-negative'
-                   for phase, frame, _ in replay.calls)
-    assert replay.calls[1][2] is replay.calls[2][2]
-    assert replay.calls[2][2] != replay.calls[3][2]
-    assert len(replay.swipes) == 6 and replay.taps == [(1000, 600), (310, 950)]
-    assert sum(event == ('sleep', 10) for event in replay.events) == 1
-    assert not replay.observations
