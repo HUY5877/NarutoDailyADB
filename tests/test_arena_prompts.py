@@ -1,4 +1,4 @@
-"""主界面决斗场入口先做 JEV 有限判断，再由生成渠道定位坐标。"""
+"""主界面决斗场入口由生成模型直接定位坐标。"""
 import io
 import json
 
@@ -6,17 +6,7 @@ import cv2
 import numpy as np
 
 from naruto_daily.multimodal.client import MultimodalClient
-from naruto_daily.multimodal.prompt_jev import ARENA_ENTRY_PROMPT, ChoicePrompt
 from naruto_daily.multimodal.prompts import arena_entry_prompt
-
-
-def test_arena_visibility_choices_only_answer_whether_entry_is_visible():
-    assert isinstance(ARENA_ENTRY_PROMPT, ChoicePrompt)
-    assert list(ARENA_ENTRY_PROMPT.choices.values()) == [
-        {'arena_visible': True},
-        {'arena_visible': False},
-    ]
-    assert all('center' not in result for result in ARENA_ENTRY_PROMPT.choices.values())
 
 
 def test_arena_coordinate_prompt_uses_actual_complete_image_dimensions():
@@ -30,23 +20,15 @@ def test_arena_coordinate_prompt_uses_actual_complete_image_dimensions():
     assert '{"page":"unknown"}' in prompt
 
 
-def test_arena_visibility_then_coordinate_requests_use_separate_protocols(
+def test_arena_coordinate_request_uses_only_generation_channel(
         monkeypatch, configured_environment):
-    monkeypatch.setenv('JEV_API_KEY', 'jev-private')
+    monkeypatch.delenv('JEV_API_KEY', raising=False)
     frame = cv2.imencode('.png', np.zeros((90, 160, 3), np.uint8))[1].tobytes()
     sent = []
 
     def open_request(request, timeout):
         sent.append(request.full_url)
         payload = json.loads(request.data)
-        if len(sent) == 1:
-            assert request.full_url.endswith('/api/alpha/decisions')
-            assert request.get_header('Authorization') == 'Bearer jev-private'
-            assert 'messages' not in payload
-            assert set(payload['questions']['decision']['criteria']) == set(ARENA_ENTRY_PROMPT.choices)
-            label = next(label for label, result in ARENA_ENTRY_PROMPT.choices.items()
-                         if result['arena_visible'])
-            return io.BytesIO(json.dumps({'answers': {'decision': {'choice': label}}}).encode())
         assert request.full_url.endswith('/chat/completions')
         assert request.get_header('Authorization') == 'Bearer test-secret'
         assert payload['messages'][0]['content'][0]['text'] == arena_entry_prompt(160, 90)
@@ -56,9 +38,7 @@ def test_arena_visibility_then_coordinate_requests_use_separate_protocols(
         }]}).encode())
 
     model = MultimodalClient({'timeout_seconds': 10}, open_request=open_request)
-    assert model.complete_json(frame, ARENA_ENTRY_PROMPT) == {'arena_visible': True}
-    assert configured_environment.value == 0
     assert model.complete_json(frame, arena_entry_prompt(160, 90)) == {
         'page': 'main', 'name': '决斗场', 'center': [80, 45],
     }
-    assert len(sent) == 2 and configured_environment.value == 1
+    assert len(sent) == 1 and configured_environment.value == 1
