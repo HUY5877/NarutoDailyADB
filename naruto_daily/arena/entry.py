@@ -17,6 +17,12 @@ from naruto_daily.multimodal.prompts import arena_entry_prompt
 LOGGER = logging.getLogger('naruto_daily')
 RESET_SWIPES = 5
 MAX_SEARCH_SWIPES = 15
+TITLE_CONFIRM = {
+    'name': '称号弹窗确定按钮',
+    'template': 'assets/arena_title_confirm.png',
+    'left': 0, 'top': 540, 'right': 1920, 'bottom': 1080,
+    'threshold': .85,
+}
 # 主功能栏上方的场景空白带；完整长滑动，不能退化成点击。
 SCENE_SWIPE = (600, 865, 1320, 865, 650)
 
@@ -82,6 +88,21 @@ def _swipe_scene(flow, size, *, right):
     flow.images.sleep(min(flow.action['post_click_wait_seconds'], flow.remaining()))
 
 
+def _dismiss_title_popups(flow):
+    consecutive_misses = 0
+    while consecutive_misses < 5:
+        flow.images.sleep(min(1, flow.remaining()))
+        flow.remaining()
+        center, score = flow.images.match(flow.client.screenshot(), TITLE_CONFIRM)
+        flow.remaining()
+        if center is None:
+            consecutive_misses += 1
+        else:
+            LOGGER.info('OpenCV 确认称号弹窗确定按钮，相似度 %.3f，点击 (%d, %d)', score, *center)
+            flow.client.tap(*center)
+            consecutive_misses = 0
+
+
 def _click_ninjutsu_battle(flow):
     target = flow.action['battle_entry']
     while True:
@@ -124,6 +145,7 @@ def enter_arena(client, action, *, template_matcher=find_template_in_png,
         _swipe_scene(flow, size, right=False)
         swipes += 1
 
+    _dismiss_title_popups(flow)
     _click_ninjutsu_battle(flow)
     flow.button('ready_marker', click=False)
     flow.remaining()

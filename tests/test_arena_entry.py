@@ -21,7 +21,7 @@ def entry_position(x=1000, y=600):
 def action_config(**overrides):
     target = dict(left=0, top=0, right=1920, bottom=1080, threshold=.85)
     return {
-        'timeout_seconds': 5, 'poll_seconds': .01,
+        'timeout_seconds': 30, 'poll_seconds': .01,
         'pre_click_wait_seconds': .01, 'post_click_wait_seconds': .01,
         'max_swipes': 15, 'multimodal': {'max_calls': 1},
         'battle_entry': target | {'name': '忍术对战图标', 'template': 'assets/arena_ninjutsu_battle.png'},
@@ -39,6 +39,7 @@ class Replay:
         self.observations = deque(observations)
         self.frames = deque(['initial', *(name for name, _ in observations), *frames])
         self.matches = matches or {}
+        self.match_regions = {}
         self.images = {}
         self.names = {}
         self.last_frame = None
@@ -85,6 +86,7 @@ class Replay:
     def matcher(self, png, path, roi, threshold):
         name, template = self.names[png], Path(path).name
         self.events.append(('match', name, template))
+        self.match_regions.setdefault(template, set()).add(roi)
         center = self.matches.get((name, template))
         return center, .99 if center is not None else .1
 
@@ -99,7 +101,9 @@ def ready_matches():
             ('friendly', 'arena_friendly_match.png'): (1750, 480)}
 
 
-READY_FRAMES = ('battle-old', 'battle-new', 'friendly')
+NO_TITLE_FRAMES = ('no-title',) * 5
+BATTLE_FRAMES = ('battle-old', 'battle-new', 'friendly')
+READY_FRAMES = NO_TITLE_FRAMES + BATTLE_FRAMES
 
 
 def test_first_search_frame_uses_only_coordinate_model(monkeypatch):
@@ -221,11 +225,52 @@ def test_result_after_daily_deadline_never_causes_input(monkeypatch, answer):
     assert replay.events[-1] == ('locate', 'late')
 
 
+def test_title_popups_require_five_consecutive_misses_before_battle(monkeypatch):
+    title = 'arena_title_confirm.png'
+    confirmations = {'title-a': (1170, 852), 'title-b': (1190, 870), 'title-c': (1210, 890)}
+    probes = (('no-title',) * 4 + ('title-a', 'title-b') +
+              ('no-title',) * 4 + ('title-c',) + NO_TITLE_FRAMES)
+    matches = ready_matches() | {(frame, title): point for frame, point in confirmations.items()}
+    replay = Replay(monkeypatch, [('found', entry_position())], frames=probes + BATTLE_FRAMES, matches=matches)
+    replay.run()
+
+    start = replay.events.index(('tap', (1000, 600))) + 1
+    end = replay.events.index(('screen', 'battle-old'))
+    expected = [('sleep', replay.action['post_click_wait_seconds'])]
+    for frame in probes:
+        expected.extend([('sleep', 1), ('screen', frame), ('match', frame, title)])
+        if frame in confirmations:
+            expected.append(('tap', confirmations[frame]))
+    assert replay.events[start:end] == expected
+    assert replay.match_regions[title] == {(0, 540, 1920, 1080)}
+    assert replay.taps == [(1000, 600), *confirmations.values(), (310, 950)]
+
+
+def test_title_match_after_daily_deadline_never_taps_confirm(monkeypatch):
+    replay = Replay(monkeypatch, [('found', entry_position())], frames=['title'],
+                    matches={('title', 'arena_title_confirm.png'): (1200, 870)})
+    matcher = replay.matcher
+
+    def late_match(png, path, roi, threshold):
+        result = matcher(png, path, roi, threshold)
+        if result[0] is not None:
+            replay.clock += 5
+        return result
+
+    monkeypatch.setattr(replay, 'matcher', late_match)
+    with pytest.raises(DailyDeadlineExceeded):
+        with execution_scope(5, clock=lambda: replay.clock, sleep=replay.sleep):
+            replay.run()
+    assert replay.taps == [(1000, 600)]
+    assert replay.events[-1] == ('match', 'title', 'arena_title_confirm.png')
+
+
 def test_disappearing_ninjutsu_icon_is_observed_again_before_click(monkeypatch):
     matches = ready_matches() | {('battle-again', 'arena_ninjutsu_battle.png'): (350, 940),
                                  ('battle-again-check', 'arena_ninjutsu_battle.png'): (370, 930)}
     replay = Replay(monkeypatch, [('found', entry_position())],
-                    frames=['battle-old', 'gone', 'battle-again', 'battle-again-check', 'friendly'],
+                    frames=NO_TITLE_FRAMES + ('battle-old', 'gone', 'battle-again',
+                                              'battle-again-check', 'friendly'),
                     matches=matches)
     replay.run()
     assert replay.taps == [(1000, 600), (370, 930)]
@@ -236,11 +281,11 @@ def test_missing_friendly_match_does_not_report_entry_success(monkeypatch):
     matches = ready_matches()
     matches.pop(('friendly', 'arena_friendly_match.png'))
     replay = Replay(monkeypatch, [('found', entry_position())], frames=READY_FRAMES,
-                    matches=matches, action=action_config(timeout_seconds=.25))
+                    matches=matches, action=action_config(timeout_seconds=5.25))
     with pytest.raises(VisualError, match='超时'):
         replay.run()
     assert replay.taps == [(1000, 600), (310, 950)]
-    assert replay.clock <= .26
+    assert replay.clock <= 5.26
     assert all(event[2] == 'arena_friendly_match.png'
                for event in replay.events if event[0] == 'match' and event[1] == 'friendly')
 
