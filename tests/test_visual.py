@@ -267,6 +267,24 @@ def test_configured_ordinary_recruit_targets_cover_both_sidebar_layouts():
             assert center == expected, (filename, key, center, score)
 
 
+def test_configured_ordinary_recruit_tab_matches_near_screen_bottom():
+    from naruto_daily.config import load_settings
+
+    root = Path(__file__).parents[1]
+    settings = load_settings(root / "config.example.json")
+    action = next(a for a in settings.tasks["recruit"] if a["type"] == "handle_free_recruit")
+    target = action["ordinary_tab"]
+    fixture = root / "tests/fixtures/recruit_sidebar_shifted.png"
+    screen = cv2.imdecode(np.fromfile(fixture, dtype=np.uint8), cv2.IMREAD_COLOR)
+    sidebar = screen[200:, :250]
+    # 将原图中 y=780 的标签移到 y=1007，字样完整可见，模板下沿到达 y=1034。
+    sidebar[:] = np.roll(sidebar, 1007 - 780, axis=0)
+
+    roi = tuple(target[k] for k in ("left", "top", "right", "bottom"))
+    center, score = find_template_in_png(encode(screen), root / target["template"], roi, target["threshold"])
+    assert center == (127, 1007), score
+
+
 def test_shifted_sidebar_still_rejects_missing_advanced_dot():
     from naruto_daily.config import load_settings
 

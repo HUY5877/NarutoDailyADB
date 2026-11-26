@@ -529,7 +529,7 @@
           "left": 0,
           "top": 700,
           "right": 300,
-          "bottom": 1030,
+          "bottom": 1080,
           "threshold": 0.9
         },
         "ordinary_red_dot": {
