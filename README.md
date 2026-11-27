@@ -29,12 +29,12 @@ if (-not (Test-Path .\.env)) {
 | 位置 | 需要填写的内容 |
 | --- | --- |
 | `config.example.json` | 服务共用的完整日常任务配置；保留现有任务和资源引用，屏幕尺寸保持 1920×1080，无需复制本地任务配置 |
-| 根目录 `.env` | `APP_ENV=test`、共用的 Cloudflare Token/account、`CLOUDFLARE_KV_NAMESPACE_ID_TEST`、本地鱼玩 `YUWAN_API_KEY` / `YUWAN_MODEL`，以及雷电控制台路径和测试专用实例池等机器参数 |
+| 根目录 `.env` | `APP_ENV=test`、共用的 Cloudflare Token/account、`CLOUDFLARE_KV_NAMESPACE_ID_TEST`，以及雷电控制台路径和测试专用实例池等机器参数 |
 | Cloudflare KV | `hyrz` 与 `hyrz-test` 两个 namespace 各自保存普通变量名的纯文本配置，例如 `REDIS_QUEUE_KEY`、`OSS_KEY_PREFIX`、`JEV_API_KEY` 和 `JEV_MODEL`。字段见[配置表](docs/test-jev-client-protocol.md#cloudflare-配置) |
 
-Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限，列出 key 和批量读取均须允许。`APP_ENV` 只能是 `prod` 或 `test`，省略时为 `prod`；JEV 测试工作区须显式设置 `test`。prod 选择 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，兼容旧 `CLOUDFLARE_KV_NAMESPACE_ID`；test 必须提供 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`。启动只读取选定 namespace，全部读取成功才发布配置，修改后需重启。Redis、OSS、数据库和隔离路径不从本地旧配置回退；鱼玩 key/model 按原约定成对保存在本地 `.env`，启动解析后由任务子进程继承。
+Cloudflare Token 需要目标账户的 **Workers KV Storage → Read** 权限，列出 key 和批量读取均须允许。`APP_ENV` 只能是 `prod` 或 `test`，省略时为 `prod`；JEV 测试工作区须显式设置 `test`。prod 选择 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，兼容旧 `CLOUDFLARE_KV_NAMESPACE_ID`；test 必须提供 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`。启动只读取选定 namespace，全部读取成功才发布配置，修改后需重启。Redis、OSS、数据库和隔离路径不从本地旧配置回退。
 
-生成模型支持鱼玩、DeepSeek 和 OpenAI。每个渠道的 `*_API_KEY` 可使用 JSON 字符串数组，兼容旧单 key，按每组 model + key 共用原 Redis 计数器轮询。OpenAI 和 DeepSeek 由 Cloudflare 配置，`*_ENABLED=false` 关闭渠道，管理员可在 `NarutoLoginClient` 的「大模型渠道」页面编辑并测试，网站后端 Token 另需 KV 写权限。鱼玩只由每台 worker 本地 `.env` 的 key/model 决定是否启用，未配置 key 就关闭，不使用云端启停状态。具体配置和升级顺序见[多模态网关说明](naruto_daily/multimodal/README.md#配置)。
+OpenAI 和 DeepSeek 由 Cloudflare 配置。每个渠道的 `*_API_KEY` 可使用 JSON 字符串数组，兼容旧单 key，按每组 model + key 共用 Redis 计数器轮询。`*_ENABLED=false` 关闭渠道。管理员可在 `NarutoLoginClient` 的「大模型渠道」页面编辑并测试，网站后端 Token 另需 KV 写权限。具体配置和升级顺序见[多模态网关说明](naruto_daily/multimodal/README.md#配置)。
 
 扫码服务还需配置 OSS、雷电控制台路径和实例池，见[扫码服务说明](naruto_daily/login_service/README.md)。服务按分配到的实例覆盖任务配置中的 ADB 路径和 `serial`。
 
