@@ -42,7 +42,7 @@ CLOUDFLARE_KV_NAMESPACE_ID_TEST=your-hyrz-test-namespace-id
 | `QQ_BOT_APP_ID` / `QQ_BOT_APP_SECRET` / `QQ_BOT_GROUP_OPENID` | 网站绑定回调与 worker 主动通知共用；三项同时填写或全部留空，启用前在测试 namespace 填写测试机器人和目标群 |
 | `QQ_BOT_ORIGINAL_GROUP_OPENID` | 保留的机器人原群标识；不代替运行时 `QQ_BOT_GROUP_OPENID` |
 
-可选扩展也使用普通变量名，例如 `OSS_STS_TOKEN`、`ALLOWED_ORIGINS`。测试网站若改用 `local` 存储，须在 `hyrz-test` 显式配置独立的 `LOCAL_OBJECTS_DIR`，不可复用正式目录。鱼玩不使用 Cloudflare 配置，只在各机器的本地 `.env` 配置 `YUWAN_API_KEY` 和 `YUWAN_MODEL`：有 key 时启用且模型名必填，无 key、空 key 或空列表时关闭；`YUWAN_ENABLED` 不参与判断。修改后重启，任务子进程继承父进程解析结果。QQ 通知使用测试 namespace 的普通 `QQ_BOT_*` 和 `DATABASE_URL`，不再单列本地测试专用变量。
+可选扩展也使用普通变量名，例如 `OSS_STS_TOKEN`、`ALLOWED_ORIGINS`。测试网站若改用 `local` 存储，须在 `hyrz-test` 显式配置独立的 `LOCAL_OBJECTS_DIR`，不可复用正式目录。QQ 通知使用测试 namespace 的普通 `QQ_BOT_*` 和 `DATABASE_URL`，不再单列本地测试专用变量。
 
 当前资源值如下。它们是可修改的 Cloudflare 配置，不是源码默认值或自动重写规则。
 
